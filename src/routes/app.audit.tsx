@@ -183,7 +183,7 @@ function AuditPage() {
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <div className="text-xs text-muted-foreground">Stock sistema · {branch}</div>
+                  <div className="text-xs text-muted-foreground">Stock sistema · {BRANCH_LABELS[branch]}</div>
                   <div className="text-xl font-semibold tabular-nums">{sysStock}</div>
                 </div>
                 <div>
@@ -263,7 +263,7 @@ function AuditPage() {
                     <TableCell className="whitespace-nowrap text-xs">
                       {new Date(a.created_at).toLocaleString()}
                     </TableCell>
-                    <TableCell>{a.branch}</TableCell>
+                    <TableCell>{branchLabel(a.branch)}</TableCell>
                     <TableCell>
                       <div>{a.product_name}</div>
                       <div className="font-mono text-xs text-muted-foreground">{a.barcode}</div>
@@ -292,6 +292,22 @@ function AuditPage() {
           </div>
         </CardContent>
       </Card>
+
+      <BarcodeScanner
+        open={scannerOpen}
+        onClose={() => setScannerOpen(false)}
+        onDetected={async (c) => {
+          setCode(c);
+          setBusy(true);
+          const p = await lookup(c);
+          setBusy(false);
+          if (p) {
+            setCurrent(p);
+            setPhysical("");
+            setTimeout(() => physicalRef.current?.focus(), 10);
+          }
+        }}
+      />
     </div>
   );
 }
