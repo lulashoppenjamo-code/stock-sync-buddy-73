@@ -29,6 +29,7 @@ function AuditPage() {
   const [physical, setPhysical] = useState("");
   const [current, setCurrent] = useState<Product | null>(null);
   const [busy, setBusy] = useState(false);
+  const [scannerOpen, setScannerOpen] = useState(false);
   const scanRef = useRef<HTMLInputElement>(null);
   const physicalRef = useRef<HTMLInputElement>(null);
 
@@ -141,24 +142,35 @@ function AuditPage() {
           <div className="flex items-center gap-3">
             <span className="text-sm text-muted-foreground">Sucursal</span>
             <ToggleGroup type="single" value={branch} onValueChange={(v) => v && setBranch(v as Branch)}>
-              <ToggleGroupItem value="A">A</ToggleGroupItem>
-              <ToggleGroupItem value="B">B</ToggleGroupItem>
+              <ToggleGroupItem value="A">{BRANCH_LABELS.A}</ToggleGroupItem>
+              <ToggleGroupItem value="B">{BRANCH_LABELS.B}</ToggleGroupItem>
             </ToggleGroup>
           </div>
 
           <form onSubmit={handleScan}>
             <label className="text-xs font-medium text-muted-foreground">Escanear código (Enter)</label>
-            <div className="relative mt-1">
-              <ScanLine className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                ref={scanRef}
-                autoFocus
-                value={code}
-                onChange={(e) => setCode(e.target.value)}
-                placeholder="Apuntá la pistola o tipea el barcode…"
-                className="pl-9 font-mono text-base"
-                inputMode="numeric"
-              />
+            <div className="relative mt-1 flex gap-2">
+              <div className="relative flex-1">
+                <ScanLine className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  ref={scanRef}
+                  autoFocus
+                  value={code}
+                  onChange={(e) => setCode(e.target.value)}
+                  placeholder="Pistola, cámara o tipear…"
+                  className="pl-9 font-mono text-base"
+                  inputMode="numeric"
+                />
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                onClick={() => setScannerOpen(true)}
+                aria-label="Escanear con cámara"
+              >
+                <Camera className="h-4 w-4" />
+              </Button>
             </div>
           </form>
 
