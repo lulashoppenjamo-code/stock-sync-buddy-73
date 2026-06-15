@@ -33,8 +33,8 @@ export type QueuedOp =
         destination: "A" | "B";
         sender_name: string;
         receiver_name: string;
-        collaborator_id: string | null;
-        collaborator_name: string | null;
+        collaborator_id: string;
+        collaborator_name: string;
         client_uid: string;
       };
       photo: { blob: Blob; ext: string };
