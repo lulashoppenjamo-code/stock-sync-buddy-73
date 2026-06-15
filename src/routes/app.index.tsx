@@ -1,0 +1,252 @@
+import { createFileRoute } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
+import { useRef, useState } from "react";
+import { supabase } from "@/integrations/supabase/client";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Card, CardContent } from "@/components/ui/card";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Upload, Search, Loader2, FileSpreadsheet } from "lucide-react";
+import { toast } from "sonner";
+import { parseCsv, buildDiff, applyImport, type ImportDiff } from "@/lib/csv-utils";
+import { getCollaborator } from "@/lib/session";
+
+export const Route = createFileRoute("/app/")({
+  component: ProductsPage,
+});
+
+type Product = {
+  barcode: string;
+  product_name: string;
+  uom: string | null;
+  stock_a: number;
+  stock_b: number;
+  updated_at: string;
+};
+
+function ProductsPage() {
+  const [search, setSearch] = useState("");
+  const { data, isLoading } = useQuery({
+    queryKey: ["products"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("products")
+        .select("barcode, product_name, uom, stock_a, stock_b, updated_at")
+        .order("product_name")
+        .limit(2000);
+      if (error) throw error;
+      return data as Product[];
+    },
+  });
+
+  const filtered = (data ?? []).filter((p) => {
+    if (!search.trim()) return true;
+    const q = search.toLowerCase();
+    return p.product_name.toLowerCase().includes(q) || p.barcode.includes(q);
+  });
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <h1 className="mr-auto text-xl font-semibold tracking-tight">Productos</h1>
+        <ImportCsvButton />
+      </div>
+
+      <div className="relative">
+        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+        <Input
+          placeholder="Buscar por nombre o código de barras…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="pl-9"
+        />
+      </div>
+
+      <Card>
+        <CardContent className="p-0">
+          <div className="max-h-[70vh] overflow-auto">
+            <Table>
+              <TableHeader className="sticky top-0 bg-card">
+                <TableRow>
+                  <TableHead>Producto</TableHead>
+                  <TableHead className="hidden md:table-cell">Código</TableHead>
+                  <TableHead className="hidden md:table-cell">UoM</TableHead>
+                  <TableHead className="text-right">Stock A</TableHead>
+                  <TableHead className="text-right">Stock B</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {isLoading ? (
+                  <TableRow>
+                    <TableCell colSpan={5} className="py-12 text-center text-muted-foreground">
+                      <Loader2 className="mx-auto h-5 w-5 animate-spin" />
+                    </TableCell>
+                  </TableRow>
+                ) : filtered.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={5} className="py-12 text-center text-muted-foreground">
+                      Sin productos. Importá un CSV para empezar.
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  filtered.map((p) => (
+                    <TableRow key={p.barcode}>
+                      <TableCell>
+                        <div className="font-medium">{p.product_name}</div>
+                        <div className="text-xs text-muted-foreground md:hidden">{p.barcode}</div>
+                      </TableCell>
+                      <TableCell className="hidden font-mono text-xs md:table-cell">{p.barcode}</TableCell>
+                      <TableCell className="hidden md:table-cell">{p.uom ?? "—"}</TableCell>
+                      <TableCell className="text-right tabular-nums">{p.stock_a}</TableCell>
+                      <TableCell className="text-right tabular-nums">{p.stock_b}</TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </CardContent>
+      </Card>
+
+      <p className="text-xs text-muted-foreground">
+        Total: {filtered.length} producto{filtered.length === 1 ? "" : "s"}
+      </p>
+    </div>
+  );
+}
+
+function ImportCsvButton() {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [diff, setDiff] = useState<ImportDiff | null>(null);
+  const [filename, setFilename] = useState<string | null>(null);
+  const [updateName, setUpdateName] = useState(true);
+  const [updateUom, setUpdateUom] = useState(true);
+  const [busy, setBusy] = useState(false);
+
+  async function onFile(file: File) {
+    setBusy(true);
+    try {
+      const rows = await parseCsv(file);
+      if (!rows.length) {
+        toast.error("CSV vacío o columnas inválidas. Se requiere ProductName, Barcode y UoM.");
+        return;
+      }
+      const d = await buildDiff(rows);
+      setDiff(d);
+      setFilename(file.name);
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function confirmApply() {
+    if (!diff) return;
+    setBusy(true);
+    try {
+      const collab = getCollaborator();
+      const res = await applyImport(diff, { updateName, updateUom }, collab, filename);
+      toast.success(`Importación lista: +${res.inserted} nuevos, ${res.updated} actualizados`);
+      setDiff(null);
+      setFilename(null);
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <input
+        ref={inputRef}
+        type="file"
+        accept=".csv,text/csv"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          e.target.value = "";
+          if (f) onFile(f);
+        }}
+      />
+      <Button onClick={() => inputRef.current?.click()} disabled={busy}>
+        {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+        Importar CSV
+      </Button>
+
+      <Dialog open={!!diff} onOpenChange={(o) => !o && setDiff(null)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FileSpreadsheet className="h-5 w-5" /> Vista previa de importación
+            </DialogTitle>
+          </DialogHeader>
+          {diff && (
+            <div className="space-y-4 text-sm">
+              <div className="grid grid-cols-3 gap-2">
+                <Stat label="Nuevos" value={diff.newItems.length} tone="positive" />
+                <Stat label="Con cambios" value={diff.changedItems.length} tone="warning" />
+                <Stat label="Idénticos" value={diff.identical} tone="muted" />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Los stocks <strong>nunca</strong> se modifican por importación. Solo se agregan productos nuevos
+                {diff.changedItems.length > 0 ? " y se pueden actualizar nombre/UoM en existentes." : "."}
+              </p>
+              {diff.changedItems.length > 0 && (
+                <div className="space-y-2 rounded-md border p-3">
+                  <div className="text-sm font-medium">Actualizar en existentes:</div>
+                  <label className="flex items-center gap-2 text-sm">
+                    <Checkbox checked={updateName} onCheckedChange={(v) => setUpdateName(!!v)} />
+                    Nombre del producto
+                  </label>
+                  <label className="flex items-center gap-2 text-sm">
+                    <Checkbox checked={updateUom} onCheckedChange={(v) => setUpdateUom(!!v)} />
+                    Unidad de medida (UoM)
+                  </label>
+                </div>
+              )}
+              {diff.newItems.length > 0 && (
+                <details className="rounded-md border p-2 text-xs">
+                  <summary className="cursor-pointer">Ver primeros 10 nuevos</summary>
+                  <ul className="mt-2 space-y-1">
+                    {diff.newItems.slice(0, 10).map((r) => (
+                      <li key={r.barcode} className="font-mono">
+                        {r.barcode} — {r.product_name}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDiff(null)} disabled={busy}>
+              Cancelar
+            </Button>
+            <Button onClick={confirmApply} disabled={busy}>
+              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : "Aplicar"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
+function Stat({ label, value, tone }: { label: string; value: number; tone: "positive" | "warning" | "muted" }) {
+  const cls =
+    tone === "positive"
+      ? "bg-emerald-50 text-emerald-900 dark:bg-emerald-900/30 dark:text-emerald-100"
+      : tone === "warning"
+        ? "bg-amber-50 text-amber-900 dark:bg-amber-900/30 dark:text-amber-100"
+        : "bg-muted text-foreground";
+  return (
+    <div className={`rounded-md p-3 ${cls}`}>
+      <div className="text-xs">{label}</div>
+      <div className="text-2xl font-semibold tabular-nums">{value}</div>
+    </div>
+  );
+}
