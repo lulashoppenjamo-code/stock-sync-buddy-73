@@ -84,8 +84,8 @@ export async function drainQueue(): Promise<{ ok: number; failed: number }> {
             p_sender_name: op.payload.sender_name,
             p_receiver_name: op.payload.receiver_name,
             p_photo_url: photo_url,
-            p_collaborator_id: op.payload.collaborator_id ?? "",
-            p_collaborator_name: op.payload.collaborator_name ?? "",
+            p_collaborator_id: op.payload.collaborator_id,
+            p_collaborator_name: op.payload.collaborator_name,
             p_client_uid: op.payload.client_uid,
           });
           if (error) throw error;
