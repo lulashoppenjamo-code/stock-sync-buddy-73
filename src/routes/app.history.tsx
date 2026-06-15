@@ -4,6 +4,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { branchLabel } from "@/lib/branches";
 
 export const Route = createFileRoute("/app/history")({
   component: HistoryPage,
@@ -64,7 +65,7 @@ function TransfersTable() {
                     <div className="font-mono text-xs text-muted-foreground">{t.barcode}</div>
                   </TableCell>
                   <TableCell className="text-right tabular-nums">{t.quantity}</TableCell>
-                  <TableCell className="font-medium">{t.origin} → {t.destination}</TableCell>
+                  <TableCell className="font-medium">{branchLabel(t.origin)} → {branchLabel(t.destination)}</TableCell>
                   <TableCell className="hidden md:table-cell text-sm">{t.sender_name} → {t.receiver_name}</TableCell>
                   <TableCell>
                     {t.photo_url ? (
@@ -119,7 +120,7 @@ function AuditsTable() {
               {(data ?? []).map((a) => (
                 <TableRow key={a.id}>
                   <TableCell className="text-xs">{new Date(a.created_at).toLocaleString()}</TableCell>
-                  <TableCell>{a.branch}</TableCell>
+                  <TableCell>{branchLabel(a.branch)}</TableCell>
                   <TableCell>{a.product_name}<div className="font-mono text-xs text-muted-foreground">{a.barcode}</div></TableCell>
                   <TableCell className="text-right tabular-nums">{a.system_stock}</TableCell>
                   <TableCell className="text-right tabular-nums">{a.physical_count}</TableCell>

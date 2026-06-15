@@ -7,10 +7,12 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Loader2, ScanLine, Save } from "lucide-react";
+import { Loader2, ScanLine, Save, Camera } from "lucide-react";
 import { toast } from "sonner";
 import { getCollaborator } from "@/lib/session";
 import { enqueue, drainQueue } from "@/lib/offline-queue";
+import { BRANCH_LABELS, branchLabel } from "@/lib/branches";
+import { BarcodeScanner } from "@/components/BarcodeScanner";
 
 export const Route = createFileRoute("/app/audit")({
   component: AuditPage,
@@ -27,6 +29,7 @@ function AuditPage() {
   const [physical, setPhysical] = useState("");
   const [current, setCurrent] = useState<Product | null>(null);
   const [busy, setBusy] = useState(false);
+  const [scannerOpen, setScannerOpen] = useState(false);
   const scanRef = useRef<HTMLInputElement>(null);
   const physicalRef = useRef<HTMLInputElement>(null);
 
@@ -139,24 +142,35 @@ function AuditPage() {
           <div className="flex items-center gap-3">
             <span className="text-sm text-muted-foreground">Sucursal</span>
             <ToggleGroup type="single" value={branch} onValueChange={(v) => v && setBranch(v as Branch)}>
-              <ToggleGroupItem value="A">A</ToggleGroupItem>
-              <ToggleGroupItem value="B">B</ToggleGroupItem>
+              <ToggleGroupItem value="A">{BRANCH_LABELS.A}</ToggleGroupItem>
+              <ToggleGroupItem value="B">{BRANCH_LABELS.B}</ToggleGroupItem>
             </ToggleGroup>
           </div>
 
           <form onSubmit={handleScan}>
             <label className="text-xs font-medium text-muted-foreground">Escanear código (Enter)</label>
-            <div className="relative mt-1">
-              <ScanLine className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                ref={scanRef}
-                autoFocus
-                value={code}
-                onChange={(e) => setCode(e.target.value)}
-                placeholder="Apuntá la pistola o tipea el barcode…"
-                className="pl-9 font-mono text-base"
-                inputMode="numeric"
-              />
+            <div className="relative mt-1 flex gap-2">
+              <div className="relative flex-1">
+                <ScanLine className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  ref={scanRef}
+                  autoFocus
+                  value={code}
+                  onChange={(e) => setCode(e.target.value)}
+                  placeholder="Pistola, cámara o tipear…"
+                  className="pl-9 font-mono text-base"
+                  inputMode="numeric"
+                />
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                onClick={() => setScannerOpen(true)}
+                aria-label="Escanear con cámara"
+              >
+                <Camera className="h-4 w-4" />
+              </Button>
             </div>
           </form>
 
@@ -169,7 +183,7 @@ function AuditPage() {
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <div className="text-xs text-muted-foreground">Stock sistema · {branch}</div>
+                  <div className="text-xs text-muted-foreground">Stock sistema · {BRANCH_LABELS[branch]}</div>
                   <div className="text-xl font-semibold tabular-nums">{sysStock}</div>
                 </div>
                 <div>
@@ -249,7 +263,7 @@ function AuditPage() {
                     <TableCell className="whitespace-nowrap text-xs">
                       {new Date(a.created_at).toLocaleString()}
                     </TableCell>
-                    <TableCell>{a.branch}</TableCell>
+                    <TableCell>{branchLabel(a.branch)}</TableCell>
                     <TableCell>
                       <div>{a.product_name}</div>
                       <div className="font-mono text-xs text-muted-foreground">{a.barcode}</div>
@@ -278,6 +292,22 @@ function AuditPage() {
           </div>
         </CardContent>
       </Card>
+
+      <BarcodeScanner
+        open={scannerOpen}
+        onClose={() => setScannerOpen(false)}
+        onDetected={async (c) => {
+          setCode(c);
+          setBusy(true);
+          const p = await lookup(c);
+          setBusy(false);
+          if (p) {
+            setCurrent(p);
+            setPhysical("");
+            setTimeout(() => physicalRef.current?.focus(), 10);
+          }
+        }}
+      />
     </div>
   );
 }

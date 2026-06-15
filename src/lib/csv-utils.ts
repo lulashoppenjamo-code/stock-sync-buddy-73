@@ -31,7 +31,10 @@ export function parseCsv(file: File): Promise<ParsedRow[]> {
           const uom = String((r as any).UoM ?? "").trim() || null;
           rows.push({ barcode, product_name, uom });
         }
-        resolve(rows);
+        // Dedupe by barcode within the file (keep last occurrence)
+        const map = new Map<string, ParsedRow>();
+        for (const r of rows) map.set(r.barcode, r);
+        resolve(Array.from(map.values()));
       },
       error: reject,
     });
@@ -75,13 +78,17 @@ export async function applyImport(
   collab: { id: string; name: string } | null,
   filename: string | null,
 ) {
-  // Insert new items (stocks default to 0)
+  // Insert new items (stocks default to 0). Use upsert + ignoreDuplicates to be safe
+  // against race conditions / partial previous imports that left some rows already inserted.
   if (diff.newItems.length) {
     for (let i = 0; i < diff.newItems.length; i += 500) {
       const chunk = diff.newItems.slice(i, i + 500);
-      const { error } = await supabase.from("products").insert(
-        chunk.map((r) => ({ barcode: r.barcode, product_name: r.product_name, uom: r.uom })),
-      );
+      const { error } = await supabase
+        .from("products")
+        .upsert(
+          chunk.map((r) => ({ barcode: r.barcode, product_name: r.product_name, uom: r.uom })),
+          { onConflict: "barcode", ignoreDuplicates: true },
+        );
       if (error) throw error;
     }
   }
