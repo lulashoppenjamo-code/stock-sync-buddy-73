@@ -14,16 +14,308 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      audits: {
+        Row: {
+          barcode: string
+          branch: Database["public"]["Enums"]["branch_code"]
+          client_uid: string | null
+          collaborator_id: string | null
+          collaborator_name: string | null
+          created_at: string
+          difference: number
+          id: string
+          physical_count: number
+          product_name: string
+          system_stock: number
+        }
+        Insert: {
+          barcode: string
+          branch: Database["public"]["Enums"]["branch_code"]
+          client_uid?: string | null
+          collaborator_id?: string | null
+          collaborator_name?: string | null
+          created_at?: string
+          difference: number
+          id?: string
+          physical_count: number
+          product_name: string
+          system_stock: number
+        }
+        Update: {
+          barcode?: string
+          branch?: Database["public"]["Enums"]["branch_code"]
+          client_uid?: string | null
+          collaborator_id?: string | null
+          collaborator_name?: string | null
+          created_at?: string
+          difference?: number
+          id?: string
+          physical_count?: number
+          product_name?: string
+          system_stock?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "audits_collaborator_id_fkey"
+            columns: ["collaborator_id"]
+            isOneToOne: false
+            referencedRelation: "collaborator_directory"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "audits_collaborator_id_fkey"
+            columns: ["collaborator_id"]
+            isOneToOne: false
+            referencedRelation: "collaborators"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      collaborators: {
+        Row: {
+          active: boolean
+          created_at: string
+          id: string
+          is_admin: boolean
+          name: string
+          pin_hash: string
+        }
+        Insert: {
+          active?: boolean
+          created_at?: string
+          id?: string
+          is_admin?: boolean
+          name: string
+          pin_hash: string
+        }
+        Update: {
+          active?: boolean
+          created_at?: string
+          id?: string
+          is_admin?: boolean
+          name?: string
+          pin_hash?: string
+        }
+        Relationships: []
+      }
+      csv_imports: {
+        Row: {
+          collaborator_id: string | null
+          collaborator_name: string | null
+          created_at: string
+          filename: string | null
+          id: string
+          new_count: number
+          skipped_count: number
+          updated_count: number
+        }
+        Insert: {
+          collaborator_id?: string | null
+          collaborator_name?: string | null
+          created_at?: string
+          filename?: string | null
+          id?: string
+          new_count?: number
+          skipped_count?: number
+          updated_count?: number
+        }
+        Update: {
+          collaborator_id?: string | null
+          collaborator_name?: string | null
+          created_at?: string
+          filename?: string | null
+          id?: string
+          new_count?: number
+          skipped_count?: number
+          updated_count?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "csv_imports_collaborator_id_fkey"
+            columns: ["collaborator_id"]
+            isOneToOne: false
+            referencedRelation: "collaborator_directory"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "csv_imports_collaborator_id_fkey"
+            columns: ["collaborator_id"]
+            isOneToOne: false
+            referencedRelation: "collaborators"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      products: {
+        Row: {
+          barcode: string
+          created_at: string
+          product_name: string
+          stock_a: number
+          stock_b: number
+          uom: string | null
+          updated_at: string
+        }
+        Insert: {
+          barcode: string
+          created_at?: string
+          product_name: string
+          stock_a?: number
+          stock_b?: number
+          uom?: string | null
+          updated_at?: string
+        }
+        Update: {
+          barcode?: string
+          created_at?: string
+          product_name?: string
+          stock_a?: number
+          stock_b?: number
+          uom?: string | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      transfers: {
+        Row: {
+          barcode: string
+          client_uid: string | null
+          collaborator_id: string | null
+          collaborator_name: string | null
+          created_at: string
+          destination: Database["public"]["Enums"]["branch_code"]
+          id: string
+          origin: Database["public"]["Enums"]["branch_code"]
+          photo_url: string
+          product_name: string
+          quantity: number
+          receiver_name: string
+          sender_name: string
+        }
+        Insert: {
+          barcode: string
+          client_uid?: string | null
+          collaborator_id?: string | null
+          collaborator_name?: string | null
+          created_at?: string
+          destination: Database["public"]["Enums"]["branch_code"]
+          id?: string
+          origin: Database["public"]["Enums"]["branch_code"]
+          photo_url: string
+          product_name: string
+          quantity: number
+          receiver_name: string
+          sender_name: string
+        }
+        Update: {
+          barcode?: string
+          client_uid?: string | null
+          collaborator_id?: string | null
+          collaborator_name?: string | null
+          created_at?: string
+          destination?: Database["public"]["Enums"]["branch_code"]
+          id?: string
+          origin?: Database["public"]["Enums"]["branch_code"]
+          photo_url?: string
+          product_name?: string
+          quantity?: number
+          receiver_name?: string
+          sender_name?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "transfers_collaborator_id_fkey"
+            columns: ["collaborator_id"]
+            isOneToOne: false
+            referencedRelation: "collaborator_directory"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "transfers_collaborator_id_fkey"
+            columns: ["collaborator_id"]
+            isOneToOne: false
+            referencedRelation: "collaborators"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
-      [_ in never]: never
+      collaborator_directory: {
+        Row: {
+          active: boolean | null
+          id: string | null
+          is_admin: boolean | null
+          name: string | null
+        }
+        Insert: {
+          active?: boolean | null
+          id?: string | null
+          is_admin?: boolean | null
+          name?: string | null
+        }
+        Update: {
+          active?: boolean | null
+          id?: string | null
+          is_admin?: boolean | null
+          name?: string | null
+        }
+        Relationships: []
+      }
     }
     Functions: {
-      [_ in never]: never
+      _check_admin_pin: {
+        Args: { p_admin_id: string; p_admin_pin: string }
+        Returns: boolean
+      }
+      admin_create_collaborator: {
+        Args: {
+          p_admin_id: string
+          p_admin_pin: string
+          p_is_admin?: boolean
+          p_name: string
+          p_pin: string
+        }
+        Returns: string
+      }
+      admin_update_collaborator: {
+        Args: {
+          p_active: boolean
+          p_admin_id: string
+          p_admin_pin: string
+          p_is_admin: boolean
+          p_name: string
+          p_pin: string
+          p_target_id: string
+        }
+        Returns: undefined
+      }
+      apply_transfer: {
+        Args: {
+          p_barcode: string
+          p_client_uid: string
+          p_collaborator_id: string
+          p_collaborator_name: string
+          p_destination: Database["public"]["Enums"]["branch_code"]
+          p_origin: Database["public"]["Enums"]["branch_code"]
+          p_photo_url: string
+          p_quantity: number
+          p_receiver_name: string
+          p_sender_name: string
+        }
+        Returns: string
+      }
+      verify_pin: {
+        Args: { p_collaborator_id: string; p_pin: string }
+        Returns: {
+          id: string
+          is_admin: boolean
+          name: string
+        }[]
+      }
     }
     Enums: {
-      [_ in never]: never
+      branch_code: "A" | "B"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -150,6 +442,8 @@ export type CompositeTypes<
 
 export const Constants = {
   public: {
-    Enums: {},
+    Enums: {
+      branch_code: ["A", "B"],
+    },
   },
 } as const
