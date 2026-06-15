@@ -73,8 +73,8 @@ function ProductsPage() {
                   <TableHead>Producto</TableHead>
                   <TableHead className="hidden md:table-cell">Código</TableHead>
                   <TableHead className="hidden md:table-cell">UoM</TableHead>
-                  <TableHead className="text-right">Stock A</TableHead>
-                  <TableHead className="text-right">Stock B</TableHead>
+                  <TableHead className="text-right">Stock Mina</TableHead>
+                  <TableHead className="text-right">Stock Morelos</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
