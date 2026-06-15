@@ -13,6 +13,7 @@ import { Route as AppRouteImport } from './routes/app'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AppIndexRouteImport } from './routes/app.index'
 import { Route as AppTransferRouteImport } from './routes/app.transfer'
+import { Route as AppHistoryRouteImport } from './routes/app.history'
 import { Route as AppAuditRouteImport } from './routes/app.audit'
 
 const AppRoute = AppRouteImport.update({
@@ -35,6 +36,11 @@ const AppTransferRoute = AppTransferRouteImport.update({
   path: '/transfer',
   getParentRoute: () => AppRoute,
 } as any)
+const AppHistoryRoute = AppHistoryRouteImport.update({
+  id: '/history',
+  path: '/history',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppAuditRoute = AppAuditRouteImport.update({
   id: '/audit',
   path: '/audit',
@@ -45,12 +51,14 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/app': typeof AppRouteWithChildren
   '/app/audit': typeof AppAuditRoute
+  '/app/history': typeof AppHistoryRoute
   '/app/transfer': typeof AppTransferRoute
   '/app/': typeof AppIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/app/audit': typeof AppAuditRoute
+  '/app/history': typeof AppHistoryRoute
   '/app/transfer': typeof AppTransferRoute
   '/app': typeof AppIndexRoute
 }
@@ -59,15 +67,29 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/app': typeof AppRouteWithChildren
   '/app/audit': typeof AppAuditRoute
+  '/app/history': typeof AppHistoryRoute
   '/app/transfer': typeof AppTransferRoute
   '/app/': typeof AppIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/app' | '/app/audit' | '/app/transfer' | '/app/'
+  fullPaths:
+    | '/'
+    | '/app'
+    | '/app/audit'
+    | '/app/history'
+    | '/app/transfer'
+    | '/app/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/app/audit' | '/app/transfer' | '/app'
-  id: '__root__' | '/' | '/app' | '/app/audit' | '/app/transfer' | '/app/'
+  to: '/' | '/app/audit' | '/app/history' | '/app/transfer' | '/app'
+  id:
+    | '__root__'
+    | '/'
+    | '/app'
+    | '/app/audit'
+    | '/app/history'
+    | '/app/transfer'
+    | '/app/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -105,6 +127,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppTransferRouteImport
       parentRoute: typeof AppRoute
     }
+    '/app/history': {
+      id: '/app/history'
+      path: '/history'
+      fullPath: '/app/history'
+      preLoaderRoute: typeof AppHistoryRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/app/audit': {
       id: '/app/audit'
       path: '/audit'
@@ -117,12 +146,14 @@ declare module '@tanstack/react-router' {
 
 interface AppRouteChildren {
   AppAuditRoute: typeof AppAuditRoute
+  AppHistoryRoute: typeof AppHistoryRoute
   AppTransferRoute: typeof AppTransferRoute
   AppIndexRoute: typeof AppIndexRoute
 }
 
 const AppRouteChildren: AppRouteChildren = {
   AppAuditRoute: AppAuditRoute,
+  AppHistoryRoute: AppHistoryRoute,
   AppTransferRoute: AppTransferRoute,
   AppIndexRoute: AppIndexRoute,
 }
