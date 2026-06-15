@@ -7,10 +7,19 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { Camera, ArrowRight, Loader2, Send } from "lucide-react";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Camera, ArrowRight, Loader2, Send, ScanLine } from "lucide-react";
 import { toast } from "sonner";
 import { getCollaborator } from "@/lib/session";
 import { enqueue, drainQueue } from "@/lib/offline-queue";
+import { BRANCH_LABELS } from "@/lib/branches";
+import { BarcodeScanner } from "@/components/BarcodeScanner";
 
 export const Route = createFileRoute("/app/transfer")({
   component: TransferPage,
@@ -28,8 +37,22 @@ function TransferPage() {
   const [receiver, setReceiver] = useState("");
   const [photo, setPhoto] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
+  const [scannerOpen, setScannerOpen] = useState(false);
   const photoRef = useRef<HTMLInputElement>(null);
   const galleryRef = useRef<HTMLInputElement>(null);
+
+  const { data: collaborators = [] } = useQuery({
+    queryKey: ["collaborators-active"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("collaborators")
+        .select("id, name")
+        .eq("active", true)
+        .order("name");
+      if (error) throw error;
+      return data as Array<{ id: string; name: string }>;
+    },
+  });
 
   const { data: product } = useQuery({
     queryKey: ["product-lookup", barcode],
@@ -60,8 +83,9 @@ function TransferPage() {
     const q = Number(quantity);
     if (!Number.isFinite(q) || q <= 0) return toast.error("Cantidad inválida");
     const originStock = origin === "A" ? product.stock_a : product.stock_b;
-    if (q > originStock) return toast.error(`Stock insuficiente en ${origin}: ${originStock}`);
-    if (!sender.trim() || !receiver.trim()) return toast.error("Falta nombre de envía/recibe");
+    if (q > originStock)
+      return toast.error(`Stock insuficiente en ${BRANCH_LABELS[origin]}: ${originStock}`);
+    if (!sender.trim() || !receiver.trim()) return toast.error("Seleccioná quién envía y recibe");
     if (!photo) return toast.error("La foto es obligatoria");
 
     const collab = getCollaborator();
@@ -134,20 +158,32 @@ function TransferPage() {
           <form onSubmit={submit} className="space-y-4">
             <div>
               <Label htmlFor="barcode">Código de barras</Label>
-              <Input
-                id="barcode"
-                value={barcode}
-                onChange={(e) => setBarcode(e.target.value)}
-                placeholder="Escanear o tipear…"
-                className="font-mono"
-                autoFocus
-                inputMode="numeric"
-              />
+              <div className="flex gap-2">
+                <Input
+                  id="barcode"
+                  value={barcode}
+                  onChange={(e) => setBarcode(e.target.value)}
+                  placeholder="Pistola / cámara / tipear…"
+                  className="font-mono"
+                  autoFocus
+                  inputMode="numeric"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  onClick={() => setScannerOpen(true)}
+                  aria-label="Escanear con cámara"
+                >
+                  <ScanLine className="h-4 w-4" />
+                </Button>
+              </div>
               {barcode.trim() && (
                 <div className="mt-1 text-xs">
                   {product ? (
                     <span className="text-emerald-600">
-                      {product.product_name} · A: {product.stock_a} · B: {product.stock_b}
+                      {product.product_name} · {BRANCH_LABELS.A}: {product.stock_a} ·{" "}
+                      {BRANCH_LABELS.B}: {product.stock_b}
                     </span>
                   ) : (
                     <span className="text-muted-foreground">Buscando…</span>
@@ -165,8 +201,8 @@ function TransferPage() {
                   onValueChange={(v) => v && setOrigin(v as Branch)}
                   className="justify-start"
                 >
-                  <ToggleGroupItem value="A">A</ToggleGroupItem>
-                  <ToggleGroupItem value="B">B</ToggleGroupItem>
+                  <ToggleGroupItem value="A">{BRANCH_LABELS.A}</ToggleGroupItem>
+                  <ToggleGroupItem value="B">{BRANCH_LABELS.B}</ToggleGroupItem>
                 </ToggleGroup>
               </div>
               <div>
@@ -177,16 +213,16 @@ function TransferPage() {
                   onValueChange={(v) => v && setDestination(v as Branch)}
                   className="justify-start"
                 >
-                  <ToggleGroupItem value="A">A</ToggleGroupItem>
-                  <ToggleGroupItem value="B">B</ToggleGroupItem>
+                  <ToggleGroupItem value="A">{BRANCH_LABELS.A}</ToggleGroupItem>
+                  <ToggleGroupItem value="B">{BRANCH_LABELS.B}</ToggleGroupItem>
                 </ToggleGroup>
               </div>
             </div>
 
             <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
-              <span className="font-semibold">{origin}</span>
+              <span className="font-semibold">{BRANCH_LABELS[origin]}</span>
               <ArrowRight className="h-4 w-4" />
-              <span className="font-semibold">{destination}</span>
+              <span className="font-semibold">{BRANCH_LABELS[destination]}</span>
             </div>
 
             <div>
@@ -204,12 +240,34 @@ function TransferPage() {
 
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
-                <Label htmlFor="sender">Nombre envía</Label>
-                <Input id="sender" value={sender} onChange={(e) => setSender(e.target.value)} />
+                <Label>Envía</Label>
+                <Select value={sender} onValueChange={setSender}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Seleccionar colaboradora…" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {collaborators.map((c) => (
+                      <SelectItem key={c.id} value={c.name}>
+                        {c.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
               <div>
-                <Label htmlFor="receiver">Nombre recibe</Label>
-                <Input id="receiver" value={receiver} onChange={(e) => setReceiver(e.target.value)} />
+                <Label>Recibe</Label>
+                <Select value={receiver} onValueChange={setReceiver}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Seleccionar colaboradora…" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {collaborators.map((c) => (
+                      <SelectItem key={c.id} value={c.name}>
+                        {c.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
             </div>
 
@@ -244,7 +302,6 @@ function TransferPage() {
                 )}
               </div>
               {photo && (
-                // eslint-disable-next-line jsx-a11y/img-redundant-alt
                 <img
                   src={URL.createObjectURL(photo)}
                   alt="Evidencia"
@@ -260,6 +317,12 @@ function TransferPage() {
           </form>
         </CardContent>
       </Card>
+
+      <BarcodeScanner
+        open={scannerOpen}
+        onClose={() => setScannerOpen(false)}
+        onDetected={(code) => setBarcode(code)}
+      />
     </div>
   );
 }
