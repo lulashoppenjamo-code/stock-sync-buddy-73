@@ -89,7 +89,7 @@ export async function applyImport(
   let updated = 0;
   if (opts.updateName || opts.updateUom) {
     for (const c of diff.changedItems) {
-      const patch: Record<string, unknown> = {};
+      const patch: { product_name?: string; uom?: string | null } = {};
       if (opts.updateName && c.nameChanged) patch.product_name = c.next.product_name;
       if (opts.updateUom && c.uomChanged) patch.uom = c.next.uom;
       if (Object.keys(patch).length === 0) continue;
