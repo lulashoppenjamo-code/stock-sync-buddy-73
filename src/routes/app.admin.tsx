@@ -81,7 +81,7 @@ function AdminPage() {
         p_admin_pin: adminPin,
         p_target_id: target.id,
         p_name: patch.name ?? target.name,
-        p_pin: patch.pin ?? null,
+        p_pin: patch.pin ?? "",
         p_is_admin: patch.is_admin ?? target.is_admin,
         p_active: patch.active ?? target.active,
       });
