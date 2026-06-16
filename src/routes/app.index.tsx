@@ -343,6 +343,92 @@ function ImportCsvButton() {
   );
 }
 
+function AddProductButton() {
+  const qc = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [barcode, setBarcode] = useState("");
+  const [name, setName] = useState("");
+  const [uom, setUom] = useState("");
+  const [stockA, setStockA] = useState("0");
+  const [stockB, setStockB] = useState("0");
+  const [busy, setBusy] = useState(false);
+
+  function reset() {
+    setBarcode(""); setName(""); setUom(""); setStockA("0"); setStockB("0");
+  }
+
+  async function save() {
+    const b = barcode.trim();
+    const n = name.trim();
+    if (!b || !n) { toast.error("Código y nombre son obligatorios"); return; }
+    const sa = Number(stockA) || 0;
+    const sb = Number(stockB) || 0;
+    if (sa < 0 || sb < 0) { toast.error("Stock inválido"); return; }
+    setBusy(true);
+    try {
+      const { data: existing } = await supabase.from("products").select("barcode").eq("barcode", b).maybeSingle();
+      if (existing) { toast.error("Ya existe un producto con ese código"); return; }
+      const { error } = await supabase.from("products").insert({
+        barcode: b, product_name: n, uom: uom.trim() || null, stock_a: sa, stock_b: sb,
+      });
+      if (error) throw error;
+      toast.success("Producto agregado");
+      qc.invalidateQueries({ queryKey: ["products"] });
+      reset();
+      setOpen(false);
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <Button variant="outline" onClick={() => setOpen(true)}>
+        <Plus className="h-4 w-4" /> Agregar
+      </Button>
+      <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) reset(); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Agregar producto</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div>
+              <label className="text-xs font-medium text-muted-foreground">Código de barras *</label>
+              <Input value={barcode} onChange={(e) => setBarcode(e.target.value)} className="font-mono" autoFocus />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-muted-foreground">Nombre *</label>
+              <Input value={name} onChange={(e) => setName(e.target.value)} />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-muted-foreground">Unidad (UoM)</label>
+              <Input value={uom} onChange={(e) => setUom(e.target.value)} placeholder="PZA, KG…" />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">Stock {BRANCH_LABELS.A}</label>
+                <Input type="number" inputMode="decimal" step="any" min={0} value={stockA} onChange={(e) => setStockA(e.target.value)} />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">Stock {BRANCH_LABELS.B}</label>
+                <Input type="number" inputMode="decimal" step="any" min={0} value={stockB} onChange={(e) => setStockB(e.target.value)} />
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setOpen(false)} disabled={busy}>Cancelar</Button>
+            <Button onClick={save} disabled={busy}>
+              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />} Guardar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
 function Stat({ label, value, tone }: { label: string; value: number; tone: "positive" | "warning" | "muted" }) {
   const cls =
     tone === "positive"
