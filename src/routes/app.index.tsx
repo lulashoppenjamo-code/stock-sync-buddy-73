@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
-import { useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -8,10 +8,11 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Upload, Search, Loader2, FileSpreadsheet } from "lucide-react";
+import { Upload, Search, Loader2, FileSpreadsheet, Check } from "lucide-react";
 import { toast } from "sonner";
 import { parseCsv, buildDiff, applyImport, type ImportDiff } from "@/lib/csv-utils";
 import { getCollaborator } from "@/lib/session";
+import { BRANCH_LABELS } from "@/lib/branches";
 
 export const Route = createFileRoute("/app/")({
   component: ProductsPage,
@@ -64,6 +65,10 @@ function ProductsPage() {
         />
       </div>
 
+      <p className="text-xs text-muted-foreground">
+        Tip: tocá una cantidad para editarla. Se guarda al confirmar (✓ o Enter).
+      </p>
+
       <Card>
         <CardContent className="p-0">
           <div className="max-h-[70vh] overflow-auto">
@@ -73,8 +78,8 @@ function ProductsPage() {
                   <TableHead>Producto</TableHead>
                   <TableHead className="hidden md:table-cell">Código</TableHead>
                   <TableHead className="hidden md:table-cell">UoM</TableHead>
-                  <TableHead className="text-right">Stock Mina</TableHead>
-                  <TableHead className="text-right">Stock Morelos</TableHead>
+                  <TableHead className="text-right">Stock {BRANCH_LABELS.A}</TableHead>
+                  <TableHead className="text-right">Stock {BRANCH_LABELS.B}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -99,8 +104,12 @@ function ProductsPage() {
                       </TableCell>
                       <TableCell className="hidden font-mono text-xs md:table-cell">{p.barcode}</TableCell>
                       <TableCell className="hidden md:table-cell">{p.uom ?? "—"}</TableCell>
-                      <TableCell className="text-right tabular-nums">{p.stock_a}</TableCell>
-                      <TableCell className="text-right tabular-nums">{p.stock_b}</TableCell>
+                      <TableCell className="text-right">
+                        <StockCell barcode={p.barcode} field="stock_a" value={p.stock_a} />
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <StockCell barcode={p.barcode} field="stock_b" value={p.stock_b} />
+                      </TableCell>
                     </TableRow>
                   ))
                 )}
@@ -113,6 +122,103 @@ function ProductsPage() {
       <p className="text-xs text-muted-foreground">
         Total: {filtered.length} producto{filtered.length === 1 ? "" : "s"}
       </p>
+    </div>
+  );
+}
+
+function StockCell({
+  barcode,
+  field,
+  value,
+}: {
+  barcode: string;
+  field: "stock_a" | "stock_b";
+  value: number;
+}) {
+  const qc = useQueryClient();
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState(String(value));
+  const [saving, setSaving] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!editing) setVal(String(value));
+  }, [value, editing]);
+
+  useEffect(() => {
+    if (editing) inputRef.current?.select();
+  }, [editing]);
+
+  async function save() {
+    const n = Number(val);
+    if (!Number.isFinite(n) || n < 0) {
+      toast.error("Cantidad inválida");
+      return;
+    }
+    if (n === value) {
+      setEditing(false);
+      return;
+    }
+    setSaving(true);
+    try {
+      const update = field === "stock_a" ? { stock_a: n } : { stock_b: n };
+      const { error } = await supabase
+        .from("products")
+        .update(update)
+        .eq("barcode", barcode);
+      if (error) throw error;
+      toast.success("Stock actualizado");
+      setEditing(false);
+      qc.invalidateQueries({ queryKey: ["products"] });
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!editing) {
+    return (
+      <button
+        onClick={() => setEditing(true)}
+        className="rounded px-2 py-1 tabular-nums hover:bg-muted"
+        aria-label="Editar stock"
+      >
+        {value}
+      </button>
+    );
+  }
+
+  return (
+    <div className="flex items-center justify-end gap-1">
+      <Input
+        ref={inputRef}
+        type="number"
+        inputMode="decimal"
+        step="any"
+        min={0}
+        value={val}
+        onChange={(e) => setVal(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") save();
+          if (e.key === "Escape") setEditing(false);
+        }}
+        onBlur={save}
+        disabled={saving}
+        className="h-8 w-20 text-right"
+      />
+      <Button
+        type="button"
+        size="icon"
+        variant="ghost"
+        className="h-8 w-8"
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={save}
+        disabled={saving}
+        aria-label="Guardar"
+      >
+        {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+      </Button>
     </div>
   );
 }

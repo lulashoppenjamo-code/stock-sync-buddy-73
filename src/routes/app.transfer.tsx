@@ -30,6 +30,7 @@ type Branch = "A" | "B";
 function TransferPage() {
   const qc = useQueryClient();
   const [barcode, setBarcode] = useState("");
+  const [nameSearch, setNameSearch] = useState("");
   const [quantity, setQuantity] = useState("");
   const [origin, setOrigin] = useState<Branch>("A");
   const [destination, setDestination] = useState<Branch>("B");
@@ -68,8 +69,24 @@ function TransferPage() {
     },
   });
 
+  const { data: nameResults = [] } = useQuery({
+    queryKey: ["product-search-name", nameSearch],
+    enabled: nameSearch.trim().length >= 2,
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("products")
+        .select("barcode, product_name, uom, stock_a, stock_b")
+        .ilike("product_name", `%${nameSearch.trim()}%`)
+        .order("product_name")
+        .limit(15);
+      if (error) throw error;
+      return data as Array<{ barcode: string; product_name: string; uom: string | null; stock_a: number; stock_b: number }>;
+    },
+  });
+
   function reset() {
     setBarcode("");
+    setNameSearch("");
     setQuantity("");
     setSender("");
     setReceiver("");
@@ -189,6 +206,42 @@ function TransferPage() {
                     <span className="text-muted-foreground">Buscando…</span>
                   )}
                 </div>
+              )}
+            </div>
+
+            <div>
+              <Label htmlFor="name-search">O buscar por nombre</Label>
+              <Input
+                id="name-search"
+                value={nameSearch}
+                onChange={(e) => setNameSearch(e.target.value)}
+                placeholder="Escribí al menos 2 letras…"
+              />
+              {nameSearch.trim().length >= 2 && nameResults.length > 0 && (
+                <div className="mt-1 max-h-56 overflow-auto rounded-md border bg-card">
+                  {nameResults.map((r) => (
+                    <button
+                      key={r.barcode}
+                      type="button"
+                      onClick={() => {
+                        setBarcode(r.barcode);
+                        setNameSearch("");
+                      }}
+                      className="flex w-full items-center justify-between gap-2 border-b px-3 py-2 text-left text-sm last:border-b-0 hover:bg-muted"
+                    >
+                      <span className="min-w-0 truncate">
+                        <span className="font-medium">{r.product_name}</span>{" "}
+                        <span className="text-xs text-muted-foreground">{r.uom ?? ""}</span>
+                      </span>
+                      <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+                        {BRANCH_LABELS.A}:{r.stock_a} · {BRANCH_LABELS.B}:{r.stock_b}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {nameSearch.trim().length >= 2 && nameResults.length === 0 && (
+                <div className="mt-1 text-xs text-muted-foreground">Sin resultados</div>
               )}
             </div>
 
