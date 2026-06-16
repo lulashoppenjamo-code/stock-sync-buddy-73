@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Loader2, ScanLine, Save, Camera } from "lucide-react";
+import { Loader2, ScanLine, Save, Camera, Search } from "lucide-react";
 import { toast } from "sonner";
 import { getCollaborator } from "@/lib/session";
 import { enqueue, drainQueue } from "@/lib/offline-queue";
