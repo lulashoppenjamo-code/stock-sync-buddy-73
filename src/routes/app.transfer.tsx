@@ -69,8 +69,24 @@ function TransferPage() {
     },
   });
 
+  const { data: nameResults = [] } = useQuery({
+    queryKey: ["product-search-name", nameSearch],
+    enabled: nameSearch.trim().length >= 2,
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("products")
+        .select("barcode, product_name, uom, stock_a, stock_b")
+        .ilike("product_name", `%${nameSearch.trim()}%`)
+        .order("product_name")
+        .limit(15);
+      if (error) throw error;
+      return data as Array<{ barcode: string; product_name: string; uom: string | null; stock_a: number; stock_b: number }>;
+    },
+  });
+
   function reset() {
     setBarcode("");
+    setNameSearch("");
     setQuantity("");
     setSender("");
     setReceiver("");
