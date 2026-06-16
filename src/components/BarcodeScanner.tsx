@@ -20,19 +20,39 @@ export function BarcodeScanner({ open, onClose, onDetected }: Props) {
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
-    const reader = new BrowserMultiFormatReader();
+    const hints = new Map();
+    hints.set(DecodeHintType.TRY_HARDER, true);
+    hints.set(DecodeHintType.POSSIBLE_FORMATS, [
+      BarcodeFormat.EAN_13,
+      BarcodeFormat.EAN_8,
+      BarcodeFormat.UPC_A,
+      BarcodeFormat.UPC_E,
+      BarcodeFormat.CODE_128,
+      BarcodeFormat.CODE_39,
+      BarcodeFormat.ITF,
+      BarcodeFormat.QR_CODE,
+      BarcodeFormat.DATA_MATRIX,
+    ]);
+    const reader = new BrowserMultiFormatReader(hints, { delayBetweenScanAttempts: 80, delayBetweenScanSuccess: 500 });
     setError(null);
     setStarting(true);
 
     (async () => {
       try {
-        const devices = await BrowserMultiFormatReader.listVideoInputDevices();
-        // Prefer back camera
-        const back = devices.find((d) => /back|rear|environment|trasera/i.test(d.label));
-        const deviceId = back?.deviceId ?? devices[0]?.deviceId;
         if (!videoRef.current) return;
-        const controls = await reader.decodeFromVideoDevice(
-          deviceId ?? undefined,
+        // Request high-resolution back camera with continuous autofocus for better detection
+        const constraints: MediaStreamConstraints = {
+          audio: false,
+          video: {
+            facingMode: { ideal: "environment" },
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+            // @ts-expect-error - non-standard but widely supported
+            focusMode: "continuous",
+          },
+        };
+        const controls = await reader.decodeFromConstraints(
+          constraints,
           videoRef.current,
           (result, _err, ctrls) => {
             if (result && !cancelled) {
@@ -43,6 +63,17 @@ export function BarcodeScanner({ open, onClose, onDetected }: Props) {
           },
         );
         controlsRef.current = controls;
+        // Try to enable torch + continuous focus on the active track
+        try {
+          const stream = videoRef.current.srcObject as MediaStream | null;
+          const track = stream?.getVideoTracks?.()[0];
+          const caps = (track?.getCapabilities?.() ?? {}) as any;
+          const advanced: any[] = [];
+          if (caps.focusMode?.includes?.("continuous")) advanced.push({ focusMode: "continuous" });
+          if (advanced.length && track) await track.applyConstraints({ advanced });
+        } catch {
+          /* noop */
+        }
       } catch (e) {
         setError((e as Error).message || "No se pudo abrir la cámara");
       } finally {
