@@ -209,6 +209,42 @@ function TransferPage() {
               )}
             </div>
 
+            <div>
+              <Label htmlFor="name-search">O buscar por nombre</Label>
+              <Input
+                id="name-search"
+                value={nameSearch}
+                onChange={(e) => setNameSearch(e.target.value)}
+                placeholder="Escribí al menos 2 letras…"
+              />
+              {nameSearch.trim().length >= 2 && nameResults.length > 0 && (
+                <div className="mt-1 max-h-56 overflow-auto rounded-md border bg-card">
+                  {nameResults.map((r) => (
+                    <button
+                      key={r.barcode}
+                      type="button"
+                      onClick={() => {
+                        setBarcode(r.barcode);
+                        setNameSearch("");
+                      }}
+                      className="flex w-full items-center justify-between gap-2 border-b px-3 py-2 text-left text-sm last:border-b-0 hover:bg-muted"
+                    >
+                      <span className="min-w-0 truncate">
+                        <span className="font-medium">{r.product_name}</span>{" "}
+                        <span className="text-xs text-muted-foreground">{r.uom ?? ""}</span>
+                      </span>
+                      <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+                        {BRANCH_LABELS.A}:{r.stock_a} · {BRANCH_LABELS.B}:{r.stock_b}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {nameSearch.trim().length >= 2 && nameResults.length === 0 && (
+                <div className="mt-1 text-xs text-muted-foreground">Sin resultados</div>
+              )}
+            </div>
+
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <Label>Origen</Label>
