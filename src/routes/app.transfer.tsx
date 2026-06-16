@@ -30,6 +30,7 @@ type Branch = "A" | "B";
 function TransferPage() {
   const qc = useQueryClient();
   const [barcode, setBarcode] = useState("");
+  const [nameSearch, setNameSearch] = useState("");
   const [quantity, setQuantity] = useState("");
   const [origin, setOrigin] = useState<Branch>("A");
   const [destination, setDestination] = useState<Branch>("B");
