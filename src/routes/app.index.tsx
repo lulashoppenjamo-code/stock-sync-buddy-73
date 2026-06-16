@@ -8,7 +8,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Upload, Search, Loader2, FileSpreadsheet, Check } from "lucide-react";
+import { Upload, Search, Loader2, FileSpreadsheet, Check, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { parseCsv, buildDiff, applyImport, type ImportDiff } from "@/lib/csv-utils";
 import { getCollaborator } from "@/lib/session";
