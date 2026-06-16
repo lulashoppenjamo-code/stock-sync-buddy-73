@@ -52,6 +52,7 @@ function ProductsPage() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
         <h1 className="mr-auto text-xl font-semibold tracking-tight">Productos</h1>
+        <AddProductButton />
         <ImportCsvButton />
       </div>
 
