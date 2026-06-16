@@ -161,9 +161,10 @@ function StockCell({
     }
     setSaving(true);
     try {
+      const update = field === "stock_a" ? { stock_a: n } : { stock_b: n };
       const { error } = await supabase
         .from("products")
-        .update({ [field]: n })
+        .update(update)
         .eq("barcode", barcode);
       if (error) throw error;
       toast.success("Stock actualizado");
