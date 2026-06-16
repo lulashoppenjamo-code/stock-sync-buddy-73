@@ -326,3 +326,61 @@ function AuditPage() {
     </div>
   );
 }
+
+function ProductNameSearch({ onPick }: { onPick: (barcode: string) => void }) {
+  const [q, setQ] = useState("");
+  const { data, isFetching } = useQuery({
+    queryKey: ["audit-product-search", q],
+    queryFn: async () => {
+      const term = q.trim();
+      if (term.length < 2) return [];
+      const { data, error } = await supabase
+        .from("products")
+        .select("barcode, product_name, uom, stock_a, stock_b")
+        .ilike("product_name", `%${term}%`)
+        .order("product_name")
+        .limit(15);
+      if (error) throw error;
+      return data ?? [];
+    },
+  });
+
+  return (
+    <div>
+      <label className="text-xs font-medium text-muted-foreground">Buscar producto por nombre</label>
+      <div className="relative mt-1">
+        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+        <Input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Escribí al menos 2 letras…"
+          className="pl-9"
+        />
+      </div>
+      {q.trim().length >= 2 && (
+        <div className="mt-2 max-h-60 overflow-auto rounded-md border">
+          {isFetching && (
+            <div className="p-3 text-center text-xs text-muted-foreground">Buscando…</div>
+          )}
+          {!isFetching && (data ?? []).length === 0 && (
+            <div className="p-3 text-center text-xs text-muted-foreground">Sin resultados</div>
+          )}
+          {(data ?? []).map((p) => (
+            <button
+              key={p.barcode}
+              type="button"
+              onClick={() => { onPick(p.barcode); setQ(""); }}
+              className="block w-full border-b px-3 py-2 text-left text-sm last:border-b-0 hover:bg-muted"
+            >
+              <div className="font-medium">{p.product_name}</div>
+              <div className="font-mono text-xs text-muted-foreground">
+                {p.barcode} · {p.uom ?? "—"} · {BRANCH_LABELS.A}:{p.stock_a} · {BRANCH_LABELS.B}:{p.stock_b}
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
