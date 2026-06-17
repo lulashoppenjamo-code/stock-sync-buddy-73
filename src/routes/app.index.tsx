@@ -22,6 +22,7 @@ type Product = {
   barcode: string;
   product_name: string;
   uom: string | null;
+  category: string | null;
   stock_a: number;
   stock_b: number;
   updated_at: string;
@@ -29,20 +30,26 @@ type Product = {
 
 function ProductsPage() {
   const [search, setSearch] = useState("");
+  const [category, setCategory] = useState<string>("__all__");
   const { data, isLoading } = useQuery({
     queryKey: ["products"],
     queryFn: async () => {
       const { data, error } = await supabase
         .from("products")
-        .select("barcode, product_name, uom, stock_a, stock_b, updated_at")
+        .select("barcode, product_name, uom, category, stock_a, stock_b, updated_at")
         .order("product_name")
-        .limit(2000);
+        .limit(5000);
       if (error) throw error;
       return data as Product[];
     },
   });
 
+  const categories = Array.from(
+    new Set((data ?? []).map((p) => p.category).filter((c): c is string => !!c)),
+  ).sort();
+
   const filtered = (data ?? []).filter((p) => {
+    if (category !== "__all__" && (p.category ?? "") !== category) return false;
     if (!search.trim()) return true;
     const q = search.toLowerCase();
     return p.product_name.toLowerCase().includes(q) || p.barcode.includes(q);
@@ -52,18 +59,32 @@ function ProductsPage() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
         <h1 className="mr-auto text-xl font-semibold tracking-tight">Productos</h1>
-        <AddProductButton />
+        <AddProductButton categories={categories} />
         <ImportCsvButton />
       </div>
 
-      <div className="relative">
-        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-        <Input
-          placeholder="Buscar por nombre o código de barras…"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="pl-9"
-        />
+      <div className="flex flex-wrap gap-2">
+        <div className="relative min-w-0 flex-1">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            placeholder="Buscar por nombre o código…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="pl-9"
+          />
+        </div>
+        <select
+          value={category}
+          onChange={(e) => setCategory(e.target.value)}
+          className="h-10 rounded-md border bg-background px-2 text-sm"
+        >
+          <option value="__all__">Todas las categorías</option>
+          {categories.map((c) => (
+            <option key={c} value={c}>
+              {c}
+            </option>
+          ))}
+        </select>
       </div>
 
       <p className="text-xs text-muted-foreground">
@@ -101,7 +122,10 @@ function ProductsPage() {
                     <TableRow key={p.barcode}>
                       <TableCell>
                         <div className="font-medium">{p.product_name}</div>
-                        <div className="text-xs text-muted-foreground md:hidden">{p.barcode}</div>
+                        <div className="flex gap-2 text-xs text-muted-foreground">
+                          {p.category && <span className="rounded bg-muted px-1.5 py-0.5">{p.category}</span>}
+                          <span className="md:hidden">{p.barcode}</span>
+                        </div>
                       </TableCell>
                       <TableCell className="hidden font-mono text-xs md:table-cell">{p.barcode}</TableCell>
                       <TableCell className="hidden md:table-cell">{p.uom ?? "—"}</TableCell>
@@ -225,11 +249,15 @@ function StockCell({
 }
 
 function ImportCsvButton() {
+  const qc = useQueryClient();
   const inputRef = useRef<HTMLInputElement>(null);
   const [diff, setDiff] = useState<ImportDiff | null>(null);
   const [filename, setFilename] = useState<string | null>(null);
   const [updateName, setUpdateName] = useState(true);
   const [updateUom, setUpdateUom] = useState(true);
+  const [updateCategory, setUpdateCategory] = useState(true);
+  const [updateStockA, setUpdateStockA] = useState(false);
+  const [updateStockB, setUpdateStockB] = useState(false);
   const [busy, setBusy] = useState(false);
 
   async function onFile(file: File) {
@@ -237,7 +265,7 @@ function ImportCsvButton() {
     try {
       const rows = await parseCsv(file);
       if (!rows.length) {
-        toast.error("CSV vacío o columnas inválidas. Se requiere ProductName, Barcode y UoM.");
+        toast.error("CSV vacío. Columnas: ProductName, Barcode, UoM, Category, StockA, StockB");
         return;
       }
       const d = await buildDiff(rows);
@@ -255,10 +283,17 @@ function ImportCsvButton() {
     setBusy(true);
     try {
       const collab = getCollaborator();
-      const res = await applyImport(diff, { updateName, updateUom }, collab, filename);
+      const res = await applyImport(
+        diff,
+        { updateName, updateUom, updateCategory, updateStockA, updateStockB },
+        collab,
+        filename,
+      );
       toast.success(`Importación lista: +${res.inserted} nuevos, ${res.updated} actualizados`);
       setDiff(null);
       setFilename(null);
+      qc.invalidateQueries({ queryKey: ["products"] });
+      qc.invalidateQueries({ queryKey: ["categories"] });
     } catch (e) {
       toast.error((e as Error).message);
     } finally {
@@ -299,19 +334,25 @@ function ImportCsvButton() {
                 <Stat label="Idénticos" value={diff.identical} tone="muted" />
               </div>
               <p className="text-xs text-muted-foreground">
-                Los stocks <strong>nunca</strong> se modifican por importación. Solo se agregan productos nuevos
-                {diff.changedItems.length > 0 ? " y se pueden actualizar nombre/UoM en existentes." : "."}
+                Nuevos se crean con la categoría y stocks del CSV (sin stock → 0). Para existentes, elegí qué actualizar.
               </p>
               {diff.changedItems.length > 0 && (
                 <div className="space-y-2 rounded-md border p-3">
                   <div className="text-sm font-medium">Actualizar en existentes:</div>
                   <label className="flex items-center gap-2 text-sm">
-                    <Checkbox checked={updateName} onCheckedChange={(v) => setUpdateName(!!v)} />
-                    Nombre del producto
+                    <Checkbox checked={updateName} onCheckedChange={(v) => setUpdateName(!!v)} /> Nombre
                   </label>
                   <label className="flex items-center gap-2 text-sm">
-                    <Checkbox checked={updateUom} onCheckedChange={(v) => setUpdateUom(!!v)} />
-                    Unidad de medida (UoM)
+                    <Checkbox checked={updateUom} onCheckedChange={(v) => setUpdateUom(!!v)} /> Unidad (UoM)
+                  </label>
+                  <label className="flex items-center gap-2 text-sm">
+                    <Checkbox checked={updateCategory} onCheckedChange={(v) => setUpdateCategory(!!v)} /> Categoría
+                  </label>
+                  <label className="flex items-center gap-2 text-sm">
+                    <Checkbox checked={updateStockA} onCheckedChange={(v) => setUpdateStockA(!!v)} /> Stock {BRANCH_LABELS.A} (sobrescribe)
+                  </label>
+                  <label className="flex items-center gap-2 text-sm">
+                    <Checkbox checked={updateStockB} onCheckedChange={(v) => setUpdateStockB(!!v)} /> Stock {BRANCH_LABELS.B} (sobrescribe)
                   </label>
                 </div>
               )}
@@ -322,6 +363,7 @@ function ImportCsvButton() {
                     {diff.newItems.slice(0, 10).map((r) => (
                       <li key={r.barcode} className="font-mono">
                         {r.barcode} — {r.product_name}
+                        {r.category ? ` · ${r.category}` : ""}
                       </li>
                     ))}
                   </ul>
@@ -343,18 +385,19 @@ function ImportCsvButton() {
   );
 }
 
-function AddProductButton() {
+function AddProductButton({ categories }: { categories: string[] }) {
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
   const [barcode, setBarcode] = useState("");
   const [name, setName] = useState("");
   const [uom, setUom] = useState("");
+  const [category, setCategory] = useState("");
   const [stockA, setStockA] = useState("0");
   const [stockB, setStockB] = useState("0");
   const [busy, setBusy] = useState(false);
 
   function reset() {
-    setBarcode(""); setName(""); setUom(""); setStockA("0"); setStockB("0");
+    setBarcode(""); setName(""); setUom(""); setCategory(""); setStockA("0"); setStockB("0");
   }
 
   async function save() {
@@ -369,7 +412,7 @@ function AddProductButton() {
       const { data: existing } = await supabase.from("products").select("barcode").eq("barcode", b).maybeSingle();
       if (existing) { toast.error("Ya existe un producto con ese código"); return; }
       const { error } = await supabase.from("products").insert({
-        barcode: b, product_name: n, uom: uom.trim() || null, stock_a: sa, stock_b: sb,
+        barcode: b, product_name: n, uom: uom.trim() || null, category: category.trim() || null, stock_a: sa, stock_b: sb,
       });
       if (error) throw error;
       toast.success("Producto agregado");
@@ -405,6 +448,18 @@ function AddProductButton() {
             <div>
               <label className="text-xs font-medium text-muted-foreground">Unidad (UoM)</label>
               <Input value={uom} onChange={(e) => setUom(e.target.value)} placeholder="PZA, KG…" />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-muted-foreground">Categoría</label>
+              <Input
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
+                placeholder="Ej: Limpieza, Bebidas…"
+                list="add-product-categories"
+              />
+              <datalist id="add-product-categories">
+                {categories.map((c) => <option key={c} value={c} />)}
+              </datalist>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>

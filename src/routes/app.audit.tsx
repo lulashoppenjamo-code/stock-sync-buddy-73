@@ -188,6 +188,21 @@ function AuditPage() {
             }}
           />
 
+          <CategoryAudit
+            branch={branch}
+            onPick={async (barcode) => {
+              setCode(barcode);
+              setBusy(true);
+              const p = await lookup(barcode);
+              setBusy(false);
+              if (p) {
+                setCurrent(p);
+                setPhysical("");
+                setTimeout(() => physicalRef.current?.focus(), 10);
+              }
+            }}
+          />
+
 
           {current && (
             <form onSubmit={save} className="rounded-lg border bg-muted/30 p-3 space-y-3">
@@ -383,4 +398,117 @@ function ProductNameSearch({ onPick }: { onPick: (barcode: string) => void }) {
     </div>
   );
 }
+
+function CategoryAudit({ branch, onPick }: { branch: Branch; onPick: (barcode: string) => void }) {
+  const [category, setCategory] = useState<string>("");
+  const [hideAudited, setHideAudited] = useState(true);
+
+  const { data: categories = [] } = useQuery({
+    queryKey: ["categories"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("products")
+        .select("category")
+        .not("category", "is", null)
+        .order("category");
+      if (error) throw error;
+      const set = new Set<string>();
+      for (const r of data ?? []) if (r.category) set.add(r.category);
+      return Array.from(set).sort();
+    },
+  });
+
+  const { data: products = [] } = useQuery({
+    queryKey: ["category-products", category],
+    enabled: !!category,
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("products")
+        .select("barcode, product_name, stock_a, stock_b")
+        .eq("category", category)
+        .order("product_name");
+      if (error) throw error;
+      return data as Array<{ barcode: string; product_name: string; stock_a: number; stock_b: number }>;
+    },
+  });
+
+  // today's audited barcodes for this branch+category, to mark progress
+  const { data: auditedToday = new Set<string>() } = useQuery({
+    queryKey: ["audited-today", branch, category],
+    enabled: !!category,
+    queryFn: async () => {
+      const since = new Date();
+      since.setHours(0, 0, 0, 0);
+      const { data, error } = await supabase
+        .from("audits")
+        .select("barcode")
+        .eq("branch", branch)
+        .gte("created_at", since.toISOString());
+      if (error) throw error;
+      return new Set((data ?? []).map((a) => a.barcode));
+    },
+  });
+
+  const visible = products.filter((p) => (hideAudited ? !auditedToday.has(p.barcode) : true));
+  const done = products.filter((p) => auditedToday.has(p.barcode)).length;
+
+  return (
+    <div className="rounded-md border p-3">
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <span className="text-xs font-medium text-muted-foreground">Auditar por categoría</span>
+        <select
+          value={category}
+          onChange={(e) => setCategory(e.target.value)}
+          className="h-9 rounded-md border bg-background px-2 text-sm"
+        >
+          <option value="">Elegir categoría…</option>
+          {categories.map((c) => (
+            <option key={c} value={c}>{c}</option>
+          ))}
+        </select>
+        {category && (
+          <label className="flex items-center gap-1 text-xs text-muted-foreground">
+            <input type="checkbox" checked={hideAudited} onChange={(e) => setHideAudited(e.target.checked)} />
+            Ocultar auditados hoy
+          </label>
+        )}
+        {category && (
+          <span className="ml-auto text-xs text-muted-foreground">
+            {done}/{products.length} hechos
+          </span>
+        )}
+      </div>
+      {category && (
+        <div className="max-h-72 overflow-auto rounded-md border">
+          {visible.length === 0 ? (
+            <div className="p-3 text-center text-xs text-muted-foreground">
+              {products.length === 0 ? "Sin productos en esta categoría" : "Todos auditados hoy ✓"}
+            </div>
+          ) : (
+            visible.map((p) => {
+              const sys = branch === "A" ? p.stock_a : p.stock_b;
+              return (
+                <button
+                  key={p.barcode}
+                  type="button"
+                  onClick={() => onPick(p.barcode)}
+                  className="flex w-full items-center justify-between gap-2 border-b px-3 py-2 text-left text-sm last:border-b-0 hover:bg-muted"
+                >
+                  <span className="min-w-0 truncate">
+                    <span className="font-medium">{p.product_name}</span>{" "}
+                    <span className="font-mono text-xs text-muted-foreground">{p.barcode}</span>
+                  </span>
+                  <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+                    {BRANCH_LABELS[branch]}: {sys}
+                  </span>
+                </button>
+              );
+            })
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 
