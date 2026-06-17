@@ -22,6 +22,7 @@ type Product = {
   barcode: string;
   product_name: string;
   uom: string | null;
+  category: string | null;
   stock_a: number;
   stock_b: number;
   updated_at: string;
@@ -29,20 +30,26 @@ type Product = {
 
 function ProductsPage() {
   const [search, setSearch] = useState("");
+  const [category, setCategory] = useState<string>("__all__");
   const { data, isLoading } = useQuery({
     queryKey: ["products"],
     queryFn: async () => {
       const { data, error } = await supabase
         .from("products")
-        .select("barcode, product_name, uom, stock_a, stock_b, updated_at")
+        .select("barcode, product_name, uom, category, stock_a, stock_b, updated_at")
         .order("product_name")
-        .limit(2000);
+        .limit(5000);
       if (error) throw error;
       return data as Product[];
     },
   });
 
+  const categories = Array.from(
+    new Set((data ?? []).map((p) => p.category).filter((c): c is string => !!c)),
+  ).sort();
+
   const filtered = (data ?? []).filter((p) => {
+    if (category !== "__all__" && (p.category ?? "") !== category) return false;
     if (!search.trim()) return true;
     const q = search.toLowerCase();
     return p.product_name.toLowerCase().includes(q) || p.barcode.includes(q);
@@ -52,18 +59,32 @@ function ProductsPage() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
         <h1 className="mr-auto text-xl font-semibold tracking-tight">Productos</h1>
-        <AddProductButton />
+        <AddProductButton categories={categories} />
         <ImportCsvButton />
       </div>
 
-      <div className="relative">
-        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-        <Input
-          placeholder="Buscar por nombre o código de barras…"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="pl-9"
-        />
+      <div className="flex flex-wrap gap-2">
+        <div className="relative min-w-0 flex-1">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            placeholder="Buscar por nombre o código…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="pl-9"
+          />
+        </div>
+        <select
+          value={category}
+          onChange={(e) => setCategory(e.target.value)}
+          className="h-10 rounded-md border bg-background px-2 text-sm"
+        >
+          <option value="__all__">Todas las categorías</option>
+          {categories.map((c) => (
+            <option key={c} value={c}>
+              {c}
+            </option>
+          ))}
+        </select>
       </div>
 
       <p className="text-xs text-muted-foreground">
