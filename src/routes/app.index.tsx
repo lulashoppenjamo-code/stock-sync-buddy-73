@@ -225,11 +225,15 @@ function StockCell({
 }
 
 function ImportCsvButton() {
+  const qc = useQueryClient();
   const inputRef = useRef<HTMLInputElement>(null);
   const [diff, setDiff] = useState<ImportDiff | null>(null);
   const [filename, setFilename] = useState<string | null>(null);
   const [updateName, setUpdateName] = useState(true);
   const [updateUom, setUpdateUom] = useState(true);
+  const [updateCategory, setUpdateCategory] = useState(true);
+  const [updateStockA, setUpdateStockA] = useState(false);
+  const [updateStockB, setUpdateStockB] = useState(false);
   const [busy, setBusy] = useState(false);
 
   async function onFile(file: File) {
@@ -237,7 +241,7 @@ function ImportCsvButton() {
     try {
       const rows = await parseCsv(file);
       if (!rows.length) {
-        toast.error("CSV vacío o columnas inválidas. Se requiere ProductName, Barcode y UoM.");
+        toast.error("CSV vacío. Columnas: ProductName, Barcode, UoM, Category, StockA, StockB");
         return;
       }
       const d = await buildDiff(rows);
@@ -255,10 +259,17 @@ function ImportCsvButton() {
     setBusy(true);
     try {
       const collab = getCollaborator();
-      const res = await applyImport(diff, { updateName, updateUom }, collab, filename);
+      const res = await applyImport(
+        diff,
+        { updateName, updateUom, updateCategory, updateStockA, updateStockB },
+        collab,
+        filename,
+      );
       toast.success(`Importación lista: +${res.inserted} nuevos, ${res.updated} actualizados`);
       setDiff(null);
       setFilename(null);
+      qc.invalidateQueries({ queryKey: ["products"] });
+      qc.invalidateQueries({ queryKey: ["categories"] });
     } catch (e) {
       toast.error((e as Error).message);
     } finally {
@@ -299,19 +310,25 @@ function ImportCsvButton() {
                 <Stat label="Idénticos" value={diff.identical} tone="muted" />
               </div>
               <p className="text-xs text-muted-foreground">
-                Los stocks <strong>nunca</strong> se modifican por importación. Solo se agregan productos nuevos
-                {diff.changedItems.length > 0 ? " y se pueden actualizar nombre/UoM en existentes." : "."}
+                Nuevos se crean con la categoría y stocks del CSV (sin stock → 0). Para existentes, elegí qué actualizar.
               </p>
               {diff.changedItems.length > 0 && (
                 <div className="space-y-2 rounded-md border p-3">
                   <div className="text-sm font-medium">Actualizar en existentes:</div>
                   <label className="flex items-center gap-2 text-sm">
-                    <Checkbox checked={updateName} onCheckedChange={(v) => setUpdateName(!!v)} />
-                    Nombre del producto
+                    <Checkbox checked={updateName} onCheckedChange={(v) => setUpdateName(!!v)} /> Nombre
                   </label>
                   <label className="flex items-center gap-2 text-sm">
-                    <Checkbox checked={updateUom} onCheckedChange={(v) => setUpdateUom(!!v)} />
-                    Unidad de medida (UoM)
+                    <Checkbox checked={updateUom} onCheckedChange={(v) => setUpdateUom(!!v)} /> Unidad (UoM)
+                  </label>
+                  <label className="flex items-center gap-2 text-sm">
+                    <Checkbox checked={updateCategory} onCheckedChange={(v) => setUpdateCategory(!!v)} /> Categoría
+                  </label>
+                  <label className="flex items-center gap-2 text-sm">
+                    <Checkbox checked={updateStockA} onCheckedChange={(v) => setUpdateStockA(!!v)} /> Stock {BRANCH_LABELS.A} (sobrescribe)
+                  </label>
+                  <label className="flex items-center gap-2 text-sm">
+                    <Checkbox checked={updateStockB} onCheckedChange={(v) => setUpdateStockB(!!v)} /> Stock {BRANCH_LABELS.B} (sobrescribe)
                   </label>
                 </div>
               )}
@@ -322,6 +339,7 @@ function ImportCsvButton() {
                     {diff.newItems.slice(0, 10).map((r) => (
                       <li key={r.barcode} className="font-mono">
                         {r.barcode} — {r.product_name}
+                        {r.category ? ` · ${r.category}` : ""}
                       </li>
                     ))}
                   </ul>
