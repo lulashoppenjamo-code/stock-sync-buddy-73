@@ -382,18 +382,19 @@ function ImportCsvButton() {
   );
 }
 
-function AddProductButton() {
+function AddProductButton({ categories }: { categories: string[] }) {
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
   const [barcode, setBarcode] = useState("");
   const [name, setName] = useState("");
   const [uom, setUom] = useState("");
+  const [category, setCategory] = useState("");
   const [stockA, setStockA] = useState("0");
   const [stockB, setStockB] = useState("0");
   const [busy, setBusy] = useState(false);
 
   function reset() {
-    setBarcode(""); setName(""); setUom(""); setStockA("0"); setStockB("0");
+    setBarcode(""); setName(""); setUom(""); setCategory(""); setStockA("0"); setStockB("0");
   }
 
   async function save() {
@@ -408,7 +409,7 @@ function AddProductButton() {
       const { data: existing } = await supabase.from("products").select("barcode").eq("barcode", b).maybeSingle();
       if (existing) { toast.error("Ya existe un producto con ese código"); return; }
       const { error } = await supabase.from("products").insert({
-        barcode: b, product_name: n, uom: uom.trim() || null, stock_a: sa, stock_b: sb,
+        barcode: b, product_name: n, uom: uom.trim() || null, category: category.trim() || null, stock_a: sa, stock_b: sb,
       });
       if (error) throw error;
       toast.success("Producto agregado");
