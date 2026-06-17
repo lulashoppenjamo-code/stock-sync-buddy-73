@@ -149,7 +149,13 @@ export async function applyImport(
   }
   let updated = 0;
   for (const c of diff.changedItems) {
-    const patch: Record<string, unknown> = {};
+    const patch: {
+      product_name?: string;
+      uom?: string | null;
+      category?: string | null;
+      stock_a?: number;
+      stock_b?: number;
+    } = {};
     if (opts.updateName && c.nameChanged) patch.product_name = c.next.product_name;
     if (opts.updateUom && c.uomChanged) patch.uom = c.next.uom;
     if (opts.updateCategory && c.categoryChanged) patch.category = c.next.category;
