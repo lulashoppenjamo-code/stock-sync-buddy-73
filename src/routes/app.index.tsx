@@ -446,6 +446,18 @@ function AddProductButton({ categories }: { categories: string[] }) {
               <label className="text-xs font-medium text-muted-foreground">Unidad (UoM)</label>
               <Input value={uom} onChange={(e) => setUom(e.target.value)} placeholder="PZA, KG…" />
             </div>
+            <div>
+              <label className="text-xs font-medium text-muted-foreground">Categoría</label>
+              <Input
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
+                placeholder="Ej: Limpieza, Bebidas…"
+                list="add-product-categories"
+              />
+              <datalist id="add-product-categories">
+                {categories.map((c) => <option key={c} value={c} />)}
+              </datalist>
+            </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="text-xs font-medium text-muted-foreground">Stock {BRANCH_LABELS.A}</label>
