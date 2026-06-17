@@ -188,6 +188,21 @@ function AuditPage() {
             }}
           />
 
+          <CategoryAudit
+            branch={branch}
+            onPick={async (barcode) => {
+              setCode(barcode);
+              setBusy(true);
+              const p = await lookup(barcode);
+              setBusy(false);
+              if (p) {
+                setCurrent(p);
+                setPhysical("");
+                setTimeout(() => physicalRef.current?.focus(), 10);
+              }
+            }}
+          />
+
 
           {current && (
             <form onSubmit={save} className="rounded-lg border bg-muted/30 p-3 space-y-3">
