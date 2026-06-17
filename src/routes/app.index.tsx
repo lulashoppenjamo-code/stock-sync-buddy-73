@@ -122,7 +122,10 @@ function ProductsPage() {
                     <TableRow key={p.barcode}>
                       <TableCell>
                         <div className="font-medium">{p.product_name}</div>
-                        <div className="text-xs text-muted-foreground md:hidden">{p.barcode}</div>
+                        <div className="flex gap-2 text-xs text-muted-foreground">
+                          {p.category && <span className="rounded bg-muted px-1.5 py-0.5">{p.category}</span>}
+                          <span className="md:hidden">{p.barcode}</span>
+                        </div>
                       </TableCell>
                       <TableCell className="hidden font-mono text-xs md:table-cell">{p.barcode}</TableCell>
                       <TableCell className="hidden md:table-cell">{p.uom ?? "—"}</TableCell>
