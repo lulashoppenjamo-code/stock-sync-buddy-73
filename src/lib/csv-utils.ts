@@ -1,37 +1,68 @@
 import Papa from "papaparse";
 import { supabase } from "@/integrations/supabase/client";
 
-export type CsvRow = { ProductName: string; Barcode: string; UoM?: string };
-export type ParsedRow = { product_name: string; barcode: string; uom: string | null };
+export type ParsedRow = {
+  product_name: string;
+  barcode: string;
+  uom: string | null;
+  category: string | null;
+  stock_a: number | null;
+  stock_b: number | null;
+};
 
 export type ImportDiff = {
   newItems: ParsedRow[];
   changedItems: Array<{
     barcode: string;
-    current: { product_name: string; uom: string | null };
+    current: {
+      product_name: string;
+      uom: string | null;
+      category: string | null;
+      stock_a: number;
+      stock_b: number;
+    };
     next: ParsedRow;
     nameChanged: boolean;
     uomChanged: boolean;
+    categoryChanged: boolean;
+    stockAChanged: boolean;
+    stockBChanged: boolean;
   }>;
   identical: number;
   invalid: number;
 };
 
+function pick(r: Record<string, unknown>, keys: string[]): string {
+  for (const k of keys) {
+    const v = r[k];
+    if (v != null && String(v).trim() !== "") return String(v).trim();
+  }
+  return "";
+}
+
+function parseNum(s: string): number | null {
+  if (!s) return null;
+  const n = Number(s.replace(",", "."));
+  return Number.isFinite(n) ? n : null;
+}
+
 export function parseCsv(file: File): Promise<ParsedRow[]> {
   return new Promise((resolve, reject) => {
-    Papa.parse<CsvRow>(file, {
+    Papa.parse<Record<string, unknown>>(file, {
       header: true,
       skipEmptyLines: true,
       complete: (res) => {
         const rows: ParsedRow[] = [];
         for (const r of res.data) {
-          const barcode = String((r as any).Barcode ?? "").trim();
-          const product_name = String((r as any).ProductName ?? "").trim();
+          const barcode = pick(r, ["Barcode", "barcode", "Codigo", "Código", "CodigoBarras"]);
+          const product_name = pick(r, ["ProductName", "Product", "Producto", "Nombre", "product_name"]);
           if (!barcode || !product_name) continue;
-          const uom = String((r as any).UoM ?? "").trim() || null;
-          rows.push({ barcode, product_name, uom });
+          const uom = pick(r, ["UoM", "Uom", "Unidad", "Unit"]) || null;
+          const category = pick(r, ["Category", "Categoria", "Categoría", "category"]) || null;
+          const stock_a = parseNum(pick(r, ["StockA", "Stock_A", "Stock A", "Mina", "StockMina", "Stock Mina"]));
+          const stock_b = parseNum(pick(r, ["StockB", "Stock_B", "Stock B", "Morelos", "StockMorelos", "Stock Morelos"]));
+          rows.push({ barcode, product_name, uom, category, stock_a, stock_b });
         }
-        // Dedupe by barcode within the file (keep last occurrence)
         const map = new Map<string, ParsedRow>();
         for (const r of rows) map.set(r.barcode, r);
         resolve(Array.from(map.values()));
@@ -43,16 +74,25 @@ export function parseCsv(file: File): Promise<ParsedRow[]> {
 
 export async function buildDiff(rows: ParsedRow[]): Promise<ImportDiff> {
   const barcodes = rows.map((r) => r.barcode);
-  const existing = new Map<string, { product_name: string; uom: string | null }>();
-  // Chunk in 500
+  const existing = new Map<
+    string,
+    { product_name: string; uom: string | null; category: string | null; stock_a: number; stock_b: number }
+  >();
   for (let i = 0; i < barcodes.length; i += 500) {
     const chunk = barcodes.slice(i, i + 500);
     const { data, error } = await supabase
       .from("products")
-      .select("barcode, product_name, uom")
+      .select("barcode, product_name, uom, category, stock_a, stock_b")
       .in("barcode", chunk);
     if (error) throw error;
-    for (const p of data ?? []) existing.set(p.barcode, { product_name: p.product_name, uom: p.uom });
+    for (const p of data ?? [])
+      existing.set(p.barcode, {
+        product_name: p.product_name,
+        uom: p.uom,
+        category: p.category,
+        stock_a: Number(p.stock_a),
+        stock_b: Number(p.stock_b),
+      });
   }
   const diff: ImportDiff = { newItems: [], changedItems: [], identical: 0, invalid: 0 };
   for (const r of rows) {
@@ -62,8 +102,20 @@ export async function buildDiff(rows: ParsedRow[]): Promise<ImportDiff> {
     } else {
       const nameChanged = cur.product_name !== r.product_name;
       const uomChanged = (cur.uom ?? "") !== (r.uom ?? "");
-      if (nameChanged || uomChanged) {
-        diff.changedItems.push({ barcode: r.barcode, current: cur, next: r, nameChanged, uomChanged });
+      const categoryChanged = (cur.category ?? "") !== (r.category ?? "");
+      const stockAChanged = r.stock_a != null && Number(cur.stock_a) !== r.stock_a;
+      const stockBChanged = r.stock_b != null && Number(cur.stock_b) !== r.stock_b;
+      if (nameChanged || uomChanged || categoryChanged || stockAChanged || stockBChanged) {
+        diff.changedItems.push({
+          barcode: r.barcode,
+          current: cur,
+          next: r,
+          nameChanged,
+          uomChanged,
+          categoryChanged,
+          stockAChanged,
+          stockBChanged,
+        });
       } else {
         diff.identical++;
       }
@@ -74,36 +126,39 @@ export async function buildDiff(rows: ParsedRow[]): Promise<ImportDiff> {
 
 export async function applyImport(
   diff: ImportDiff,
-  opts: { updateName: boolean; updateUom: boolean },
+  opts: { updateName: boolean; updateUom: boolean; updateCategory: boolean; updateStockA: boolean; updateStockB: boolean },
   collab: { id: string; name: string } | null,
   filename: string | null,
 ) {
-  // Insert new items (stocks default to 0). Use upsert + ignoreDuplicates to be safe
-  // against race conditions / partial previous imports that left some rows already inserted.
   if (diff.newItems.length) {
     for (let i = 0; i < diff.newItems.length; i += 500) {
       const chunk = diff.newItems.slice(i, i + 500);
-      const { error } = await supabase
-        .from("products")
-        .upsert(
-          chunk.map((r) => ({ barcode: r.barcode, product_name: r.product_name, uom: r.uom })),
-          { onConflict: "barcode", ignoreDuplicates: true },
-        );
+      const { error } = await supabase.from("products").upsert(
+        chunk.map((r) => ({
+          barcode: r.barcode,
+          product_name: r.product_name,
+          uom: r.uom,
+          category: r.category,
+          stock_a: r.stock_a ?? 0,
+          stock_b: r.stock_b ?? 0,
+        })),
+        { onConflict: "barcode", ignoreDuplicates: true },
+      );
       if (error) throw error;
     }
   }
-  // Update changed items per chosen fields
   let updated = 0;
-  if (opts.updateName || opts.updateUom) {
-    for (const c of diff.changedItems) {
-      const patch: { product_name?: string; uom?: string | null } = {};
-      if (opts.updateName && c.nameChanged) patch.product_name = c.next.product_name;
-      if (opts.updateUom && c.uomChanged) patch.uom = c.next.uom;
-      if (Object.keys(patch).length === 0) continue;
-      const { error } = await supabase.from("products").update(patch).eq("barcode", c.barcode);
-      if (error) throw error;
-      updated++;
-    }
+  for (const c of diff.changedItems) {
+    const patch: Record<string, unknown> = {};
+    if (opts.updateName && c.nameChanged) patch.product_name = c.next.product_name;
+    if (opts.updateUom && c.uomChanged) patch.uom = c.next.uom;
+    if (opts.updateCategory && c.categoryChanged) patch.category = c.next.category;
+    if (opts.updateStockA && c.stockAChanged && c.next.stock_a != null) patch.stock_a = c.next.stock_a;
+    if (opts.updateStockB && c.stockBChanged && c.next.stock_b != null) patch.stock_b = c.next.stock_b;
+    if (Object.keys(patch).length === 0) continue;
+    const { error } = await supabase.from("products").update(patch).eq("barcode", c.barcode);
+    if (error) throw error;
+    updated++;
   }
   await supabase.from("csv_imports").insert({
     filename,
