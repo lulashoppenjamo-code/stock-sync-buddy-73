@@ -93,10 +93,24 @@ export function BarcodeScanner({ open, onClose, onDetected, continuous = false }
 
             if (count >= CONFIRM_FRAMES && lastDetectedRef.current !== text) {
               lastDetectedRef.current = text;
-              ctrls.stop();
-              handleDetected(text);
+              if (continuous) {
+                // Cooldown so a still barcode does not fire repeatedly
+                const now = Date.now();
+                if (now - lastEmitAtRef.current < 700) return;
+                lastEmitAtRef.current = now;
+                handleDetected(text);
+                // Reset for the next product
+                setTimeout(() => {
+                  map.clear();
+                  lastDetectedRef.current = null;
+                }, 400);
+              } else {
+                ctrls.stop();
+                handleDetected(text);
+              }
             }
           }
+
         );
         controlsRef.current = controls;
         try {
