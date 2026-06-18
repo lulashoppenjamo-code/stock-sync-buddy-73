@@ -25,23 +25,29 @@ type Props = {
   open: boolean;
   onClose: () => void;
   onDetected: (code: string) => void;
+  /** If true, keep scanning after each detection (useful for "pistola" mode at transfers). */
+  continuous?: boolean;
 };
 
-export function BarcodeScanner({ open, onClose, onDetected }: Props) {
+export function BarcodeScanner({ open, onClose, onDetected, continuous = false }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const controlsRef = useRef<{ stop: () => void } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
+  const [lastCode, setLastCode] = useState<string | null>(null);
   const detectionsRef = useRef<Map<string, number>>(new Map());
   const lastDetectedRef = useRef<string | null>(null);
+  const lastEmitAtRef = useRef<number>(0);
 
   const handleDetected = useCallback(
     (code: string) => {
       onDetected(code);
-      onClose();
+      setLastCode(code);
+      if (!continuous) onClose();
     },
-    [onDetected, onClose]
+    [onDetected, onClose, continuous]
   );
+
 
   useEffect(() => {
     if (!open) return;
