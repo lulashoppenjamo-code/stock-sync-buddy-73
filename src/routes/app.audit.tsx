@@ -5,26 +5,32 @@ import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Loader2, ScanLine, Save, Camera, Search } from "lucide-react";
 import { toast } from "sonner";
 import { getCollaborator } from "@/lib/session";
-import { enqueue, drainQueue } from "@/lib/offline-queue";
-import { BRANCH_LABELS, branchLabel } from "@/lib/branches";
 import { BarcodeScanner } from "@/components/BarcodeScanner";
 
 export const Route = createFileRoute("/app/audit")({
   component: AuditPage,
 });
 
-type Branch = "A" | "B";
+type Product = {
+  barcode: string;
+  product_name: string;
+  category: string | null;
+  stock_a: number;
+  stock_b: number;
+};
 
-type Product = { barcode: string; product_name: string; stock_a: number; stock_b: number };
+function startOfTodayIso() {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d.toISOString();
+}
 
 function AuditPage() {
   const qc = useQueryClient();
-  const [branch, setBranch] = useState<Branch>("A");
   const [code, setCode] = useState("");
   const [physical, setPhysical] = useState("");
   const [current, setCurrent] = useState<Product | null>(null);
@@ -35,14 +41,14 @@ function AuditPage() {
 
   useEffect(() => {
     scanRef.current?.focus();
-  }, [branch]);
+  }, []);
 
   const { data: history } = useQuery({
     queryKey: ["audits"],
     queryFn: async () => {
       const { data, error } = await supabase
         .from("audits")
-        .select("id, branch, barcode, product_name, system_stock, physical_count, difference, collaborator_name, created_at")
+        .select("id, barcode, product_name, system_stock, physical_count, difference, collaborator_name, created_at")
         .order("created_at", { ascending: false })
         .limit(50);
       if (error) throw error;
@@ -50,10 +56,26 @@ function AuditPage() {
     },
   });
 
+  // For the current product: all of today's audits to show breakdown + sum.
+  const { data: todayForProduct } = useQuery({
+    queryKey: ["audits-today-product", current?.barcode],
+    enabled: !!current,
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("audits")
+        .select("id, physical_count, collaborator_name, created_at")
+        .eq("barcode", current!.barcode)
+        .gte("created_at", startOfTodayIso())
+        .order("created_at", { ascending: true });
+      if (error) throw error;
+      return data as Array<{ id: string; physical_count: number; collaborator_name: string | null; created_at: string }>;
+    },
+  });
+
   async function lookup(barcode: string) {
     const { data, error } = await supabase
       .from("products")
-      .select("barcode, product_name, stock_a, stock_b")
+      .select("barcode, product_name, category, stock_a, stock_b")
       .eq("barcode", barcode)
       .maybeSingle();
     if (error) {
@@ -92,37 +114,40 @@ function AuditPage() {
       toast.error("Conteo físico inválido");
       return;
     }
-    const sysStock = branch === "A" ? current.stock_a : current.stock_b;
-    const diff = phys - sysStock;
+    const totalStock = Number(current.stock_a) + Number(current.stock_b);
+    const sumToday = (todayForProduct ?? []).reduce((s, r) => s + Number(r.physical_count), 0);
+    const diff = sumToday + phys - totalStock;
     const collab = getCollaborator();
-    const client_uid = `audit-${crypto.randomUUID()}`;
+    if (!collab) {
+      toast.error("Sesión expirada — iniciá sesión otra vez");
+      return;
+    }
     const payload = {
-      branch,
+      branch: null,
       barcode: current.barcode,
       product_name: current.product_name,
-      system_stock: sysStock,
+      system_stock: totalStock,
       physical_count: phys,
       difference: diff,
-      collaborator_id: collab?.id ?? null,
-      collaborator_name: collab?.name ?? null,
-      client_uid,
+      collaborator_id: collab.id,
+      collaborator_name: collab.name,
+      client_uid: `audit-${crypto.randomUUID()}`,
     };
     setBusy(true);
     try {
-      if (navigator.onLine) {
-        const { error } = await supabase.from("audits").insert(payload);
-        if (error) throw error;
-      } else {
-        await enqueue({ kind: "audit", uid: client_uid, createdAt: Date.now(), payload });
-        toast.info("Sin conexión: se guardará cuando vuelva la red");
-      }
+      const { error } = await supabase.from("audits").insert(payload);
+      if (error) throw error;
       qc.invalidateQueries({ queryKey: ["audits"] });
-      toast.success(`Diferencia: ${diff > 0 ? "+" : ""}${diff}`);
+      qc.invalidateQueries({ queryKey: ["audits-today-product", current.barcode] });
+      const finalSum = sumToday + phys;
+      const sign = diff > 0 ? "+" : "";
+      toast.success(
+        `Guardado. Suma de hoy: ${finalSum} vs sistema: ${totalStock} (${sign}${diff})`,
+      );
       setCurrent(null);
       setCode("");
       setPhysical("");
       scanRef.current?.focus();
-      drainQueue();
     } catch (err) {
       toast.error((err as Error).message);
     } finally {
@@ -130,23 +155,20 @@ function AuditPage() {
     }
   }
 
-  const sysStock = current ? (branch === "A" ? current.stock_a : current.stock_b) : 0;
-  const diffPreview = current && physical !== "" ? Number(physical) - sysStock : null;
+  const totalStock = current ? Number(current.stock_a) + Number(current.stock_b) : 0;
+  const sumToday = (todayForProduct ?? []).reduce((s, r) => s + Number(r.physical_count), 0);
+  const previewSum = current && physical !== "" ? sumToday + Number(physical) : sumToday;
+  const previewDiff = current ? previewSum - totalStock : 0;
 
   return (
     <div className="space-y-4">
       <h1 className="text-xl font-semibold tracking-tight">Auditoría</h1>
+      <p className="text-xs text-muted-foreground">
+        Conteo único: cada colaboradora pistolea lo que ve. La suma de todos los conteos del día se compara con el stock total en Productos.
+      </p>
 
       <Card>
         <CardContent className="space-y-4 p-4">
-          <div className="flex items-center gap-3">
-            <span className="text-sm text-muted-foreground">Sucursal</span>
-            <ToggleGroup type="single" value={branch} onValueChange={(v) => v && setBranch(v as Branch)}>
-              <ToggleGroupItem value="A">{BRANCH_LABELS.A}</ToggleGroupItem>
-              <ToggleGroupItem value="B">{BRANCH_LABELS.B}</ToggleGroupItem>
-            </ToggleGroup>
-          </div>
-
           <form onSubmit={handleScan}>
             <label className="text-xs font-medium text-muted-foreground">Escanear código (Enter)</label>
             <div className="relative mt-1 flex gap-2">
@@ -189,7 +211,6 @@ function AuditPage() {
           />
 
           <CategoryAudit
-            branch={branch}
             onPick={async (barcode) => {
               setCode(barcode);
               setBusy(true);
@@ -203,21 +224,21 @@ function AuditPage() {
             }}
           />
 
-
           {current && (
-            <form onSubmit={save} className="rounded-lg border bg-muted/30 p-3 space-y-3">
+            <form onSubmit={save} className="space-y-3 rounded-lg border bg-muted/30 p-3">
               <div>
                 <div className="text-xs text-muted-foreground">Producto</div>
                 <div className="font-medium">{current.product_name}</div>
                 <div className="font-mono text-xs text-muted-foreground">{current.barcode}</div>
               </div>
+
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <div className="text-xs text-muted-foreground">Stock sistema · {BRANCH_LABELS[branch]}</div>
-                  <div className="text-xl font-semibold tabular-nums">{sysStock}</div>
+                  <div className="text-xs text-muted-foreground">Stock total sistema</div>
+                  <div className="text-xl font-semibold tabular-nums">{totalStock}</div>
                 </div>
                 <div>
-                  <label className="text-xs text-muted-foreground">Conteo físico</label>
+                  <label className="text-xs text-muted-foreground">Tu conteo</label>
                   <Input
                     ref={physicalRef}
                     type="number"
@@ -233,26 +254,52 @@ function AuditPage() {
                   />
                 </div>
               </div>
-              {diffPreview !== null && (
-                <div className="text-sm">
-                  Diferencia:{" "}
-                  <span
-                    className={
-                      diffPreview === 0
-                        ? "font-semibold"
-                        : diffPreview > 0
-                          ? "font-semibold text-emerald-600"
-                          : "font-semibold text-red-600"
-                    }
-                  >
-                    {diffPreview > 0 ? "+" : ""}
-                    {diffPreview}
-                  </span>
+
+              {/* Today's breakdown by collaborator */}
+              {(todayForProduct ?? []).length > 0 && (
+                <div className="rounded-md border bg-card p-2">
+                  <div className="mb-1 text-xs font-medium">Conteos de hoy</div>
+                  <ul className="divide-y text-xs">
+                    {(todayForProduct ?? []).map((r) => (
+                      <li key={r.id} className="flex items-center justify-between py-1">
+                        <span className="truncate">{r.collaborator_name ?? "Anónimo"}</span>
+                        <span className="tabular-nums">{r.physical_count}</span>
+                      </li>
+                    ))}
+                  </ul>
                 </div>
               )}
+
+              <div className="rounded-md border bg-card p-2 text-sm">
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">Suma hoy {physical !== "" ? "(incluye tu conteo)" : ""}</span>
+                  <span className="font-semibold tabular-nums">{previewSum}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">Sistema</span>
+                  <span className="font-semibold tabular-nums">{totalStock}</span>
+                </div>
+                <div className="mt-1 flex items-center justify-between border-t pt-1">
+                  <span className="text-muted-foreground">Diferencia</span>
+                  <span
+                    className={
+                      "font-semibold tabular-nums " +
+                      (previewDiff === 0
+                        ? ""
+                        : previewDiff > 0
+                          ? "text-emerald-600"
+                          : "text-red-600")
+                    }
+                  >
+                    {previewDiff > 0 ? "+" : ""}
+                    {previewDiff}
+                  </span>
+                </div>
+              </div>
+
               <div className="flex gap-2">
                 <Button type="submit" disabled={busy || physical === ""}>
-                  {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Guardar
+                  {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Guardar conteo
                 </Button>
                 <Button
                   type="button"
@@ -280,11 +327,11 @@ function AuditPage() {
               <TableHeader className="sticky top-0 bg-card">
                 <TableRow>
                   <TableHead>Fecha</TableHead>
-                  <TableHead>Sucursal</TableHead>
+                  <TableHead>Colaboradora</TableHead>
                   <TableHead>Producto</TableHead>
                   <TableHead className="text-right">Sistema</TableHead>
-                  <TableHead className="text-right">Físico</TableHead>
-                  <TableHead className="text-right">Dif.</TableHead>
+                  <TableHead className="text-right">Conteo</TableHead>
+                  <TableHead className="text-right">Dif. acumulada</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -293,7 +340,7 @@ function AuditPage() {
                     <TableCell className="whitespace-nowrap text-xs">
                       {new Date(a.created_at).toLocaleString()}
                     </TableCell>
-                    <TableCell>{branchLabel(a.branch)}</TableCell>
+                    <TableCell className="text-xs">{a.collaborator_name ?? "—"}</TableCell>
                     <TableCell>
                       <div>{a.product_name}</div>
                       <div className="font-mono text-xs text-muted-foreground">{a.barcode}</div>
@@ -389,7 +436,7 @@ function ProductNameSearch({ onPick }: { onPick: (barcode: string) => void }) {
             >
               <div className="font-medium">{p.product_name}</div>
               <div className="font-mono text-xs text-muted-foreground">
-                {p.barcode} · {p.uom ?? "—"} · {BRANCH_LABELS.A}:{p.stock_a} · {BRANCH_LABELS.B}:{p.stock_b}
+                {p.barcode} · {p.uom ?? "—"} · Total: {Number(p.stock_a) + Number(p.stock_b)}
               </div>
             </button>
           ))}
@@ -399,7 +446,7 @@ function ProductNameSearch({ onPick }: { onPick: (barcode: string) => void }) {
   );
 }
 
-function CategoryAudit({ branch, onPick }: { branch: Branch; onPick: (barcode: string) => void }) {
+function CategoryAudit({ onPick }: { onPick: (barcode: string) => void }) {
   const [category, setCategory] = useState<string>("");
   const [hideAudited, setHideAudited] = useState(true);
 
@@ -432,9 +479,8 @@ function CategoryAudit({ branch, onPick }: { branch: Branch; onPick: (barcode: s
     },
   });
 
-  // today's audited barcodes for this branch+category, to mark progress
   const { data: auditedToday = new Set<string>() } = useQuery({
-    queryKey: ["audited-today", branch, category],
+    queryKey: ["audited-today-global", category],
     enabled: !!category,
     queryFn: async () => {
       const since = new Date();
@@ -442,7 +488,6 @@ function CategoryAudit({ branch, onPick }: { branch: Branch; onPick: (barcode: s
       const { data, error } = await supabase
         .from("audits")
         .select("barcode")
-        .eq("branch", branch)
         .gte("created_at", since.toISOString());
       if (error) throw error;
       return new Set((data ?? []).map((a) => a.barcode));
@@ -486,7 +531,7 @@ function CategoryAudit({ branch, onPick }: { branch: Branch; onPick: (barcode: s
             </div>
           ) : (
             visible.map((p) => {
-              const sys = branch === "A" ? p.stock_a : p.stock_b;
+              const total = Number(p.stock_a) + Number(p.stock_b);
               return (
                 <button
                   key={p.barcode}
@@ -499,7 +544,7 @@ function CategoryAudit({ branch, onPick }: { branch: Branch; onPick: (barcode: s
                     <span className="font-mono text-xs text-muted-foreground">{p.barcode}</span>
                   </span>
                   <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
-                    {BRANCH_LABELS[branch]}: {sys}
+                    Total: {total}
                   </span>
                 </button>
               );
@@ -510,5 +555,3 @@ function CategoryAudit({ branch, onPick }: { branch: Branch; onPick: (barcode: s
     </div>
   );
 }
-
-
