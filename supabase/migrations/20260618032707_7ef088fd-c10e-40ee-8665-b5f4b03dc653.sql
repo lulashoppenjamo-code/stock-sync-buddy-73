@@ -1,0 +1,1 @@
+ALTER TABLE public.audits ALTER COLUMN branch DROP NOT NULL;
