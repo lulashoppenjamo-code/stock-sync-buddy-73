@@ -14,10 +14,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Camera, ArrowRight, Loader2, Send, ScanLine, Plus, Trash2 } from "lucide-react";
+import { Camera, ArrowRight, Loader2, Send, ScanLine, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { getCollaborator } from "@/lib/session";
-import { enqueue, drainQueue } from "@/lib/offline-queue";
 import { BRANCH_LABELS } from "@/lib/branches";
 import { BarcodeScanner } from "@/components/BarcodeScanner";
 
@@ -30,8 +29,7 @@ type CartItem = {
   barcode: string;
   product_name: string;
   uom: string | null;
-  stock_a: number;
-  stock_b: number;
+  total_stock: number;
   quantity: number;
 };
 
@@ -39,7 +37,6 @@ function TransferPage() {
   const qc = useQueryClient();
   const [barcode, setBarcode] = useState("");
   const [nameSearch, setNameSearch] = useState("");
-  const [quantity, setQuantity] = useState("");
   const [origin, setOrigin] = useState<Branch>("A");
   const [destination, setDestination] = useState<Branch>("B");
   const [sender, setSender] = useState("");
@@ -50,6 +47,7 @@ function TransferPage() {
   const [scannerOpen, setScannerOpen] = useState(false);
   const photoRef = useRef<HTMLInputElement>(null);
   const galleryRef = useRef<HTMLInputElement>(null);
+  const barcodeRef = useRef<HTMLInputElement>(null);
 
   const { data: collaborators = [] } = useQuery({
     queryKey: ["collaborators-active"],
@@ -61,20 +59,6 @@ function TransferPage() {
         .order("name");
       if (error) throw error;
       return data as Array<{ id: string; name: string }>;
-    },
-  });
-
-  const { data: product } = useQuery({
-    queryKey: ["product-lookup", barcode],
-    enabled: barcode.trim().length > 0,
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from("products")
-        .select("barcode, product_name, uom, stock_a, stock_b")
-        .eq("barcode", barcode.trim())
-        .maybeSingle();
-      if (error) throw error;
-      return data;
     },
   });
 
@@ -93,46 +77,46 @@ function TransferPage() {
     },
   });
 
-  // Stock left at origin after considering already-cart-reserved items
-  function originAvailable(p: { barcode: string; stock_a: number; stock_b: number }) {
-    const base = origin === "A" ? p.stock_a : p.stock_b;
-    const reserved = cart
-      .filter((c) => c.barcode === p.barcode)
-      .reduce((s, c) => s + c.quantity, 0);
-    return base - reserved;
-  }
-
-  function addToCart() {
-    if (!product) return toast.error("Producto no encontrado");
-    if (origin === destination) return toast.error("Origen y destino deben ser distintos");
-    const q = Number(quantity);
-    if (!Number.isFinite(q) || q <= 0) return toast.error("Cantidad inválida");
-    const avail = originAvailable(product);
-    if (q > avail)
-      return toast.error(`Stock insuficiente en ${BRANCH_LABELS[origin]}: ${avail} disponibles`);
-
+  /** Look up by barcode and add +1 to cart (or stack if already there). */
+  async function addBarcode(code: string) {
+    const c = code.trim();
+    if (!c) return;
+    const { data, error } = await supabase
+      .from("products")
+      .select("barcode, product_name, uom, stock_a, stock_b")
+      .eq("barcode", c)
+      .maybeSingle();
+    if (error) {
+      toast.error(error.message);
+      return;
+    }
+    if (!data) {
+      toast.error(`Producto no encontrado: ${c}`);
+      return;
+    }
+    const total = Number(data.stock_a) + Number(data.stock_b);
     setCart((prev) => {
-      const i = prev.findIndex((c) => c.barcode === product.barcode);
+      const i = prev.findIndex((x) => x.barcode === data.barcode);
       if (i >= 0) {
         const copy = [...prev];
-        copy[i] = { ...copy[i], quantity: copy[i].quantity + q };
+        copy[i] = { ...copy[i], quantity: copy[i].quantity + 1 };
         return copy;
       }
       return [
         ...prev,
         {
-          barcode: product.barcode,
-          product_name: product.product_name,
-          uom: product.uom,
-          stock_a: Number(product.stock_a),
-          stock_b: Number(product.stock_b),
-          quantity: q,
+          barcode: data.barcode,
+          product_name: data.product_name,
+          uom: data.uom,
+          total_stock: total,
+          quantity: 1,
         },
       ];
     });
+    toast.success(`+1 · ${data.product_name}`);
     setBarcode("");
-    setQuantity("");
     setNameSearch("");
+    barcodeRef.current?.focus();
   }
 
   function removeFromCart(bc: string) {
@@ -150,9 +134,6 @@ function TransferPage() {
     if (!photo) return toast.error("La foto es obligatoria");
     for (const c of cart) {
       if (c.quantity <= 0) return toast.error(`Cantidad inválida en ${c.product_name}`);
-      const base = origin === "A" ? c.stock_a : c.stock_b;
-      if (c.quantity > base)
-        return toast.error(`Stock insuficiente en ${BRANCH_LABELS[origin]} para ${c.product_name}`);
     }
 
     const collab = getCollaborator();
@@ -160,73 +141,42 @@ function TransferPage() {
 
     setBusy(true);
     try {
-      let photo_url: string;
       const batchId = crypto.randomUUID();
       const ext = (photo.name.split(".").pop() || "jpg").toLowerCase();
+      const path = `${batchId}.${ext}`;
+      const up = await supabase.storage
+        .from("transfer-photos")
+        .upload(path, photo, { contentType: photo.type, upsert: true });
+      if (up.error) throw up.error;
+      const { data: signed } = await supabase.storage
+        .from("transfer-photos")
+        .createSignedUrl(path, 60 * 60 * 24 * 365);
+      const photo_url = signed?.signedUrl ?? path;
 
-      if (navigator.onLine) {
-        const path = `${batchId}.${ext}`;
-        const up = await supabase.storage
-          .from("transfer-photos")
-          .upload(path, photo, { contentType: photo.type, upsert: true });
-        if (up.error) throw up.error;
-        const { data: signed } = await supabase.storage
-          .from("transfer-photos")
-          .createSignedUrl(path, 60 * 60 * 24 * 365);
-        photo_url = signed?.signedUrl ?? path;
+      // Direct insert into transfers — NO stock deduction (only evidence).
+      const rows = cart.map((c) => ({
+        barcode: c.barcode,
+        product_name: c.product_name,
+        quantity: c.quantity,
+        origin,
+        destination,
+        sender_name: sender.trim(),
+        receiver_name: receiver.trim(),
+        photo_url,
+        collaborator_id: collab.id,
+        collaborator_name: collab.name,
+        client_uid: `transfer-${batchId}-${c.barcode}`,
+      }));
+      const { error } = await supabase.from("transfers").insert(rows);
+      if (error) throw error;
 
-        let ok = 0;
-        const errors: string[] = [];
-        for (const c of cart) {
-          const { error } = await supabase.rpc("apply_transfer", {
-            p_barcode: c.barcode,
-            p_quantity: c.quantity,
-            p_origin: origin,
-            p_destination: destination,
-            p_sender_name: sender.trim(),
-            p_receiver_name: receiver.trim(),
-            p_photo_url: photo_url,
-            p_collaborator_id: collab.id,
-            p_collaborator_name: collab.name,
-            p_client_uid: `transfer-${batchId}-${c.barcode}`,
-          });
-          if (error) errors.push(`${c.product_name}: ${error.message}`);
-          else ok++;
-        }
-        if (errors.length) toast.error(`Listos ${ok}/${cart.length}. Errores: ${errors.join(" | ")}`);
-        else toast.success(`${ok} traspaso${ok === 1 ? "" : "s"} registrado${ok === 1 ? "" : "s"}`);
-      } else {
-        for (const c of cart) {
-          await enqueue({
-            kind: "transfer",
-            uid: `transfer-${batchId}-${c.barcode}`,
-            createdAt: Date.now(),
-            payload: {
-              barcode: c.barcode,
-              quantity: c.quantity,
-              origin,
-              destination,
-              sender_name: sender.trim(),
-              receiver_name: receiver.trim(),
-              collaborator_id: collab.id,
-              collaborator_name: collab.name,
-              client_uid: `transfer-${batchId}-${c.barcode}`,
-            },
-            photo: { blob: photo, ext },
-          });
-        }
-        toast.info(`Sin conexión: ${cart.length} traspasos encolados`);
-      }
+      toast.success(`${rows.length} traspaso${rows.length === 1 ? "" : "s"} registrado${rows.length === 1 ? "" : "s"}`);
 
       setCart([]);
       setBarcode("");
-      setQuantity("");
       setNameSearch("");
       setPhoto(null);
-      qc.invalidateQueries({ queryKey: ["products"] });
       qc.invalidateQueries({ queryKey: ["transfers"] });
-      qc.invalidateQueries({ queryKey: ["product-lookup"] });
-      drainQueue();
     } catch (err) {
       toast.error((err as Error).message);
     } finally {
@@ -278,17 +228,25 @@ function TransferPage() {
 
       <Card>
         <CardContent className="space-y-4 p-4">
-          <h2 className="text-sm font-semibold">Agregar producto</h2>
+          <h2 className="text-sm font-semibold">Agregar producto (cada escaneo suma 1)</h2>
           <div>
             <Label htmlFor="barcode">Código de barras</Label>
             <div className="flex gap-2">
               <Input
                 id="barcode"
+                ref={barcodeRef}
                 value={barcode}
                 onChange={(e) => setBarcode(e.target.value)}
-                placeholder="Pistola / cámara / tipear…"
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    addBarcode(barcode);
+                  }
+                }}
+                placeholder="Pistolá o tipeá y Enter para sumar 1…"
                 className="font-mono"
                 inputMode="numeric"
+                autoFocus
               />
               <Button
                 type="button"
@@ -300,18 +258,9 @@ function TransferPage() {
                 <ScanLine className="h-4 w-4" />
               </Button>
             </div>
-            {barcode.trim() && (
-              <div className="mt-1 text-xs">
-                {product ? (
-                  <span className="text-emerald-600">
-                    {product.product_name} · {BRANCH_LABELS.A}: {product.stock_a} ·{" "}
-                    {BRANCH_LABELS.B}: {product.stock_b}
-                  </span>
-                ) : (
-                  <span className="text-muted-foreground">Buscando…</span>
-                )}
-              </div>
-            )}
+            <p className="mt-1 text-xs text-muted-foreground">
+              Con pistola: cada disparo agrega +1 al carrito automáticamente.
+            </p>
           </div>
 
           <div>
@@ -320,7 +269,7 @@ function TransferPage() {
               id="name-search"
               value={nameSearch}
               onChange={(e) => setNameSearch(e.target.value)}
-              placeholder="Escribí al menos 2 letras…"
+              placeholder="Escribí al menos 2 letras y tocá un resultado…"
             />
             {nameSearch.trim().length >= 2 && nameResults.length > 0 && (
               <div className="mt-1 max-h-56 overflow-auto rounded-md border bg-card">
@@ -328,10 +277,7 @@ function TransferPage() {
                   <button
                     key={r.barcode}
                     type="button"
-                    onClick={() => {
-                      setBarcode(r.barcode);
-                      setNameSearch("");
-                    }}
+                    onClick={() => addBarcode(r.barcode)}
                     className="flex w-full items-center justify-between gap-2 border-b px-3 py-2 text-left text-sm last:border-b-0 hover:bg-muted"
                   >
                     <span className="min-w-0 truncate">
@@ -339,7 +285,7 @@ function TransferPage() {
                       <span className="text-xs text-muted-foreground">{r.uom ?? ""}</span>
                     </span>
                     <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
-                      {BRANCH_LABELS.A}:{r.stock_a} · {BRANCH_LABELS.B}:{r.stock_b}
+                      Total: {Number(r.stock_a) + Number(r.stock_b)}
                     </span>
                   </button>
                 ))}
@@ -348,30 +294,6 @@ function TransferPage() {
             {nameSearch.trim().length >= 2 && nameResults.length === 0 && (
               <div className="mt-1 text-xs text-muted-foreground">Sin resultados</div>
             )}
-          </div>
-
-          <div className="flex items-end gap-2">
-            <div className="flex-1">
-              <Label htmlFor="qty">Cantidad</Label>
-              <Input
-                id="qty"
-                type="number"
-                inputMode="decimal"
-                step="any"
-                min={0}
-                value={quantity}
-                onChange={(e) => setQuantity(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    addToCart();
-                  }
-                }}
-              />
-            </div>
-            <Button type="button" onClick={addToCart}>
-              <Plus className="h-4 w-4" /> Agregar
-            </Button>
           </div>
         </CardContent>
       </Card>
@@ -390,42 +312,38 @@ function TransferPage() {
           </div>
           {cart.length === 0 ? (
             <p className="py-6 text-center text-xs text-muted-foreground">
-              Agregá productos al carrito. No hay límite.
+              Pistoleá productos para empezar. No hay límite.
             </p>
           ) : (
             <div className="divide-y rounded-md border">
-              {cart.map((c) => {
-                const base = origin === "A" ? c.stock_a : c.stock_b;
-                const over = c.quantity > base;
-                return (
-                  <div key={c.barcode} className="flex items-center gap-2 p-2">
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-sm font-medium">{c.product_name}</div>
-                      <div className="font-mono text-xs text-muted-foreground">
-                        {c.barcode} · stock {BRANCH_LABELS[origin]}: {base}
-                      </div>
+              {cart.map((c) => (
+                <div key={c.barcode} className="flex items-center gap-2 p-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-medium">{c.product_name}</div>
+                    <div className="font-mono text-xs text-muted-foreground">
+                      {c.barcode} · stock total: {c.total_stock}
                     </div>
-                    <Input
-                      type="number"
-                      inputMode="decimal"
-                      step="any"
-                      min={0}
-                      value={c.quantity}
-                      onChange={(e) => updateCartQty(c.barcode, Number(e.target.value) || 0)}
-                      className={`h-9 w-20 text-right ${over ? "border-red-500" : ""}`}
-                    />
-                    <Button
-                      type="button"
-                      size="icon"
-                      variant="ghost"
-                      onClick={() => removeFromCart(c.barcode)}
-                      aria-label="Quitar"
-                    >
-                      <Trash2 className="h-4 w-4 text-red-600" />
-                    </Button>
                   </div>
-                );
-              })}
+                  <Input
+                    type="number"
+                    inputMode="decimal"
+                    step="any"
+                    min={0}
+                    value={c.quantity}
+                    onChange={(e) => updateCartQty(c.barcode, Number(e.target.value) || 0)}
+                    className="h-9 w-20 text-right"
+                  />
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="ghost"
+                    onClick={() => removeFromCart(c.barcode)}
+                    aria-label="Quitar"
+                  >
+                    <Trash2 className="h-4 w-4 text-red-600" />
+                  </Button>
+                </div>
+              ))}
             </div>
           )}
         </CardContent>
@@ -515,7 +433,8 @@ function TransferPage() {
       <BarcodeScanner
         open={scannerOpen}
         onClose={() => setScannerOpen(false)}
-        onDetected={(code) => setBarcode(code)}
+        continuous
+        onDetected={(code) => addBarcode(code)}
       />
     </div>
   );
