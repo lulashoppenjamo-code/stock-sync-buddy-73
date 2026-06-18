@@ -17,7 +17,7 @@ export type Database = {
       audits: {
         Row: {
           barcode: string
-          branch: Database["public"]["Enums"]["branch_code"]
+          branch: Database["public"]["Enums"]["branch_code"] | null
           client_uid: string | null
           collaborator_id: string | null
           collaborator_name: string | null
@@ -30,7 +30,7 @@ export type Database = {
         }
         Insert: {
           barcode: string
-          branch: Database["public"]["Enums"]["branch_code"]
+          branch?: Database["public"]["Enums"]["branch_code"] | null
           client_uid?: string | null
           collaborator_id?: string | null
           collaborator_name?: string | null
@@ -43,7 +43,7 @@ export type Database = {
         }
         Update: {
           barcode?: string
-          branch?: Database["public"]["Enums"]["branch_code"]
+          branch?: Database["public"]["Enums"]["branch_code"] | null
           client_uid?: string | null
           collaborator_id?: string | null
           collaborator_name?: string | null

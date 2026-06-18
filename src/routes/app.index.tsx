@@ -55,6 +55,11 @@ function ProductsPage() {
     return p.product_name.toLowerCase().includes(q) || p.barcode.includes(q);
   });
 
+  const totalUnits = filtered.reduce(
+    (s, p) => s + Number(p.stock_a) + Number(p.stock_b),
+    0,
+  );
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
@@ -88,7 +93,7 @@ function ProductsPage() {
       </div>
 
       <p className="text-xs text-muted-foreground">
-        Tip: tocá una cantidad para editarla. Se guarda al confirmar (✓ o Enter).
+        Tip: tocá el total para editarlo. Se guarda al confirmar (✓ o Enter).
       </p>
 
       <Card>
@@ -100,20 +105,19 @@ function ProductsPage() {
                   <TableHead>Producto</TableHead>
                   <TableHead className="hidden md:table-cell">Código</TableHead>
                   <TableHead className="hidden md:table-cell">UoM</TableHead>
-                  <TableHead className="text-right">Stock {BRANCH_LABELS.A}</TableHead>
-                  <TableHead className="text-right">Stock {BRANCH_LABELS.B}</TableHead>
+                  <TableHead className="text-right">Stock total</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {isLoading ? (
                   <TableRow>
-                    <TableCell colSpan={5} className="py-12 text-center text-muted-foreground">
+                    <TableCell colSpan={4} className="py-12 text-center text-muted-foreground">
                       <Loader2 className="mx-auto h-5 w-5 animate-spin" />
                     </TableCell>
                   </TableRow>
                 ) : filtered.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={5} className="py-12 text-center text-muted-foreground">
+                    <TableCell colSpan={4} className="py-12 text-center text-muted-foreground">
                       Sin productos. Importá un CSV para empezar.
                     </TableCell>
                   </TableRow>
@@ -130,10 +134,10 @@ function ProductsPage() {
                       <TableCell className="hidden font-mono text-xs md:table-cell">{p.barcode}</TableCell>
                       <TableCell className="hidden md:table-cell">{p.uom ?? "—"}</TableCell>
                       <TableCell className="text-right">
-                        <StockCell barcode={p.barcode} field="stock_a" value={p.stock_a} />
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <StockCell barcode={p.barcode} field="stock_b" value={p.stock_b} />
+                        <TotalStockCell
+                          barcode={p.barcode}
+                          value={Number(p.stock_a) + Number(p.stock_b)}
+                        />
                       </TableCell>
                     </TableRow>
                   ))
@@ -145,19 +149,17 @@ function ProductsPage() {
       </Card>
 
       <p className="text-xs text-muted-foreground">
-        Total: {filtered.length} producto{filtered.length === 1 ? "" : "s"}
+        Total: {filtered.length} producto{filtered.length === 1 ? "" : "s"} · {totalUnits} unidades en sistema
       </p>
     </div>
   );
 }
 
-function StockCell({
+function TotalStockCell({
   barcode,
-  field,
   value,
 }: {
   barcode: string;
-  field: "stock_a" | "stock_b";
   value: number;
 }) {
   const qc = useQueryClient();
@@ -186,10 +188,10 @@ function StockCell({
     }
     setSaving(true);
     try {
-      const update = field === "stock_a" ? { stock_a: n } : { stock_b: n };
+      // Single global stock — store full amount in stock_a, keep stock_b at 0.
       const { error } = await supabase
         .from("products")
-        .update(update)
+        .update({ stock_a: n, stock_b: 0 })
         .eq("barcode", barcode);
       if (error) throw error;
       toast.success("Stock actualizado");
@@ -207,7 +209,7 @@ function StockCell({
       <button
         onClick={() => setEditing(true)}
         className="rounded px-2 py-1 tabular-nums hover:bg-muted"
-        aria-label="Editar stock"
+        aria-label="Editar stock total"
       >
         {value}
       </button>
@@ -392,27 +394,26 @@ function AddProductButton({ categories }: { categories: string[] }) {
   const [name, setName] = useState("");
   const [uom, setUom] = useState("");
   const [category, setCategory] = useState("");
-  const [stockA, setStockA] = useState("0");
-  const [stockB, setStockB] = useState("0");
+  const [total, setTotal] = useState("0");
   const [busy, setBusy] = useState(false);
 
   function reset() {
-    setBarcode(""); setName(""); setUom(""); setCategory(""); setStockA("0"); setStockB("0");
+    setBarcode(""); setName(""); setUom(""); setCategory(""); setTotal("0");
   }
 
   async function save() {
     const b = barcode.trim();
     const n = name.trim();
     if (!b || !n) { toast.error("Código y nombre son obligatorios"); return; }
-    const sa = Number(stockA) || 0;
-    const sb = Number(stockB) || 0;
-    if (sa < 0 || sb < 0) { toast.error("Stock inválido"); return; }
+    const t = Number(total) || 0;
+    if (t < 0) { toast.error("Stock inválido"); return; }
     setBusy(true);
     try {
       const { data: existing } = await supabase.from("products").select("barcode").eq("barcode", b).maybeSingle();
       if (existing) { toast.error("Ya existe un producto con ese código"); return; }
       const { error } = await supabase.from("products").insert({
-        barcode: b, product_name: n, uom: uom.trim() || null, category: category.trim() || null, stock_a: sa, stock_b: sb,
+        barcode: b, product_name: n, uom: uom.trim() || null, category: category.trim() || null,
+        stock_a: t, stock_b: 0,
       });
       if (error) throw error;
       toast.success("Producto agregado");
@@ -461,15 +462,9 @@ function AddProductButton({ categories }: { categories: string[] }) {
                 {categories.map((c) => <option key={c} value={c} />)}
               </datalist>
             </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="text-xs font-medium text-muted-foreground">Stock {BRANCH_LABELS.A}</label>
-                <Input type="number" inputMode="decimal" step="any" min={0} value={stockA} onChange={(e) => setStockA(e.target.value)} />
-              </div>
-              <div>
-                <label className="text-xs font-medium text-muted-foreground">Stock {BRANCH_LABELS.B}</label>
-                <Input type="number" inputMode="decimal" step="any" min={0} value={stockB} onChange={(e) => setStockB(e.target.value)} />
-              </div>
+            <div>
+              <label className="text-xs font-medium text-muted-foreground">Stock total</label>
+              <Input type="number" inputMode="decimal" step="any" min={0} value={total} onChange={(e) => setTotal(e.target.value)} />
             </div>
           </div>
           <DialogFooter>

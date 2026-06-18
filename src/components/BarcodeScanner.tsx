@@ -25,23 +25,29 @@ type Props = {
   open: boolean;
   onClose: () => void;
   onDetected: (code: string) => void;
+  /** If true, keep scanning after each detection (useful for "pistola" mode at transfers). */
+  continuous?: boolean;
 };
 
-export function BarcodeScanner({ open, onClose, onDetected }: Props) {
+export function BarcodeScanner({ open, onClose, onDetected, continuous = false }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const controlsRef = useRef<{ stop: () => void } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
+  const [lastCode, setLastCode] = useState<string | null>(null);
   const detectionsRef = useRef<Map<string, number>>(new Map());
   const lastDetectedRef = useRef<string | null>(null);
+  const lastEmitAtRef = useRef<number>(0);
 
   const handleDetected = useCallback(
     (code: string) => {
       onDetected(code);
-      onClose();
+      setLastCode(code);
+      if (!continuous) onClose();
     },
-    [onDetected, onClose]
+    [onDetected, onClose, continuous]
   );
+
 
   useEffect(() => {
     if (!open) return;
@@ -87,10 +93,24 @@ export function BarcodeScanner({ open, onClose, onDetected }: Props) {
 
             if (count >= CONFIRM_FRAMES && lastDetectedRef.current !== text) {
               lastDetectedRef.current = text;
-              ctrls.stop();
-              handleDetected(text);
+              if (continuous) {
+                // Cooldown so a still barcode does not fire repeatedly
+                const now = Date.now();
+                if (now - lastEmitAtRef.current < 700) return;
+                lastEmitAtRef.current = now;
+                handleDetected(text);
+                // Reset for the next product
+                setTimeout(() => {
+                  map.clear();
+                  lastDetectedRef.current = null;
+                }, 400);
+              } else {
+                ctrls.stop();
+                handleDetected(text);
+              }
             }
           }
+
         );
         controlsRef.current = controls;
         try {
@@ -156,15 +176,23 @@ export function BarcodeScanner({ open, onClose, onDetected }: Props) {
           </div>
 
           <div className="pointer-events-none absolute bottom-2 left-0 right-0 text-center text-[10px] text-white/70">
-            Centrá el código dentro del recuadro
+            {continuous
+              ? "Modo continuo: cada escaneo suma 1 al carrito"
+              : "Centrá el código dentro del recuadro"}
           </div>
+          {continuous && lastCode && (
+            <div className="pointer-events-none absolute top-2 left-1/2 -translate-x-1/2 rounded-md bg-emerald-500/90 px-3 py-1 font-mono text-xs text-white shadow">
+              +1 · {lastCode}
+            </div>
+          )}
         </div>
         {error && <p className="text-sm text-red-600">{error}</p>}
         <div className="flex justify-end">
           <Button variant="outline" onClick={onClose}>
-            Cancelar
+            {continuous ? "Listo" : "Cancelar"}
           </Button>
         </div>
+
       </DialogContent>
     </Dialog>
   );
