@@ -176,15 +176,23 @@ export function BarcodeScanner({ open, onClose, onDetected, continuous = false }
           </div>
 
           <div className="pointer-events-none absolute bottom-2 left-0 right-0 text-center text-[10px] text-white/70">
-            Centrá el código dentro del recuadro
+            {continuous
+              ? "Modo continuo: cada escaneo suma 1 al carrito"
+              : "Centrá el código dentro del recuadro"}
           </div>
+          {continuous && lastCode && (
+            <div className="pointer-events-none absolute top-2 left-1/2 -translate-x-1/2 rounded-md bg-emerald-500/90 px-3 py-1 font-mono text-xs text-white shadow">
+              +1 · {lastCode}
+            </div>
+          )}
         </div>
         {error && <p className="text-sm text-red-600">{error}</p>}
         <div className="flex justify-end">
           <Button variant="outline" onClick={onClose}>
-            Cancelar
+            {continuous ? "Listo" : "Cancelar"}
           </Button>
         </div>
+
       </DialogContent>
     </Dialog>
   );
