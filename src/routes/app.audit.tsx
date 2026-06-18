@@ -123,8 +123,9 @@ function AuditPage() {
       return;
     }
     const payload = {
-      branch: null,
+      branch: null as unknown as "A", // nullable in DB; types regenerate after migration
       barcode: current.barcode,
+
       product_name: current.product_name,
       system_stock: totalStock,
       physical_count: phys,
