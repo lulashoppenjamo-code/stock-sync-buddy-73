@@ -514,3 +514,115 @@ function Stat({ label, value, tone }: { label: string; value: number; tone: "pos
     </div>
   );
 }
+
+function NewCategoryButton() {
+  const qc = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function save() {
+    const n = name.trim();
+    if (!n) { toast.error("Nombre obligatorio"); return; }
+    setBusy(true);
+    try {
+      const { error } = await supabase.from("categories").insert({ name: n });
+      if (error) {
+        if (error.code === "23505") toast.error("Esa categoría ya existe");
+        else throw error;
+        return;
+      }
+      toast.success(`Categoría "${n}" creada`);
+      setName("");
+      setOpen(false);
+      qc.invalidateQueries({ queryKey: ["categories"] });
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <Button variant="outline" onClick={() => setOpen(true)}>
+        <FolderPlus className="h-4 w-4" /> Categoría
+      </Button>
+      <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) setName(""); }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader><DialogTitle>Nueva categoría</DialogTitle></DialogHeader>
+          <Input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Ej: Limpieza, Bebidas…"
+            autoFocus
+            onKeyDown={(e) => { if (e.key === "Enter") save(); }}
+          />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setOpen(false)} disabled={busy}>Cancelar</Button>
+            <Button onClick={save} disabled={busy}>
+              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />} Crear
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
+function DeleteAllProductsButton({ hasProducts }: { hasProducts: boolean }) {
+  const qc = useQueryClient();
+  const [confirm, setConfirm] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [open, setOpen] = useState(false);
+
+  async function wipe() {
+    if (confirm !== "BORRAR") { toast.error("Escribí BORRAR para confirmar"); return; }
+    setBusy(true);
+    try {
+      const { error } = await supabase.from("products").delete().neq("barcode", "__never__");
+      if (error) throw error;
+      toast.success("Inventario borrado");
+      setConfirm("");
+      setOpen(false);
+      qc.invalidateQueries({ queryKey: ["products"] });
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <AlertDialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) setConfirm(""); }}>
+      <AlertDialogTrigger asChild>
+        <Button variant="outline" disabled={!hasProducts} className="text-red-600 hover:text-red-700">
+          <Trash2 className="h-4 w-4" /> Borrar todo
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>¿Borrar TODO el inventario?</AlertDialogTitle>
+          <AlertDialogDescription>
+            Esta acción elimina <strong>todos los productos</strong> de la base. Útil para volver a cargar
+            el inventario por categoría desde cero. No se puede deshacer.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <div className="space-y-1">
+          <label className="text-xs text-muted-foreground">Escribí <strong>BORRAR</strong> para confirmar</label>
+          <Input value={confirm} onChange={(e) => setConfirm(e.target.value)} placeholder="BORRAR" />
+        </div>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={busy}>Cancelar</AlertDialogCancel>
+          <AlertDialogAction
+            onClick={(e) => { e.preventDefault(); wipe(); }}
+            disabled={busy || confirm !== "BORRAR"}
+            className="bg-red-600 hover:bg-red-700"
+          >
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />} Borrar todo
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
