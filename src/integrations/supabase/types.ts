@@ -71,6 +71,24 @@ export type Database = {
           },
         ]
       }
+      categories: {
+        Row: {
+          created_at: string
+          id: string
+          name: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          name: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          name?: string
+        }
+        Relationships: []
+      }
       collaborators: {
         Row: {
           active: boolean
@@ -192,6 +210,11 @@ export type Database = {
           photo_url: string
           product_name: string
           quantity: number
+          received_at: string | null
+          received_by_id: string | null
+          received_by_name: string | null
+          received_photo_url: string | null
+          received_scanned_barcode: string | null
           receiver_name: string
           sender_name: string
         }
@@ -207,6 +230,11 @@ export type Database = {
           photo_url: string
           product_name: string
           quantity: number
+          received_at?: string | null
+          received_by_id?: string | null
+          received_by_name?: string | null
+          received_photo_url?: string | null
+          received_scanned_barcode?: string | null
           receiver_name: string
           sender_name: string
         }
@@ -222,6 +250,11 @@ export type Database = {
           photo_url?: string
           product_name?: string
           quantity?: number
+          received_at?: string | null
+          received_by_id?: string | null
+          received_by_name?: string | null
+          received_photo_url?: string | null
+          received_scanned_barcode?: string | null
           receiver_name?: string
           sender_name?: string
         }

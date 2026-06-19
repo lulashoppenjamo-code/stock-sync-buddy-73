@@ -250,12 +250,12 @@ function TransferPage() {
               />
               <Button
                 type="button"
-                variant="outline"
-                size="icon"
+                variant="default"
                 onClick={() => setScannerOpen(true)}
                 aria-label="Escanear con cámara"
+                className="shrink-0"
               >
-                <ScanLine className="h-4 w-4" />
+                <ScanLine className="h-4 w-4" /> Cámara
               </Button>
             </div>
             <p className="mt-1 text-xs text-muted-foreground">

@@ -187,12 +187,12 @@ function AuditPage() {
               </div>
               <Button
                 type="button"
-                variant="outline"
-                size="icon"
+                variant="default"
                 onClick={() => setScannerOpen(true)}
                 aria-label="Escanear con cámara"
+                className="shrink-0"
               >
-                <Camera className="h-4 w-4" />
+                <Camera className="h-4 w-4" /> Cámara
               </Button>
             </div>
           </form>

@@ -1,20 +1,40 @@
 import { Link, useRouter, useLocation } from "@tanstack/react-router";
-import { Boxes, ClipboardCheck, ArrowLeftRight, History, Settings, LogOut, WifiOff, CloudUpload } from "lucide-react";
+import { Boxes, ClipboardCheck, ArrowLeftRight, History, Settings, LogOut, WifiOff, CloudUpload, PackageCheck } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import { useOnline, usePendingCount } from "@/hooks/use-online";
 import { useCollaborator, setCollaborator } from "@/lib/session";
 import { Button } from "@/components/ui/button";
+import { supabase } from "@/integrations/supabase/client";
 
 const navItems = [
   { to: "/app", label: "Productos", icon: Boxes, exact: true },
   { to: "/app/audit", label: "Auditoría", icon: ClipboardCheck },
   { to: "/app/transfer", label: "Traspaso", icon: ArrowLeftRight },
+  { to: "/app/reception", label: "Recepción", icon: PackageCheck, badge: true as const },
   { to: "/app/history", label: "Historial", icon: History },
 ];
+
+function usePendingTransfersCount() {
+  const { data } = useQuery({
+    queryKey: ["pending-transfers-count"],
+    queryFn: async () => {
+      const { count, error } = await supabase
+        .from("transfers")
+        .select("id", { count: "exact", head: true })
+        .is("received_at", null);
+      if (error) throw error;
+      return count ?? 0;
+    },
+    refetchInterval: 30_000,
+  });
+  return data ?? 0;
+}
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const collab = useCollaborator();
   const online = useOnline();
   const pending = usePendingCount();
+  const pendingReceptions = usePendingTransfersCount();
   const router = useRouter();
   const loc = useLocation();
 
@@ -37,16 +57,22 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             {navItems.map((item) => {
               const Icon = item.icon;
               const active = item.exact ? loc.pathname === item.to : loc.pathname.startsWith(item.to);
+              const showBadge = item.badge && pendingReceptions > 0;
               return (
                 <Link
                   key={item.to}
                   to={item.to}
-                  className={`inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-sm transition-colors ${
+                  className={`relative inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-sm transition-colors ${
                     active ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-accent/60"
                   }`}
                 >
                   <Icon className="h-4 w-4" />
                   {item.label}
+                  {showBadge && (
+                    <span className="ml-1 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-amber-500 px-1.5 text-[10px] font-bold text-white">
+                      {pendingReceptions}
+                    </span>
+                  )}
                 </Link>
               );
             })}
@@ -92,16 +118,22 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           {navItems.map((item) => {
             const Icon = item.icon;
             const active = item.exact ? loc.pathname === item.to : loc.pathname.startsWith(item.to);
+            const showBadge = item.badge && pendingReceptions > 0;
             return (
               <li key={item.to} className="flex-1">
                 <Link
                   to={item.to}
-                  className={`flex flex-col items-center gap-0.5 px-2 py-2 text-[11px] ${
+                  className={`relative flex flex-col items-center gap-0.5 px-2 py-2 text-[11px] ${
                     active ? "text-primary" : "text-muted-foreground"
                   }`}
                 >
                   <Icon className="h-5 w-5" />
                   {item.label}
+                  {showBadge && (
+                    <span className="absolute right-2 top-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-amber-500 px-1 text-[9px] font-bold text-white">
+                      {pendingReceptions}
+                    </span>
+                  )}
                 </Link>
               </li>
             );
