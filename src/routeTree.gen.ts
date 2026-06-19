@@ -13,6 +13,7 @@ import { Route as AppRouteImport } from './routes/app'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AppIndexRouteImport } from './routes/app.index'
 import { Route as AppTransferRouteImport } from './routes/app.transfer'
+import { Route as AppReceptionRouteImport } from './routes/app.reception'
 import { Route as AppHistoryRouteImport } from './routes/app.history'
 import { Route as AppAuditRouteImport } from './routes/app.audit'
 import { Route as AppAdminRouteImport } from './routes/app.admin'
@@ -37,6 +38,11 @@ const AppTransferRoute = AppTransferRouteImport.update({
   path: '/transfer',
   getParentRoute: () => AppRoute,
 } as any)
+const AppReceptionRoute = AppReceptionRouteImport.update({
+  id: '/reception',
+  path: '/reception',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppHistoryRoute = AppHistoryRouteImport.update({
   id: '/history',
   path: '/history',
@@ -59,6 +65,7 @@ export interface FileRoutesByFullPath {
   '/app/admin': typeof AppAdminRoute
   '/app/audit': typeof AppAuditRoute
   '/app/history': typeof AppHistoryRoute
+  '/app/reception': typeof AppReceptionRoute
   '/app/transfer': typeof AppTransferRoute
   '/app/': typeof AppIndexRoute
 }
@@ -67,6 +74,7 @@ export interface FileRoutesByTo {
   '/app/admin': typeof AppAdminRoute
   '/app/audit': typeof AppAuditRoute
   '/app/history': typeof AppHistoryRoute
+  '/app/reception': typeof AppReceptionRoute
   '/app/transfer': typeof AppTransferRoute
   '/app': typeof AppIndexRoute
 }
@@ -77,6 +85,7 @@ export interface FileRoutesById {
   '/app/admin': typeof AppAdminRoute
   '/app/audit': typeof AppAuditRoute
   '/app/history': typeof AppHistoryRoute
+  '/app/reception': typeof AppReceptionRoute
   '/app/transfer': typeof AppTransferRoute
   '/app/': typeof AppIndexRoute
 }
@@ -88,6 +97,7 @@ export interface FileRouteTypes {
     | '/app/admin'
     | '/app/audit'
     | '/app/history'
+    | '/app/reception'
     | '/app/transfer'
     | '/app/'
   fileRoutesByTo: FileRoutesByTo
@@ -96,6 +106,7 @@ export interface FileRouteTypes {
     | '/app/admin'
     | '/app/audit'
     | '/app/history'
+    | '/app/reception'
     | '/app/transfer'
     | '/app'
   id:
@@ -105,6 +116,7 @@ export interface FileRouteTypes {
     | '/app/admin'
     | '/app/audit'
     | '/app/history'
+    | '/app/reception'
     | '/app/transfer'
     | '/app/'
   fileRoutesById: FileRoutesById
@@ -144,6 +156,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppTransferRouteImport
       parentRoute: typeof AppRoute
     }
+    '/app/reception': {
+      id: '/app/reception'
+      path: '/reception'
+      fullPath: '/app/reception'
+      preLoaderRoute: typeof AppReceptionRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/app/history': {
       id: '/app/history'
       path: '/history'
@@ -172,6 +191,7 @@ interface AppRouteChildren {
   AppAdminRoute: typeof AppAdminRoute
   AppAuditRoute: typeof AppAuditRoute
   AppHistoryRoute: typeof AppHistoryRoute
+  AppReceptionRoute: typeof AppReceptionRoute
   AppTransferRoute: typeof AppTransferRoute
   AppIndexRoute: typeof AppIndexRoute
 }
@@ -180,6 +200,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppAdminRoute: AppAdminRoute,
   AppAuditRoute: AppAuditRoute,
   AppHistoryRoute: AppHistoryRoute,
+  AppReceptionRoute: AppReceptionRoute,
   AppTransferRoute: AppTransferRoute,
   AppIndexRoute: AppIndexRoute,
 }

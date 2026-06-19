@@ -1,20 +1,40 @@
 import { Link, useRouter, useLocation } from "@tanstack/react-router";
-import { Boxes, ClipboardCheck, ArrowLeftRight, History, Settings, LogOut, WifiOff, CloudUpload } from "lucide-react";
+import { Boxes, ClipboardCheck, ArrowLeftRight, History, Settings, LogOut, WifiOff, CloudUpload, PackageCheck } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import { useOnline, usePendingCount } from "@/hooks/use-online";
 import { useCollaborator, setCollaborator } from "@/lib/session";
 import { Button } from "@/components/ui/button";
+import { supabase } from "@/integrations/supabase/client";
 
 const navItems = [
   { to: "/app", label: "Productos", icon: Boxes, exact: true },
   { to: "/app/audit", label: "Auditoría", icon: ClipboardCheck },
   { to: "/app/transfer", label: "Traspaso", icon: ArrowLeftRight },
+  { to: "/app/reception", label: "Recepción", icon: PackageCheck, badge: true as const },
   { to: "/app/history", label: "Historial", icon: History },
 ];
+
+function usePendingTransfersCount() {
+  const { data } = useQuery({
+    queryKey: ["pending-transfers-count"],
+    queryFn: async () => {
+      const { count, error } = await supabase
+        .from("transfers")
+        .select("id", { count: "exact", head: true })
+        .is("received_at", null);
+      if (error) throw error;
+      return count ?? 0;
+    },
+    refetchInterval: 30_000,
+  });
+  return data ?? 0;
+}
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const collab = useCollaborator();
   const online = useOnline();
   const pending = usePendingCount();
+  const pendingReceptions = usePendingTransfersCount();
   const router = useRouter();
   const loc = useLocation();
 
