@@ -118,16 +118,22 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           {navItems.map((item) => {
             const Icon = item.icon;
             const active = item.exact ? loc.pathname === item.to : loc.pathname.startsWith(item.to);
+            const showBadge = item.badge && pendingReceptions > 0;
             return (
               <li key={item.to} className="flex-1">
                 <Link
                   to={item.to}
-                  className={`flex flex-col items-center gap-0.5 px-2 py-2 text-[11px] ${
+                  className={`relative flex flex-col items-center gap-0.5 px-2 py-2 text-[11px] ${
                     active ? "text-primary" : "text-muted-foreground"
                   }`}
                 >
                   <Icon className="h-5 w-5" />
                   {item.label}
+                  {showBadge && (
+                    <span className="absolute right-2 top-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-amber-500 px-1 text-[9px] font-bold text-white">
+                      {pendingReceptions}
+                    </span>
+                  )}
                 </Link>
               </li>
             );
