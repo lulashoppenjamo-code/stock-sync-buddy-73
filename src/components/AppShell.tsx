@@ -57,16 +57,22 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             {navItems.map((item) => {
               const Icon = item.icon;
               const active = item.exact ? loc.pathname === item.to : loc.pathname.startsWith(item.to);
+              const showBadge = item.badge && pendingReceptions > 0;
               return (
                 <Link
                   key={item.to}
                   to={item.to}
-                  className={`inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-sm transition-colors ${
+                  className={`relative inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-sm transition-colors ${
                     active ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-accent/60"
                   }`}
                 >
                   <Icon className="h-4 w-4" />
                   {item.label}
+                  {showBadge && (
+                    <span className="ml-1 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-amber-500 px-1.5 text-[10px] font-bold text-white">
+                      {pendingReceptions}
+                    </span>
+                  )}
                 </Link>
               );
             })}
