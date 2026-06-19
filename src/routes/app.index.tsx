@@ -48,8 +48,23 @@ function ProductsPage() {
     },
   });
 
+  const { data: managedCategories = [] } = useQuery({
+    queryKey: ["categories"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("categories")
+        .select("name")
+        .order("name");
+      if (error) throw error;
+      return (data ?? []).map((r) => r.name as string);
+    },
+  });
+
   const categories = Array.from(
-    new Set((data ?? []).map((p) => p.category).filter((c): c is string => !!c)),
+    new Set([
+      ...managedCategories,
+      ...(data ?? []).map((p) => p.category).filter((c): c is string => !!c),
+    ]),
   ).sort();
 
   const filtered = (data ?? []).filter((p) => {
@@ -68,8 +83,10 @@ function ProductsPage() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
         <h1 className="mr-auto text-xl font-semibold tracking-tight">Productos</h1>
+        <NewCategoryButton />
         <AddProductButton categories={categories} />
         <ImportCsvButton />
+        <DeleteAllProductsButton hasProducts={(data ?? []).length > 0} />
       </div>
 
       <div className="flex flex-wrap gap-2">
