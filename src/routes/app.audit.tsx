@@ -491,7 +491,7 @@ function ProductNameSearch({ onPick }: { onPick: (barcode: string) => void }) {
 
 function CategoryAudit({ onPick }: { onPick: (barcode: string) => void }) {
   const [category, setCategory] = useState<string>("");
-  const [hideAudited, setHideAudited] = useState(true);
+  const [hideAudited, setHideAudited] = useState(false);
 
   const { data: categories = [] } = useQuery({
     queryKey: ["categories"],
