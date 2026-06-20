@@ -89,20 +89,20 @@ function ProductsPage() {
         <DeleteAllProductsButton hasProducts={(data ?? []).length > 0} />
       </div>
 
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-col gap-2 sm:flex-row">
         <div className="relative min-w-0 flex-1">
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
-            placeholder="Buscar por nombre o código…"
+            placeholder="Buscar producto..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="pl-9"
+            className="w-full pl-9"
           />
         </div>
         <select
           value={category}
           onChange={(e) => setCategory(e.target.value)}
-          className="h-10 rounded-md border bg-background px-2 text-sm"
+          className="h-10 w-full rounded-md border bg-background px-2 text-sm sm:w-auto"
         >
           <option value="__all__">Todas las categorías</option>
           {categories.map((c) => (
