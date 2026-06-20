@@ -575,16 +575,26 @@ function CategoryAudit({ onPick }: { onPick: (barcode: string) => void }) {
           ) : (
             visible.map((p) => {
               const total = Number(p.stock_a) + Number(p.stock_b);
+              const isDone = auditedToday.has(p.barcode);
               return (
                 <button
                   key={p.barcode}
                   type="button"
                   onClick={() => onPick(p.barcode)}
-                  className="flex w-full items-center justify-between gap-2 border-b px-3 py-2 text-left text-sm last:border-b-0 hover:bg-muted"
+                  className={
+                    "flex w-full items-center justify-between gap-2 border-b px-3 py-2 text-left text-sm last:border-b-0 " +
+                    (isDone
+                      ? "bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/40 dark:hover:bg-emerald-900/40"
+                      : "hover:bg-muted")
+                  }
                 >
                   <span className="min-w-0 truncate">
+                    {isDone && <span className="mr-1 text-emerald-600">✓</span>}
                     <span className="font-medium">{p.product_name}</span>{" "}
                     <span className="font-mono text-xs text-muted-foreground">{p.barcode}</span>
+                    {isDone && (
+                      <span className="ml-1 text-xs text-emerald-700 dark:text-emerald-400">· tocá para corregir</span>
+                    )}
                   </span>
                   <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
                     Total: {total}
