@@ -214,7 +214,10 @@ export type Database = {
           received_by_id: string | null
           received_by_name: string | null
           received_photo_url: string | null
+          received_quantity: number | null
+          received_receiver_name: string | null
           received_scanned_barcode: string | null
+          received_sender_name: string | null
           receiver_name: string
           sender_name: string
         }
@@ -234,7 +237,10 @@ export type Database = {
           received_by_id?: string | null
           received_by_name?: string | null
           received_photo_url?: string | null
+          received_quantity?: number | null
+          received_receiver_name?: string | null
           received_scanned_barcode?: string | null
+          received_sender_name?: string | null
           receiver_name: string
           sender_name: string
         }
@@ -254,7 +260,10 @@ export type Database = {
           received_by_id?: string | null
           received_by_name?: string | null
           received_photo_url?: string | null
+          received_quantity?: number | null
+          received_receiver_name?: string | null
           received_scanned_barcode?: string | null
+          received_sender_name?: string | null
           receiver_name?: string
           sender_name?: string
         }
