@@ -40,8 +40,10 @@ function TransferPage() {
   const [nameSearch, setNameSearch] = useState("");
   const [origin, setOrigin] = useState<Branch>("A");
   const [destination, setDestination] = useState<Branch>("B");
-  const [sender, setSender] = useState("");
+  const me = useCollaborator();
+  const [sender, setSender] = useState(me?.name ?? "");
   const [receiver, setReceiver] = useState("");
+  useEffect(() => { if (me?.name && !sender) setSender(me.name); }, [me?.name, sender]);
   const [photo, setPhoto] = useState<File | null>(null);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [busy, setBusy] = useState(false);
