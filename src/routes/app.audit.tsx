@@ -33,6 +33,7 @@ function AuditPage() {
   const qc = useQueryClient();
   const [code, setCode] = useState("");
   const [physical, setPhysical] = useState("");
+  const [branch, setBranch] = useState<"A" | "B">("A");
   const [current, setCurrent] = useState<Product | null>(null);
   const [busy, setBusy] = useState(false);
   const [scannerOpen, setScannerOpen] = useState(false);
@@ -63,12 +64,12 @@ function AuditPage() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("audits")
-        .select("id, physical_count, collaborator_name, created_at")
+        .select("id, physical_count, collaborator_name, branch, created_at")
         .eq("barcode", current!.barcode)
         .gte("created_at", startOfTodayIso())
         .order("created_at", { ascending: true });
       if (error) throw error;
-      return data as Array<{ id: string; physical_count: number; collaborator_name: string | null; created_at: string }>;
+      return data as Array<{ id: string; physical_count: number; collaborator_name: string | null; branch: "A" | "B" | null; created_at: string }>;
     },
   });
 
@@ -123,7 +124,7 @@ function AuditPage() {
       return;
     }
     const payload = {
-      branch: null as unknown as "A", // nullable in DB; types regenerate after migration
+      branch: branch as "A" | "B",
       barcode: current.barcode,
 
       product_name: current.product_name,
@@ -158,7 +159,11 @@ function AuditPage() {
 
   const totalStock = current ? Number(current.stock_a) + Number(current.stock_b) : 0;
   const sumToday = (todayForProduct ?? []).reduce((s, r) => s + Number(r.physical_count), 0);
+  const sumMina = (todayForProduct ?? []).filter((r) => r.branch === "A").reduce((s, r) => s + Number(r.physical_count), 0);
+  const sumMorelos = (todayForProduct ?? []).filter((r) => r.branch === "B").reduce((s, r) => s + Number(r.physical_count), 0);
   const previewSum = current && physical !== "" ? sumToday + Number(physical) : sumToday;
+  const previewMina = branch === "A" && physical !== "" ? sumMina + Number(physical) : sumMina;
+  const previewMorelos = branch === "B" && physical !== "" ? sumMorelos + Number(physical) : sumMorelos;
   const previewDiff = current ? previewSum - totalStock : 0;
 
   return (
@@ -233,6 +238,26 @@ function AuditPage() {
                 <div className="font-mono text-xs text-muted-foreground">{current.barcode}</div>
               </div>
 
+              <div>
+                <div className="mb-1 text-xs text-muted-foreground">Sucursal donde estás contando</div>
+                <div className="inline-flex overflow-hidden rounded-md border">
+                  <button
+                    type="button"
+                    onClick={() => setBranch("A")}
+                    className={`px-3 py-1.5 text-sm font-medium ${branch === "A" ? "bg-primary text-primary-foreground" : "bg-background"}`}
+                  >
+                    Mina
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setBranch("B")}
+                    className={`px-3 py-1.5 text-sm font-medium ${branch === "B" ? "bg-primary text-primary-foreground" : "bg-background"}`}
+                  >
+                    Morelos
+                  </button>
+                </div>
+              </div>
+
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <div className="text-xs text-muted-foreground">Stock total sistema</div>
@@ -256,6 +281,18 @@ function AuditPage() {
                 </div>
               </div>
 
+              {/* Per-branch sums */}
+              <div className="grid grid-cols-2 gap-2 text-sm">
+                <div className="rounded-md border bg-card p-2">
+                  <div className="text-xs text-muted-foreground">Suma Mina</div>
+                  <div className="text-lg font-semibold tabular-nums">{previewMina}</div>
+                </div>
+                <div className="rounded-md border bg-card p-2">
+                  <div className="text-xs text-muted-foreground">Suma Morelos</div>
+                  <div className="text-lg font-semibold tabular-nums">{previewMorelos}</div>
+                </div>
+              </div>
+
               {/* Today's breakdown by collaborator */}
               {(todayForProduct ?? []).length > 0 && (
                 <div className="rounded-md border bg-card p-2">
@@ -263,7 +300,12 @@ function AuditPage() {
                   <ul className="divide-y text-xs">
                     {(todayForProduct ?? []).map((r) => (
                       <li key={r.id} className="flex items-center justify-between py-1">
-                        <span className="truncate">{r.collaborator_name ?? "Anónimo"}</span>
+                        <span className="truncate">
+                          {r.collaborator_name ?? "Anónimo"}{" "}
+                          <span className="text-muted-foreground">
+                            · {r.branch === "A" ? "Mina" : r.branch === "B" ? "Morelos" : "—"}
+                          </span>
+                        </span>
                         <span className="tabular-nums">{r.physical_count}</span>
                       </li>
                     ))}
@@ -449,7 +491,7 @@ function ProductNameSearch({ onPick }: { onPick: (barcode: string) => void }) {
 
 function CategoryAudit({ onPick }: { onPick: (barcode: string) => void }) {
   const [category, setCategory] = useState<string>("");
-  const [hideAudited, setHideAudited] = useState(true);
+  const [hideAudited, setHideAudited] = useState(false);
 
   const { data: categories = [] } = useQuery({
     queryKey: ["categories"],
@@ -533,16 +575,26 @@ function CategoryAudit({ onPick }: { onPick: (barcode: string) => void }) {
           ) : (
             visible.map((p) => {
               const total = Number(p.stock_a) + Number(p.stock_b);
+              const isDone = auditedToday.has(p.barcode);
               return (
                 <button
                   key={p.barcode}
                   type="button"
                   onClick={() => onPick(p.barcode)}
-                  className="flex w-full items-center justify-between gap-2 border-b px-3 py-2 text-left text-sm last:border-b-0 hover:bg-muted"
+                  className={
+                    "flex w-full items-center justify-between gap-2 border-b px-3 py-2 text-left text-sm last:border-b-0 " +
+                    (isDone
+                      ? "bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/40 dark:hover:bg-emerald-900/40"
+                      : "hover:bg-muted")
+                  }
                 >
                   <span className="min-w-0 truncate">
+                    {isDone && <span className="mr-1 text-emerald-600">✓</span>}
                     <span className="font-medium">{p.product_name}</span>{" "}
                     <span className="font-mono text-xs text-muted-foreground">{p.barcode}</span>
+                    {isDone && (
+                      <span className="ml-1 text-xs text-emerald-700 dark:text-emerald-400">· tocá para corregir</span>
+                    )}
                   </span>
                   <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
                     Total: {total}

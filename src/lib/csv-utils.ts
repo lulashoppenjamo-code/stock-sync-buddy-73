@@ -53,10 +53,17 @@ export function parseCsv(file: File): Promise<ParsedRow[]> {
       skipEmptyLines: true,
       complete: (res) => {
         const rows: ParsedRow[] = [];
+        let missingIdx = 0;
+        const stamp = Date.now().toString(36).toUpperCase();
         for (const r of res.data) {
-          const barcode = pick(r, ["Barcode", "barcode", "Codigo", "Código", "CodigoBarras"]);
+          let barcode = pick(r, ["Barcode", "barcode", "Codigo", "Código", "CodigoBarras"]);
           const product_name = pick(r, ["ProductName", "Product", "Producto", "Nombre", "product_name"]);
-          if (!barcode || !product_name) continue;
+          if (!product_name) continue;
+          if (!barcode) {
+            missingIdx++;
+            // Synthetic code so products without barcode are still imported.
+            barcode = `SIN-${stamp}-${String(missingIdx).padStart(4, "0")}`;
+          }
           const uom = pick(r, ["UoM", "Uom", "Unidad", "Unit"]) || null;
           const category = pick(r, ["Category", "Categoria", "Categoría", "category"]) || null;
           const stock_a = parseNum(pick(r, ["StockA", "Stock_A", "Stock A", "Mina", "StockMina", "Stock Mina"]));

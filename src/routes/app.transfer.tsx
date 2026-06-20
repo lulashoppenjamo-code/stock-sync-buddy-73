@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -16,7 +17,7 @@ import {
 } from "@/components/ui/select";
 import { Camera, ArrowRight, Loader2, Send, ScanLine, Trash2 } from "lucide-react";
 import { toast } from "sonner";
-import { getCollaborator } from "@/lib/session";
+import { getCollaborator, useCollaborator } from "@/lib/session";
 import { BRANCH_LABELS } from "@/lib/branches";
 import { BarcodeScanner } from "@/components/BarcodeScanner";
 
@@ -39,8 +40,10 @@ function TransferPage() {
   const [nameSearch, setNameSearch] = useState("");
   const [origin, setOrigin] = useState<Branch>("A");
   const [destination, setDestination] = useState<Branch>("B");
-  const [sender, setSender] = useState("");
+  const me = useCollaborator();
+  const [sender, setSender] = useState(me?.name ?? "");
   const [receiver, setReceiver] = useState("");
+  useEffect(() => { if (me?.name && !sender) setSender(me.name); }, [me?.name, sender]);
   const [photo, setPhoto] = useState<File | null>(null);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [busy, setBusy] = useState(false);
@@ -354,18 +357,8 @@ function TransferPage() {
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div>
               <Label>Envía</Label>
-              <Select value={sender} onValueChange={setSender}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Seleccionar colaboradora…" />
-                </SelectTrigger>
-                <SelectContent>
-                  {collaborators.map((c) => (
-                    <SelectItem key={c.id} value={c.name}>
-                      {c.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Input value={sender} readOnly className="bg-muted" />
+              <p className="mt-1 text-xs text-muted-foreground">Tu sesión actual.</p>
             </div>
             <div>
               <Label>Recibe</Label>
