@@ -1,15 +1,22 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { Camera, Check, Loader2, ScanLine, PackageCheck, AlertCircle } from "lucide-react";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Camera, Check, Loader2, PackageCheck, AlertCircle } from "lucide-react";
 import { toast } from "sonner";
-import { getCollaborator } from "@/lib/session";
+import { getCollaborator, useCollaborator } from "@/lib/session";
 import { BRANCH_LABELS } from "@/lib/branches";
 import { BarcodeScanner } from "@/components/BarcodeScanner";
 
@@ -59,7 +66,7 @@ function ReceptionPage() {
       </div>
 
       <p className="text-xs text-muted-foreground">
-        Pistoleá la mercancía y sacá foto al recibirla para confirmar el traspaso.
+        Confirmá los mismos datos que en el envío: cantidad, quién envió, quién recibe, código y foto.
       </p>
 
       {isLoading ? (
@@ -122,25 +129,50 @@ function ReceiveDialog({
   onClose: () => void;
   onDone: () => void;
 }) {
+  const me = useCollaborator();
   const [scanned, setScanned] = useState("");
   const [photo, setPhoto] = useState<File | null>(null);
   const [scannerOpen, setScannerOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [qty, setQty] = useState<string>("");
+  const [sender, setSender] = useState<string>("");
+  const [receiver, setReceiver] = useState<string>("");
   const photoRef = useRef<HTMLInputElement>(null);
   const galleryRef = useRef<HTMLInputElement>(null);
+
+  const { data: collaborators = [] } = useQuery({
+    queryKey: ["collaborators-active"],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("collaborators")
+        .select("id, name")
+        .eq("active", true)
+        .order("name");
+      if (error) throw error;
+      return data as Array<{ id: string; name: string }>;
+    },
+  });
+
+  useEffect(() => {
+    if (transfer) {
+      setQty(String(transfer.quantity));
+      setSender(transfer.sender_name);
+      setReceiver(me?.name ?? transfer.receiver_name ?? "");
+      setScanned("");
+      setPhoto(null);
+    }
+  }, [transfer, me?.name]);
 
   const matches = !!transfer && scanned.trim() === transfer.barcode;
 
   async function confirm() {
     if (!transfer) return;
-    if (!matches) {
-      toast.error("El código escaneado no coincide con el del traspaso");
-      return;
-    }
-    if (!photo) {
-      toast.error("Tomá foto de la mercancía recibida");
-      return;
-    }
+    if (!matches) return toast.error("El código escaneado no coincide con el del traspaso");
+    if (!photo) return toast.error("Tomá foto de la mercancía recibida");
+    const qtyNum = Number(qty);
+    if (!Number.isFinite(qtyNum) || qtyNum <= 0) return toast.error("Cantidad recibida inválida");
+    if (!sender.trim()) return toast.error("Indicá quién envió");
+    if (!receiver.trim()) return toast.error("Indicá quién recibe");
     const collab = getCollaborator();
     if (!collab) return toast.error("Sesión expirada");
 
@@ -165,13 +197,14 @@ function ReceiveDialog({
           received_by_name: collab.name,
           received_photo_url,
           received_scanned_barcode: scanned.trim(),
+          received_quantity: qtyNum,
+          received_sender_name: sender.trim(),
+          received_receiver_name: receiver.trim(),
         })
         .eq("id", transfer.id);
       if (error) throw error;
 
       toast.success("Traspaso recibido");
-      setScanned("");
-      setPhoto(null);
       onDone();
     } catch (e) {
       toast.error((e as Error).message);
@@ -181,8 +214,8 @@ function ReceiveDialog({
   }
 
   return (
-    <Dialog open={!!transfer} onOpenChange={(o) => { if (!o) { setScanned(""); setPhoto(null); onClose(); } }}>
-      <DialogContent className="max-w-md">
+    <Dialog open={!!transfer} onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent className="max-h-[90vh] max-w-md overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Confirmar recepción</DialogTitle>
         </DialogHeader>
@@ -192,9 +225,54 @@ function ReceiveDialog({
               <div className="font-medium">{transfer.product_name}</div>
               <div className="font-mono text-xs text-muted-foreground">{transfer.barcode}</div>
               <div className="mt-1 text-xs">
-                Cantidad esperada: <span className="font-semibold">{transfer.quantity}</span> ·{" "}
-                {BRANCH_LABELS[transfer.origin]} → {BRANCH_LABELS[transfer.destination]}
+                {BRANCH_LABELS[transfer.origin]} → {BRANCH_LABELS[transfer.destination]} · enviadas:{" "}
+                <span className="font-semibold">{transfer.quantity}</span>
               </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div>
+                <Label>Envía</Label>
+                <Select value={sender} onValueChange={setSender}>
+                  <SelectTrigger><SelectValue placeholder="Seleccionar…" /></SelectTrigger>
+                  <SelectContent>
+                    {collaborators.map((c) => (
+                      <SelectItem key={c.id} value={c.name}>{c.name}</SelectItem>
+                    ))}
+                    {sender && !collaborators.some((c) => c.name === sender) && (
+                      <SelectItem value={sender}>{sender}</SelectItem>
+                    )}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label>Recibe</Label>
+                <Select value={receiver} onValueChange={setReceiver}>
+                  <SelectTrigger><SelectValue placeholder="Seleccionar…" /></SelectTrigger>
+                  <SelectContent>
+                    {collaborators.map((c) => (
+                      <SelectItem key={c.id} value={c.name}>{c.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div>
+              <Label>Cantidad recibida</Label>
+              <Input
+                type="number"
+                inputMode="decimal"
+                step="any"
+                min={0}
+                value={qty}
+                onChange={(e) => setQty(e.target.value)}
+              />
+              {Number(qty) !== Number(transfer.quantity) && (
+                <p className="mt-1 text-xs text-amber-600">
+                  Difiere de lo enviado ({transfer.quantity}).
+                </p>
+              )}
             </div>
 
             <div>
