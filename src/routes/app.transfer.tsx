@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import { useCollaborator } from "@/lib/session";
+
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/select";
 import { Camera, ArrowRight, Loader2, Send, ScanLine, Trash2 } from "lucide-react";
 import { toast } from "sonner";
-import { getCollaborator } from "@/lib/session";
+import { getCollaborator, useCollaborator } from "@/lib/session";
 import { BRANCH_LABELS } from "@/lib/branches";
 import { BarcodeScanner } from "@/components/BarcodeScanner";
 
