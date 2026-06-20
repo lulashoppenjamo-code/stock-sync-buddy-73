@@ -238,6 +238,26 @@ function AuditPage() {
                 <div className="font-mono text-xs text-muted-foreground">{current.barcode}</div>
               </div>
 
+              <div>
+                <div className="mb-1 text-xs text-muted-foreground">Sucursal donde estás contando</div>
+                <div className="inline-flex overflow-hidden rounded-md border">
+                  <button
+                    type="button"
+                    onClick={() => setBranch("A")}
+                    className={`px-3 py-1.5 text-sm font-medium ${branch === "A" ? "bg-primary text-primary-foreground" : "bg-background"}`}
+                  >
+                    Mina
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setBranch("B")}
+                    className={`px-3 py-1.5 text-sm font-medium ${branch === "B" ? "bg-primary text-primary-foreground" : "bg-background"}`}
+                  >
+                    Morelos
+                  </button>
+                </div>
+              </div>
+
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <div className="text-xs text-muted-foreground">Stock total sistema</div>
@@ -261,6 +281,18 @@ function AuditPage() {
                 </div>
               </div>
 
+              {/* Per-branch sums */}
+              <div className="grid grid-cols-2 gap-2 text-sm">
+                <div className="rounded-md border bg-card p-2">
+                  <div className="text-xs text-muted-foreground">Suma Mina</div>
+                  <div className="text-lg font-semibold tabular-nums">{previewMina}</div>
+                </div>
+                <div className="rounded-md border bg-card p-2">
+                  <div className="text-xs text-muted-foreground">Suma Morelos</div>
+                  <div className="text-lg font-semibold tabular-nums">{previewMorelos}</div>
+                </div>
+              </div>
+
               {/* Today's breakdown by collaborator */}
               {(todayForProduct ?? []).length > 0 && (
                 <div className="rounded-md border bg-card p-2">
@@ -268,7 +300,12 @@ function AuditPage() {
                   <ul className="divide-y text-xs">
                     {(todayForProduct ?? []).map((r) => (
                       <li key={r.id} className="flex items-center justify-between py-1">
-                        <span className="truncate">{r.collaborator_name ?? "Anónimo"}</span>
+                        <span className="truncate">
+                          {r.collaborator_name ?? "Anónimo"}{" "}
+                          <span className="text-muted-foreground">
+                            · {r.branch === "A" ? "Mina" : r.branch === "B" ? "Morelos" : "—"}
+                          </span>
+                        </span>
                         <span className="tabular-nums">{r.physical_count}</span>
                       </li>
                     ))}
