@@ -159,7 +159,11 @@ function AuditPage() {
 
   const totalStock = current ? Number(current.stock_a) + Number(current.stock_b) : 0;
   const sumToday = (todayForProduct ?? []).reduce((s, r) => s + Number(r.physical_count), 0);
+  const sumMina = (todayForProduct ?? []).filter((r) => r.branch === "A").reduce((s, r) => s + Number(r.physical_count), 0);
+  const sumMorelos = (todayForProduct ?? []).filter((r) => r.branch === "B").reduce((s, r) => s + Number(r.physical_count), 0);
   const previewSum = current && physical !== "" ? sumToday + Number(physical) : sumToday;
+  const previewMina = branch === "A" && physical !== "" ? sumMina + Number(physical) : sumMina;
+  const previewMorelos = branch === "B" && physical !== "" ? sumMorelos + Number(physical) : sumMorelos;
   const previewDiff = current ? previewSum - totalStock : 0;
 
   return (
