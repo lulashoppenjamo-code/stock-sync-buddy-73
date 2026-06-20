@@ -33,6 +33,7 @@ function AuditPage() {
   const qc = useQueryClient();
   const [code, setCode] = useState("");
   const [physical, setPhysical] = useState("");
+  const [branch, setBranch] = useState<"A" | "B">("A");
   const [current, setCurrent] = useState<Product | null>(null);
   const [busy, setBusy] = useState(false);
   const [scannerOpen, setScannerOpen] = useState(false);
@@ -63,12 +64,12 @@ function AuditPage() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("audits")
-        .select("id, physical_count, collaborator_name, created_at")
+        .select("id, physical_count, collaborator_name, branch, created_at")
         .eq("barcode", current!.barcode)
         .gte("created_at", startOfTodayIso())
         .order("created_at", { ascending: true });
       if (error) throw error;
-      return data as Array<{ id: string; physical_count: number; collaborator_name: string | null; created_at: string }>;
+      return data as Array<{ id: string; physical_count: number; collaborator_name: string | null; branch: "A" | "B" | null; created_at: string }>;
     },
   });
 
@@ -123,7 +124,7 @@ function AuditPage() {
       return;
     }
     const payload = {
-      branch: null as unknown as "A", // nullable in DB; types regenerate after migration
+      branch: branch as "A" | "B",
       barcode: current.barcode,
 
       product_name: current.product_name,
