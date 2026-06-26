@@ -114,7 +114,7 @@ function ReceptionPage() {
       </div>
 
       <p className="text-xs text-muted-foreground">
-        Cada tarjeta es un envío completo. Pistoleá cada producto para confirmar la recepción.
+        Cada tarjeta es un envío completo. Pistoleá cada unidad individualmente para confirmar la recepción.
       </p>
 
       {isLoading ? (
@@ -209,8 +209,8 @@ function BatchReceiveDialog({
   const [sender, setSender] = useState<string>("");
   const [receiver, setReceiver] = useState<string>("");
   const [nameSearch, setNameSearch] = useState("");
-  // Set de barcodes ya confirmados en esta recepción
-  const [confirmed, setConfirmed] = useState<Set<string>>(new Set());
+  // Mapa barcode -> cuántas unidades se han pistoleado (debe llegar a item.quantity)
+  const [scannedCounts, setScannedCounts] = useState<Map<string, number>>(new Map());
   const [scanInput, setScanInput] = useState("");
   const photoRef = useRef<HTMLInputElement>(null);
   const galleryRef = useRef<HTMLInputElement>(null);
@@ -233,7 +233,7 @@ function BatchReceiveDialog({
     if (batch) {
       setSender(batch.sender_name);
       setReceiver(me?.name ?? batch.receiver_name ?? "");
-      setConfirmed(new Set());
+      setScannedCounts(new Map());
       setPhoto(null);
       setScanInput("");
       setNameSearch("");
@@ -241,9 +241,21 @@ function BatchReceiveDialog({
   }, [batch, me?.name]);
 
   const batchBarcodes = batch?.items.map((i) => i.barcode) ?? [];
-  const allConfirmed = batch !== null && confirmed.size === batch.items.length;
 
-  function confirmBarcode(code: string) {
+  // Un producto está completo cuando se pistoleó la cantidad exacta
+  function isItemComplete(barcode: string): boolean {
+    const item = batch?.items.find((i) => i.barcode === barcode);
+    if (!item) return false;
+    return (scannedCounts.get(barcode) ?? 0) >= item.quantity;
+  }
+
+  const allConfirmed = batch !== null && batch.items.every((i) => isItemComplete(i.barcode));
+
+  // Total pistoleado vs total esperado
+  const totalScanned = Array.from(scannedCounts.values()).reduce((s, v) => s + v, 0);
+  const totalExpected = batch?.totalQuantity ?? 0;
+
+  function scanUnit(code: string) {
     const c = code.trim();
     if (!c) return;
     if (!batchBarcodes.includes(c)) {
@@ -251,21 +263,28 @@ function BatchReceiveDialog({
       setScanInput("");
       return;
     }
-    if (confirmed.has(c)) {
-      toast.info("Ese producto ya fue confirmado");
+    const item = batch?.items.find((i) => i.barcode === c);
+    if (!item) return;
+    const current = scannedCounts.get(c) ?? 0;
+    if (current >= item.quantity) {
+      toast.info(`${item.product_name} ya tiene las ${item.quantity} unidades completas`);
       setScanInput("");
       return;
     }
-    setConfirmed((prev) => new Set([...prev, c]));
-    const item = batch?.items.find((i) => i.barcode === c);
-    toast.success(`✓ ${item?.product_name ?? c}`);
+    const next = current + 1;
+    setScannedCounts((prev) => new Map(prev).set(c, next));
+    if (next === item.quantity) {
+      toast.success(`✓ ${item.product_name} completo (${next}/${item.quantity})`);
+    } else {
+      toast.success(`${item.product_name}: ${next}/${item.quantity} unidades`);
+    }
     setScanInput("");
     scanInputRef.current?.focus();
   }
 
   async function confirm() {
     if (!batch) return;
-    if (!allConfirmed) return toast.error("Faltan productos por pistolar");
+    if (!allConfirmed) return toast.error("Faltan unidades por pistolar");
     if (!photo) return toast.error("Tomá foto de la mercancía recibida");
     if (!sender.trim()) return toast.error("Indicá quién envió");
     if (!receiver.trim()) return toast.error("Indicá quién recibe");
@@ -293,7 +312,7 @@ function BatchReceiveDialog({
           received_by_id: collab.id,
           received_by_name: collab.name,
           received_photo_url,
-          received_scanned_barcode: Array.from(confirmed).join(","),
+          received_scanned_barcode: Array.from(scannedCounts.entries()).map(([bc, qty]) => `${bc}x${qty}`).join(","),
           received_sender_name: sender.trim(),
           received_receiver_name: receiver.trim(),
         })
@@ -318,18 +337,19 @@ function BatchReceiveDialog({
         {batch && (
           <div className="space-y-3 text-sm">
 
-            {/* Progreso */}
+            {/* Progreso total */}
             <div className="flex items-center justify-between rounded-md bg-muted px-3 py-2">
-              <span className="text-xs font-medium">Productos confirmados</span>
+              <span className="text-xs font-medium">Unidades pistoleadas</span>
               <span className={`text-sm font-bold tabular-nums ${allConfirmed ? "text-emerald-600" : "text-amber-600"}`}>
-                {confirmed.size} / {batch.items.length}
+                {totalScanned} / {totalExpected}
               </span>
             </div>
 
-            {/* Lista de productos con check */}
+            {/* Lista de productos con progreso por unidades */}
             <div className="divide-y rounded-md border">
               {batch.items.map((item) => {
-                const done = confirmed.has(item.barcode);
+                const scanned = scannedCounts.get(item.barcode) ?? 0;
+                const done = scanned >= item.quantity;
                 return (
                   <div key={item.id} className={`flex items-center gap-2 px-3 py-2 text-xs ${done ? "bg-emerald-50 dark:bg-emerald-950/20" : ""}`}>
                     <div className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 ${done ? "border-emerald-500 bg-emerald-500 text-white" : "border-muted-foreground"}`}>
@@ -339,7 +359,11 @@ function BatchReceiveDialog({
                       <div className={`truncate font-medium ${done ? "line-through text-muted-foreground" : ""}`}>
                         {item.product_name}
                       </div>
-                      <div className="font-mono text-muted-foreground">{item.barcode} · ×{item.quantity}</div>
+                      <div className="font-mono text-muted-foreground">{item.barcode}</div>
+                    </div>
+                    {/* Contador de unidades */}
+                    <div className={`shrink-0 text-xs font-bold tabular-nums ${done ? "text-emerald-600" : scanned > 0 ? "text-amber-600" : "text-muted-foreground"}`}>
+                      {scanned}/{item.quantity}
                     </div>
                     {!done && (
                       <Button
@@ -347,9 +371,9 @@ function BatchReceiveDialog({
                         size="sm"
                         variant="ghost"
                         className="h-7 text-xs"
-                        onClick={() => confirmBarcode(item.barcode)}
+                        onClick={() => scanUnit(item.barcode)}
                       >
-                        Marcar
+                        +1
                       </Button>
                     )}
                   </div>
@@ -359,7 +383,7 @@ function BatchReceiveDialog({
 
             {/* Escanear */}
             <div>
-              <Label>Pistolá o escaneá cada producto</Label>
+              <Label>Pistolá cada unidad individualmente</Label>
               <div className="flex gap-2">
                 <Input
                   ref={scanInputRef}
@@ -369,7 +393,7 @@ function BatchReceiveDialog({
                   onKeyDown={(e) => {
                     if (e.key === "Enter") {
                       e.preventDefault();
-                      confirmBarcode(scanInput);
+                      scanUnit(scanInput);
                     }
                   }}
                   placeholder="Código de barras…"
@@ -380,11 +404,14 @@ function BatchReceiveDialog({
                   <ScanLine className="h-4 w-4" />
                 </Button>
               </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Cada disparo suma 1 unidad al producto. Pistolealas todas para marcar completo.
+              </p>
             </div>
 
             {/* Buscar por nombre */}
             <div>
-              <Label>O buscar por nombre</Label>
+              <Label>O buscar por nombre (suma +1)</Label>
               <Input
                 value={nameSearch}
                 onChange={(e) => setNameSearch(e.target.value)}
@@ -394,21 +421,25 @@ function BatchReceiveDialog({
                 <div className="mt-1 max-h-40 overflow-auto rounded-md border bg-card">
                   {batch.items
                     .filter((i) => i.product_name.toLowerCase().includes(nameSearch.toLowerCase()))
-                    .map((item) => (
-                      <button
-                        key={item.barcode}
-                        type="button"
-                        disabled={confirmed.has(item.barcode)}
-                        onClick={() => {
-                          confirmBarcode(item.barcode);
-                          setNameSearch("");
-                        }}
-                        className="flex w-full items-center justify-between gap-2 border-b px-3 py-2 text-left text-xs last:border-b-0 hover:bg-muted disabled:opacity-40"
-                      >
-                        <span className="truncate font-medium">{item.product_name}</span>
-                        <span className="shrink-0 text-muted-foreground">×{item.quantity}</span>
-                      </button>
-                    ))}
+                    .map((item) => {
+                      const scanned = scannedCounts.get(item.barcode) ?? 0;
+                      const done = scanned >= item.quantity;
+                      return (
+                        <button
+                          key={item.barcode}
+                          type="button"
+                          disabled={done}
+                          onClick={() => {
+                            scanUnit(item.barcode);
+                            setNameSearch("");
+                          }}
+                          className="flex w-full items-center justify-between gap-2 border-b px-3 py-2 text-left text-xs last:border-b-0 hover:bg-muted disabled:opacity-40"
+                        >
+                          <span className="truncate font-medium">{item.product_name}</span>
+                          <span className="shrink-0 text-muted-foreground">{scanned}/{item.quantity}</span>
+                        </button>
+                      );
+                    })}
                   {batch.items.filter((i) => i.product_name.toLowerCase().includes(nameSearch.toLowerCase())).length === 0 && (
                     <div className="px-3 py-2 text-xs text-muted-foreground">Sin resultados en este envío</div>
                   )}
@@ -470,14 +501,14 @@ function BatchReceiveDialog({
           <Button variant="outline" onClick={onClose} disabled={busy}>Cancelar</Button>
           <Button onClick={confirm} disabled={busy || !allConfirmed || !photo}>
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
-            Confirmar recepción {batch && `(${confirmed.size}/${batch.items.length})`}
+            Confirmar recepción {batch && `(${totalScanned}/${totalExpected})`}
           </Button>
         </DialogFooter>
 
         <BarcodeScanner
           open={scannerOpen}
           onClose={() => setScannerOpen(false)}
-          onDetected={(code) => confirmBarcode(code)}
+          onDetected={(code) => scanUnit(code)}
         />
       </DialogContent>
     </Dialog>
