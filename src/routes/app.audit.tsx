@@ -128,21 +128,29 @@ function AuditPage() {
     },
   });
 
-  const { data: categories = [] } = useQuery({
+  // SE OPTIMIZÓ ESTA CONSULTA: Trae todas las categorías del archivo de inventario importado de forma limpia
+  const { data: categories = [], isLoading: isLoadingCategories } = useQuery({
     queryKey: ["categories"],
     queryFn: async () => {
       const { data, error } = await supabase
         .from("products")
         .select("category")
-        .not("category", "is", null);
+        .not("category", "is", null)
+        .filter("category", "neq", ""); // Evita traer espacios vacíos si el excel venía con celdas en blanco
+        
       if (error) throw error;
+      
       const set = new Set<string>();
-      for (const r of data ?? []) if (r.category) set.add(r.category);
-      return Array.from(set).sort();
+      for (const r of data ?? []) {
+        if (r.category) {
+          set.add(r.category.trim()); // Limpia espacios accidentales al inicio/final
+        }
+      }
+      return Array.from(set).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
     },
   });
 
-  const { data: categoryProducts = [] } = useQuery({
+  const { data: categoryProducts = [], isFetching: isFetchingProducts } = useQuery({
     queryKey: ["category-products", selectedCategory],
     enabled: !!selectedCategory,
     queryFn: async () => {
@@ -228,10 +236,8 @@ function AuditPage() {
 
   // ── Category mode: add/update count ──
   const addToCount = useCallback(async (barcode: string, delta = 1) => {
-    // Find product in categoryProducts first
     let prod = categoryProducts.find((p) => p.barcode === barcode);
     if (!prod) {
-      // Try DB lookup
       const result = await lookup(barcode);
       if (!result) return;
       if (result.category !== selectedCategory) {
@@ -299,7 +305,6 @@ function AuditPage() {
       const { error } = await supabase.from("audits").insert(rows);
       if (error) throw error;
 
-      // Build summary
       const summary = rows.map((r) => ({
         product_name: r.product_name,
         barcode: r.barcode,
@@ -316,7 +321,6 @@ function AuditPage() {
     finally { setSavingCategory(false); }
   }
 
-  // ── Delete audit (admin only) ──
   async function deleteAudit(id: string) {
     admin.requireAdmin(async () => {
       const { error } = await supabase.from("audits").delete().eq("id", id);
@@ -326,7 +330,6 @@ function AuditPage() {
     });
   }
 
-  // ── Computed for single mode ──
   const totalStock = current ? Number(current.stock_a) + Number(current.stock_b) : 0;
   const sumToday = (todayForProduct ?? []).reduce((s, r) => s + Number(r.physical_count), 0);
   const sumMina = (todayForProduct ?? []).filter((r) => r.branch === "A").reduce((s, r) => s + Number(r.physical_count), 0);
@@ -336,7 +339,6 @@ function AuditPage() {
   const previewMorelos = branch === "B" && physical !== "" ? sumMorelos + Number(physical) : sumMorelos;
   const previewDiff = current ? previewSum - totalStock : 0;
 
-  // ── Today's real-time counts per barcode from other users ──
   const todayCatByBarcode = new Map<string, { mina: number; morelos: number }>();
   for (const r of todayCategory) {
     const entry = todayCatByBarcode.get(r.barcode) ?? { mina: 0, morelos: 0 };
@@ -471,8 +473,14 @@ function AuditPage() {
                 <label className="text-xs font-medium text-muted-foreground">Categoría</label>
                 <select value={selectedCategory} onChange={(e) => { setSelectedCategory(e.target.value); setCounts(new Map()); }}
                   className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm">
-                  <option value="">Elegir categoría…</option>
-                  {categories.map((c) => <option key={c} value={c}>{c}</option>)}
+                  {isLoadingCategories ? (
+                    <option>Cargando categorías del inventario...</option>
+                  ) : (
+                    <>
+                      <option value="">Elegir categoría ({categories.length} encontradas)…</option>
+                      {categories.map((c) => <option key={c} value={c}>{c}</option>)}
+                    </>
+                  )}
                 </select>
               </div>
               <div>
@@ -535,7 +543,7 @@ function AuditPage() {
                 <div className="space-y-1">
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-medium text-muted-foreground">
-                      Productos de la categoría · {counts.size} contados / {categoryProducts.length} total
+                      {isFetchingProducts ? "Cargando productos de la categoría..." : `Productos de la categoría · ${counts.size} contados / ${categoryProducts.length} total`}
                     </span>
                   </div>
                   <div className="max-h-80 overflow-auto rounded-md border divide-y">
@@ -553,7 +561,6 @@ function AuditPage() {
                           <div className="min-w-0 flex-1">
                             <div className={`truncate font-medium ${isCounted ? "" : "text-muted-foreground"}`}>{p.product_name}</div>
                             <div className="font-mono text-muted-foreground">{p.barcode}</div>
-                            {/* Real-time other users */}
                             {realtime && (
                               <div className="mt-0.5 text-[10px] text-blue-600 dark:text-blue-400">
                                 Tiempo real → Mina: {realtime.mina} · Morelos: {realtime.morelos}
