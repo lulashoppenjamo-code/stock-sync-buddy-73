@@ -11,7 +11,7 @@
     "lint": "eslint .",
     "format": "prettier --write ."
   },
-  "dependencies": {
+  "dependencies": {"html5-qrcode": "^2.3.8",
     "@hookform/resolvers": "^5.2.2",
     "@radix-ui/react-accordion": "^1.2.12",
     "@radix-ui/react-alert-dialog": "^1.1.15",
