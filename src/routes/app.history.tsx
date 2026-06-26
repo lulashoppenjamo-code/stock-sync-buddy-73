@@ -13,7 +13,7 @@ export const Route = createFileRoute("/app/history")({
   component: HistoryPage,
 });
 
-// ── Types ──────────────────────────────────────────────────────────────
+// ── Transfer types ─────────────────────────────────────────────────────
 type TransferRow = {
   id: string;
   barcode: string;
@@ -76,7 +76,6 @@ function groupTransfersByBatch(rows: TransferRow[]): BatchDetail[] {
     const g = map.get(batchId)!;
     g.items.push(t);
     g.totalQuantity += t.quantity;
-    // Use most recent received_at in batch
     if (t.received_at && (!g.received_at || t.received_at > g.received_at)) {
       g.received_at = t.received_at;
       g.received_by_name = t.received_by_name;
@@ -85,6 +84,58 @@ function groupTransfersByBatch(rows: TransferRow[]): BatchDetail[] {
   }
   return Array.from(map.values()).sort(
     (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+  );
+}
+
+// ── Audit types ────────────────────────────────────────────────────────
+type AuditRow = {
+  id: string;
+  branch: string | null;
+  barcode: string;
+  product_name: string;
+  system_stock: number;
+  physical_count: number;
+  difference: number;
+  collaborator_name: string | null;
+  created_at: string;
+};
+
+type AuditGroup = {
+  barcode: string;
+  product_name: string;
+  system_stock: number;
+  totalCount: number;
+  difference: number;
+  lastDate: string;
+  entries: AuditRow[];
+};
+
+function groupAuditsByProduct(rows: AuditRow[]): AuditGroup[] {
+  const map = new Map<string, AuditGroup>();
+  for (const a of rows) {
+    if (!map.has(a.barcode)) {
+      map.set(a.barcode, {
+        barcode: a.barcode,
+        product_name: a.product_name,
+        system_stock: a.system_stock,
+        totalCount: 0,
+        difference: 0,
+        lastDate: a.created_at,
+        entries: [],
+      });
+    }
+    const g = map.get(a.barcode)!;
+    g.entries.push(a);
+    g.totalCount += Number(a.physical_count);
+    if (a.created_at > g.lastDate) g.lastDate = a.created_at;
+  }
+  for (const g of map.values()) {
+    const latest = g.entries.reduce((a, b) => (a.created_at > b.created_at ? a : b));
+    g.system_stock = latest.system_stock;
+    g.difference = g.totalCount - g.system_stock;
+  }
+  return Array.from(map.values()).sort(
+    (a, b) => new Date(b.lastDate).getTime() - new Date(a.lastDate).getTime()
   );
 }
 
@@ -107,7 +158,7 @@ function HistoryPage() {
   );
 }
 
-// ── Transfers table (grouped by batch, tappable) ───────────────────────
+// ── Transfers table ────────────────────────────────────────────────────
 function TransfersTable() {
   const [selected, setSelected] = useState<BatchDetail | null>(null);
 
@@ -155,13 +206,9 @@ function TransfersTable() {
                       <div className="text-sm font-medium">
                         {b.items.length} producto{b.items.length === 1 ? "" : "s"}
                       </div>
-                      <div className="text-xs text-muted-foreground">
-                        de {b.sender_name}
-                      </div>
+                      <div className="text-xs text-muted-foreground">de {b.sender_name}</div>
                     </TableCell>
-                    <TableCell className="text-right tabular-nums font-semibold">
-                      {b.totalQuantity}
-                    </TableCell>
+                    <TableCell className="text-right tabular-nums font-semibold">{b.totalQuantity}</TableCell>
                     <TableCell className="text-xs font-medium">
                       {branchLabel(b.origin)} → {branchLabel(b.destination)}
                     </TableCell>
@@ -188,13 +235,11 @@ function TransfersTable() {
           </div>
         </CardContent>
       </Card>
-
       <TransferDetailDialog batch={selected} onClose={() => setSelected(null)} />
     </>
   );
 }
 
-// ── Detail dialog ──────────────────────────────────────────────────────
 function TransferDetailDialog({ batch, onClose }: { batch: BatchDetail | null; onClose: () => void }) {
   if (!batch) return null;
   return (
@@ -203,9 +248,7 @@ function TransferDetailDialog({ batch, onClose }: { batch: BatchDetail | null; o
         <DialogHeader>
           <DialogTitle>Detalle del traspaso</DialogTitle>
         </DialogHeader>
-
         <div className="space-y-4 text-sm">
-          {/* Info general */}
           <div className="rounded-md border bg-muted/40 p-3 space-y-1 text-xs">
             <div className="flex items-center gap-2 font-semibold text-sm">
               <span>{branchLabel(batch.origin)}</span>
@@ -219,8 +262,6 @@ function TransferDetailDialog({ batch, onClose }: { batch: BatchDetail | null; o
               <div><span className="text-muted-foreground">Recibido: </span>{new Date(batch.received_at).toLocaleString()} por {batch.received_by_name ?? "—"}</div>
             )}
           </div>
-
-          {/* Estado */}
           <div className="flex items-center gap-2">
             {batch.received_at ? (
               <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-3 py-1 text-xs font-medium text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200">
@@ -233,8 +274,6 @@ function TransferDetailDialog({ batch, onClose }: { batch: BatchDetail | null; o
             )}
             <span className="text-xs text-muted-foreground">{batch.totalQuantity} unidades totales</span>
           </div>
-
-          {/* Productos */}
           <div>
             <p className="mb-1.5 text-xs font-semibold text-muted-foreground uppercase tracking-wide">
               Productos ({batch.items.length})
@@ -254,8 +293,6 @@ function TransferDetailDialog({ batch, onClose }: { batch: BatchDetail | null; o
               ))}
             </div>
           </div>
-
-          {/* Fotos */}
           <div className="grid grid-cols-2 gap-3">
             {batch.photo_url && (
               <div>
@@ -280,62 +317,168 @@ function TransferDetailDialog({ batch, onClose }: { batch: BatchDetail | null; o
   );
 }
 
-// ── Audits table (unchanged) ───────────────────────────────────────────
+// ── Audits table (grouped by product, tappable) ────────────────────────
 function AuditsTable() {
-  const { data } = useQuery({
+  const [selected, setSelected] = useState<AuditGroup | null>(null);
+
+  const { data = [] } = useQuery({
     queryKey: ["audits"],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from("audits")
-        .select("id, branch, barcode, product_name, system_stock, physical_count, difference, collaborator_name, created_at")
-        .order("created_at", { ascending: false })
-        .limit(200);
-      if (error) throw error;
-      return data;
+      // Paginate to get ALL audit records, not just the first 500
+      const all: AuditRow[] = [];
+      const pageSize = 1000;
+      let from = 0;
+      while (true) {
+        const { data, error } = await supabase
+          .from("audits")
+          .select("id, branch, barcode, product_name, system_stock, physical_count, difference, collaborator_name, created_at")
+          .order("created_at", { ascending: false })
+          .range(from, from + pageSize - 1);
+        if (error) throw error;
+        all.push(...(data as AuditRow[]));
+        if ((data ?? []).length < pageSize) break;
+        from += pageSize;
+      }
+      return all;
     },
   });
+
+  const groups = groupAuditsByProduct(data);
+
   return (
-    <Card>
-      <CardContent className="p-0">
-        <div className="max-h-[65vh] overflow-auto">
-          <Table>
-            <TableHeader className="sticky top-0 bg-card">
-              <TableRow>
-                <TableHead>Fecha</TableHead>
-                <TableHead>Suc.</TableHead>
-                <TableHead>Producto</TableHead>
-                <TableHead className="text-right">Sistema</TableHead>
-                <TableHead className="text-right">Físico</TableHead>
-                <TableHead className="text-right">Dif.</TableHead>
-                <TableHead className="hidden md:table-cell">Por</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {(data ?? []).map((a) => (
-                <TableRow key={a.id}>
-                  <TableCell className="text-xs">{new Date(a.created_at).toLocaleString()}</TableCell>
-                  <TableCell>{branchLabel(a.branch)}</TableCell>
-                  <TableCell>{a.product_name}<div className="font-mono text-xs text-muted-foreground">{a.barcode}</div></TableCell>
-                  <TableCell className="text-right tabular-nums">{a.system_stock}</TableCell>
-                  <TableCell className="text-right tabular-nums">{a.physical_count}</TableCell>
-                  <TableCell className={`text-right tabular-nums font-medium ${a.difference === 0 ? "" : a.difference > 0 ? "text-emerald-600" : "text-red-600"}`}>
-                    {a.difference > 0 ? "+" : ""}{a.difference}
-                  </TableCell>
-                  <TableCell className="hidden md:table-cell text-xs text-muted-foreground">{a.collaborator_name}</TableCell>
+    <>
+      <Card>
+        <CardContent className="p-0">
+          <div className="max-h-[65vh] overflow-auto">
+            <Table>
+              <TableHeader className="sticky top-0 bg-card">
+                <TableRow>
+                  <TableHead>Producto</TableHead>
+                  <TableHead className="text-right">Sistema</TableHead>
+                  <TableHead className="text-right">Conteo</TableHead>
+                  <TableHead className="text-right">Dif.</TableHead>
+                  <TableHead className="text-right">#</TableHead>
                 </TableRow>
-              ))}
-              {(data ?? []).length === 0 && (
-                <TableRow><TableCell colSpan={7} className="py-8 text-center text-muted-foreground">Sin auditorías</TableCell></TableRow>
-              )}
-            </TableBody>
-          </Table>
-        </div>
-      </CardContent>
-    </Card>
+              </TableHeader>
+              <TableBody>
+                {groups.map((g) => {
+                  const ok = g.difference === 0;
+                  const pos = g.difference > 0;
+                  return (
+                    <TableRow
+                      key={g.barcode}
+                      className="cursor-pointer hover:bg-muted/60 active:bg-muted"
+                      onClick={() => setSelected(g)}
+                    >
+                      <TableCell>
+                        <div className="font-medium text-sm leading-snug">{g.product_name}</div>
+                        <div className="font-mono text-xs text-muted-foreground">{g.barcode}</div>
+                        <div className="text-[10px] text-muted-foreground">{new Date(g.lastDate).toLocaleDateString()}</div>
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums text-xs">{g.system_stock}</TableCell>
+                      <TableCell className="text-right tabular-nums font-semibold">{g.totalCount}</TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {ok ? (
+                          <span className="font-bold text-emerald-600">✓</span>
+                        ) : (
+                          <span className={`font-bold ${pos ? "text-amber-600" : "text-red-600"}`}>
+                            {pos ? "+" : ""}{g.difference}
+                          </span>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <span className="rounded-full bg-muted px-2 py-0.5 text-xs tabular-nums">
+                          {g.entries.length}
+                        </span>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+                {groups.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={5} className="py-8 text-center text-muted-foreground">Sin auditorías</TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </CardContent>
+      </Card>
+
+      <AuditDetailDialog group={selected} onClose={() => setSelected(null)} />
+    </>
   );
 }
 
-// ── Imports table (unchanged) ──────────────────────────────────────────
+function AuditDetailDialog({ group, onClose }: { group: AuditGroup | null; onClose: () => void }) {
+  if (!group) return null;
+  const ok = group.difference === 0;
+  const pos = group.difference > 0;
+
+  return (
+    <Dialog open={!!group} onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent className="max-h-[90vh] max-w-md overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="leading-snug">{group.product_name}</DialogTitle>
+        </DialogHeader>
+
+        <div className="space-y-4 text-sm">
+          {/* Resumen */}
+          <div className={`rounded-md border p-3 space-y-2 ${ok ? "border-emerald-300 bg-emerald-50 dark:bg-emerald-950/20" : pos ? "border-amber-300 bg-amber-50 dark:bg-amber-950/20" : "border-red-300 bg-red-50 dark:bg-red-950/20"}`}>
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-muted-foreground">Stock en sistema</span>
+              <span className="font-bold tabular-nums">{group.system_stock}</span>
+            </div>
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-muted-foreground">Suma de todos los conteos</span>
+              <span className="font-bold tabular-nums">{group.totalCount}</span>
+            </div>
+            <div className="flex items-center justify-between border-t pt-2">
+              <span className="text-xs font-semibold">Diferencia</span>
+              {ok ? (
+                <span className="flex items-center gap-1.5 font-bold text-emerald-600">
+                  ✅ 0 — Correcto
+                </span>
+              ) : (
+                <span className={`font-bold ${pos ? "text-amber-600" : "text-red-600"}`}>
+                  {pos ? "+" : ""}{group.difference} {pos ? "⬆ SOBRANTE" : "⬇ FALTANTE"}
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* Detalle por usuario */}
+          <div>
+            <p className="mb-2 text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+              Conteos por usuario ({group.entries.length})
+            </p>
+            <div className="divide-y rounded-md border">
+              {group.entries.map((e) => (
+                <div key={e.id} className="flex items-center gap-3 px-3 py-2.5 text-xs">
+                  <div className="min-w-0 flex-1">
+                    <div className="font-medium">{e.collaborator_name ?? "Anónimo"}</div>
+                    <div className="text-muted-foreground">
+                      {branchLabel(e.branch ?? "")} · {new Date(e.created_at).toLocaleString()}
+                    </div>
+                  </div>
+                  <div className="shrink-0 text-right">
+                    <div className="font-bold tabular-nums text-sm">{e.physical_count}</div>
+                    <div className="text-[10px] text-muted-foreground">unidades</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Código */}
+          <div className="text-center font-mono text-xs text-muted-foreground">{group.barcode}</div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ── Imports table ──────────────────────────────────────────────────────
 function ImportsTable() {
   const { data } = useQuery({
     queryKey: ["csv_imports"],
