@@ -40,28 +40,3 @@ system_stock: r.system_stock,
   return (
     <div className="space-y-4">
       <h1 className="text-xl font-semibold tracking-tight">Auditoría</h1>
-
-      {/* Mode tabs */}
-      <div className="inline-flex overflow-hidden rounded-md border">
-        <button type="button" onClick={() => setMode("single")}
-          className={`px-4 py-2 text-sm font-medium ${mode === "single" ? "bg-primary text-primary-foreground" : "bg-background"}`}>
-          Producto individual
-        </button>
-        <button type="button" onClick={() => setMode("category")}
-          className={`px-4 py-2 text-sm font-medium ${mode === "category" ? "bg-primary text-primary-foreground" : "bg-background"}`}>
-          Por categoría
-        </button>
-      </div>
-
-      {/* ── SINGLE PRODUCT MODE ── */}
-      {mode === "single" && (
-        <Card>
-          <CardContent className="space-y-4 p-4">
-            <form onSubmit={handleScan}>
-              <label className="text-xs font-medium text-muted-foreground">Escanear código (Enter)</label>
-              <div className="relative mt-1 flex gap-2">
-                <div className="relative flex-1">
-                  <ScanLine className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                  <Input ref={scanRef} autoFocus value={code} onChange={(e) => setCode(e.target.value)}
-                    placeholder="Pistola, cámara o tipear…" className="pl-9 font-mono text-base" inputMode="numeric" />
-                </div>
