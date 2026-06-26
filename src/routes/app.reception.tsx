@@ -14,7 +14,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Camera, Check, Loader2, PackageCheck, AlertCircle } from "lucide-react";
+import { Camera, Check, Loader2, PackageCheck, ChevronDown, ChevronUp, ScanLine } from "lucide-react";
 import { toast } from "sonner";
 import { getCollaborator, useCollaborator } from "@/lib/session";
 import { BRANCH_LABELS } from "@/lib/branches";
@@ -35,18 +35,64 @@ type PendingTransfer = {
   receiver_name: string;
   photo_url: string;
   created_at: string;
+  client_uid: string | null;
 };
+
+type BatchGroup = {
+  batchId: string;
+  items: PendingTransfer[];
+  origin: "A" | "B";
+  destination: "A" | "B";
+  sender_name: string;
+  receiver_name: string;
+  photo_url: string;
+  created_at: string;
+  totalQuantity: number;
+};
+
+function extractBatchId(client_uid: string | null, fallback: string): string {
+  if (!client_uid) return fallback;
+  const match = client_uid.match(/^transfer-([a-f0-9\-]{36})-/);
+  return match ? match[1] : fallback;
+}
+
+function groupByBatch(transfers: PendingTransfer[]): BatchGroup[] {
+  const map = new Map<string, BatchGroup>();
+  for (const t of transfers) {
+    const batchId = extractBatchId(t.client_uid, t.id);
+    if (!map.has(batchId)) {
+      map.set(batchId, {
+        batchId,
+        items: [],
+        origin: t.origin,
+        destination: t.destination,
+        sender_name: t.sender_name,
+        receiver_name: t.receiver_name,
+        photo_url: t.photo_url,
+        created_at: t.created_at,
+        totalQuantity: 0,
+      });
+    }
+    const group = map.get(batchId)!;
+    group.items.push(t);
+    group.totalQuantity += t.quantity;
+  }
+  return Array.from(map.values()).sort(
+    (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+  );
+}
 
 function ReceptionPage() {
   const qc = useQueryClient();
-  const [active, setActive] = useState<PendingTransfer | null>(null);
+  const [activeBatch, setActiveBatch] = useState<BatchGroup | null>(null);
+  const [expandedBatch, setExpandedBatch] = useState<string | null>(null);
 
   const { data: pending = [], isLoading } = useQuery({
     queryKey: ["pending-transfers"],
     queryFn: async () => {
       const { data, error } = await supabase
         .from("transfers")
-        .select("id, barcode, product_name, quantity, origin, destination, sender_name, receiver_name, photo_url, created_at")
+        .select("id, barcode, product_name, quantity, origin, destination, sender_name, receiver_name, photo_url, created_at, client_uid")
         .is("received_at", null)
         .order("created_at", { ascending: false })
         .limit(200);
@@ -56,22 +102,24 @@ function ReceptionPage() {
     refetchInterval: 30_000,
   });
 
+  const batches = groupByBatch(pending);
+
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-2">
         <h1 className="mr-auto text-xl font-semibold tracking-tight">Recepciones pendientes</h1>
         <span className="rounded-full bg-amber-100 px-2 py-1 text-xs font-medium text-amber-900 dark:bg-amber-900/40 dark:text-amber-100">
-          {pending.length} pendiente{pending.length === 1 ? "" : "s"}
+          {batches.length} envío{batches.length === 1 ? "" : "s"}
         </span>
       </div>
 
       <p className="text-xs text-muted-foreground">
-        Confirmá los mismos datos que en el envío: cantidad, quién envió, quién recibe, código y foto.
+        Cada tarjeta es un envío completo. Pistoleá cada producto para confirmar la recepción.
       </p>
 
       {isLoading ? (
         <Card><CardContent className="grid place-items-center p-8"><Loader2 className="h-5 w-5 animate-spin" /></CardContent></Card>
-      ) : pending.length === 0 ? (
+      ) : batches.length === 0 ? (
         <Card>
           <CardContent className="flex flex-col items-center gap-2 p-8 text-center text-sm text-muted-foreground">
             <PackageCheck className="h-8 w-8 text-emerald-500" />
@@ -80,37 +128,62 @@ function ReceptionPage() {
         </Card>
       ) : (
         <div className="space-y-2">
-          {pending.map((t) => (
-            <Card key={t.id} className="overflow-hidden">
-              <CardContent className="flex items-center gap-3 p-3">
-                {t.photo_url && (
-                  <img src={t.photo_url} alt="envío" className="h-14 w-14 shrink-0 rounded-md border object-cover" />
-                )}
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-medium">{t.product_name}</div>
-                  <div className="font-mono text-xs text-muted-foreground">{t.barcode}</div>
-                  <div className="mt-0.5 text-xs">
-                    <span className="font-semibold">{t.quantity}</span> ·{" "}
-                    {BRANCH_LABELS[t.origin]} → <span className="font-semibold">{BRANCH_LABELS[t.destination]}</span>
+          {batches.map((batch) => (
+            <Card key={batch.batchId} className="overflow-hidden">
+              <CardContent className="p-3 space-y-2">
+                <div className="flex items-start gap-3">
+                  {batch.photo_url && (
+                    <img src={batch.photo_url} alt="envío" className="h-14 w-14 shrink-0 rounded-md border object-cover" />
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-semibold">
+                      {batch.items.length} producto{batch.items.length === 1 ? "" : "s"} · {batch.totalQuantity} unidades
+                    </div>
+                    <div className="mt-0.5 text-xs text-muted-foreground">
+                      {BRANCH_LABELS[batch.origin]} → {BRANCH_LABELS[batch.destination]}
+                    </div>
+                    <div className="text-[11px] text-muted-foreground">
+                      {new Date(batch.created_at).toLocaleString()} · de {batch.sender_name}
+                    </div>
                   </div>
-                  <div className="text-[11px] text-muted-foreground">
-                    {new Date(t.created_at).toLocaleString()} · de {t.sender_name}
-                  </div>
+                  <Button size="sm" onClick={() => setActiveBatch(batch)}>
+                    Recibir
+                  </Button>
                 </div>
-                <Button size="sm" onClick={() => setActive(t)}>
-                  Recibir
-                </Button>
+
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-1 text-xs text-muted-foreground"
+                  onClick={() => setExpandedBatch(expandedBatch === batch.batchId ? null : batch.batchId)}
+                >
+                  {expandedBatch === batch.batchId ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+                  {expandedBatch === batch.batchId ? "Ocultar productos" : "Ver productos"}
+                </button>
+
+                {expandedBatch === batch.batchId && (
+                  <div className="divide-y rounded-md border text-xs">
+                    {batch.items.map((item) => (
+                      <div key={item.id} className="flex items-center gap-2 px-2 py-1.5">
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate font-medium">{item.product_name}</div>
+                          <div className="font-mono text-muted-foreground">{item.barcode}</div>
+                        </div>
+                        <span className="shrink-0 font-semibold tabular-nums">×{item.quantity}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </CardContent>
             </Card>
           ))}
         </div>
       )}
 
-      <ReceiveDialog
-        transfer={active}
-        onClose={() => setActive(null)}
+      <BatchReceiveDialog
+        batch={activeBatch}
+        onClose={() => setActiveBatch(null)}
         onDone={() => {
-          setActive(null);
+          setActiveBatch(null);
           qc.invalidateQueries({ queryKey: ["pending-transfers"] });
           qc.invalidateQueries({ queryKey: ["pending-transfers-count"] });
           qc.invalidateQueries({ queryKey: ["transfers"] });
@@ -120,25 +193,28 @@ function ReceptionPage() {
   );
 }
 
-function ReceiveDialog({
-  transfer,
+function BatchReceiveDialog({
+  batch,
   onClose,
   onDone,
 }: {
-  transfer: PendingTransfer | null;
+  batch: BatchGroup | null;
   onClose: () => void;
   onDone: () => void;
 }) {
   const me = useCollaborator();
-  const [scanned, setScanned] = useState("");
   const [photo, setPhoto] = useState<File | null>(null);
   const [scannerOpen, setScannerOpen] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [qty, setQty] = useState<string>("");
   const [sender, setSender] = useState<string>("");
   const [receiver, setReceiver] = useState<string>("");
+  const [nameSearch, setNameSearch] = useState("");
+  // Set de barcodes ya confirmados en esta recepción
+  const [confirmed, setConfirmed] = useState<Set<string>>(new Set());
+  const [scanInput, setScanInput] = useState("");
   const photoRef = useRef<HTMLInputElement>(null);
   const galleryRef = useRef<HTMLInputElement>(null);
+  const scanInputRef = useRef<HTMLInputElement>(null);
 
   const { data: collaborators = [] } = useQuery({
     queryKey: ["collaborators-active"],
@@ -154,23 +230,43 @@ function ReceiveDialog({
   });
 
   useEffect(() => {
-    if (transfer) {
-      setQty(String(transfer.quantity));
-      setSender(transfer.sender_name);
-      setReceiver(me?.name ?? transfer.receiver_name ?? "");
-      setScanned("");
+    if (batch) {
+      setSender(batch.sender_name);
+      setReceiver(me?.name ?? batch.receiver_name ?? "");
+      setConfirmed(new Set());
       setPhoto(null);
+      setScanInput("");
+      setNameSearch("");
     }
-  }, [transfer, me?.name]);
+  }, [batch, me?.name]);
 
-  const matches = !!transfer && scanned.trim() === transfer.barcode;
+  const batchBarcodes = batch?.items.map((i) => i.barcode) ?? [];
+  const allConfirmed = batch !== null && confirmed.size === batch.items.length;
+
+  function confirmBarcode(code: string) {
+    const c = code.trim();
+    if (!c) return;
+    if (!batchBarcodes.includes(c)) {
+      toast.error("Ese código no pertenece a este envío");
+      setScanInput("");
+      return;
+    }
+    if (confirmed.has(c)) {
+      toast.info("Ese producto ya fue confirmado");
+      setScanInput("");
+      return;
+    }
+    setConfirmed((prev) => new Set([...prev, c]));
+    const item = batch?.items.find((i) => i.barcode === c);
+    toast.success(`✓ ${item?.product_name ?? c}`);
+    setScanInput("");
+    scanInputRef.current?.focus();
+  }
 
   async function confirm() {
-    if (!transfer) return;
-    if (!matches) return toast.error("El código escaneado no coincide con el del traspaso");
+    if (!batch) return;
+    if (!allConfirmed) return toast.error("Faltan productos por pistolar");
     if (!photo) return toast.error("Tomá foto de la mercancía recibida");
-    const qtyNum = Number(qty);
-    if (!Number.isFinite(qtyNum) || qtyNum <= 0) return toast.error("Cantidad recibida inválida");
     if (!sender.trim()) return toast.error("Indicá quién envió");
     if (!receiver.trim()) return toast.error("Indicá quién recibe");
     const collab = getCollaborator();
@@ -179,7 +275,7 @@ function ReceiveDialog({
     setBusy(true);
     try {
       const ext = (photo.name.split(".").pop() || "jpg").toLowerCase();
-      const path = `received-${transfer.id}.${ext}`;
+      const path = `received-batch-${batch.batchId}.${ext}`;
       const up = await supabase.storage
         .from("transfer-photos")
         .upload(path, photo, { contentType: photo.type, upsert: true });
@@ -189,6 +285,7 @@ function ReceiveDialog({
         .createSignedUrl(path, 60 * 60 * 24 * 365);
       const received_photo_url = signed?.signedUrl ?? path;
 
+      const ids = batch.items.map((i) => i.id);
       const { error } = await supabase
         .from("transfers")
         .update({
@@ -196,15 +293,14 @@ function ReceiveDialog({
           received_by_id: collab.id,
           received_by_name: collab.name,
           received_photo_url,
-          received_scanned_barcode: scanned.trim(),
-          received_quantity: qtyNum,
+          received_scanned_barcode: Array.from(confirmed).join(","),
           received_sender_name: sender.trim(),
           received_receiver_name: receiver.trim(),
         })
-        .eq("id", transfer.id);
+        .in("id", ids);
       if (error) throw error;
 
-      toast.success("Traspaso recibido");
+      toast.success(`${ids.length} producto${ids.length === 1 ? "" : "s"} recibidos`);
       onDone();
     } catch (e) {
       toast.error((e as Error).message);
@@ -214,22 +310,113 @@ function ReceiveDialog({
   }
 
   return (
-    <Dialog open={!!transfer} onOpenChange={(o) => { if (!o) onClose(); }}>
+    <Dialog open={!!batch} onOpenChange={(o) => { if (!o) onClose(); }}>
       <DialogContent className="max-h-[90vh] max-w-md overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>Confirmar recepción</DialogTitle>
+          <DialogTitle>Confirmar recepción del envío</DialogTitle>
         </DialogHeader>
-        {transfer && (
+        {batch && (
           <div className="space-y-3 text-sm">
-            <div className="rounded-md border p-3">
-              <div className="font-medium">{transfer.product_name}</div>
-              <div className="font-mono text-xs text-muted-foreground">{transfer.barcode}</div>
-              <div className="mt-1 text-xs">
-                {BRANCH_LABELS[transfer.origin]} → {BRANCH_LABELS[transfer.destination]} · enviadas:{" "}
-                <span className="font-semibold">{transfer.quantity}</span>
+
+            {/* Progreso */}
+            <div className="flex items-center justify-between rounded-md bg-muted px-3 py-2">
+              <span className="text-xs font-medium">Productos confirmados</span>
+              <span className={`text-sm font-bold tabular-nums ${allConfirmed ? "text-emerald-600" : "text-amber-600"}`}>
+                {confirmed.size} / {batch.items.length}
+              </span>
+            </div>
+
+            {/* Lista de productos con check */}
+            <div className="divide-y rounded-md border">
+              {batch.items.map((item) => {
+                const done = confirmed.has(item.barcode);
+                return (
+                  <div key={item.id} className={`flex items-center gap-2 px-3 py-2 text-xs ${done ? "bg-emerald-50 dark:bg-emerald-950/20" : ""}`}>
+                    <div className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 ${done ? "border-emerald-500 bg-emerald-500 text-white" : "border-muted-foreground"}`}>
+                      {done && <Check className="h-3 w-3" />}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className={`truncate font-medium ${done ? "line-through text-muted-foreground" : ""}`}>
+                        {item.product_name}
+                      </div>
+                      <div className="font-mono text-muted-foreground">{item.barcode} · ×{item.quantity}</div>
+                    </div>
+                    {!done && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 text-xs"
+                        onClick={() => confirmBarcode(item.barcode)}
+                      >
+                        Marcar
+                      </Button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Escanear */}
+            <div>
+              <Label>Pistolá o escaneá cada producto</Label>
+              <div className="flex gap-2">
+                <Input
+                  ref={scanInputRef}
+                  autoFocus
+                  value={scanInput}
+                  onChange={(e) => setScanInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      confirmBarcode(scanInput);
+                    }
+                  }}
+                  placeholder="Código de barras…"
+                  className="font-mono"
+                  inputMode="numeric"
+                />
+                <Button type="button" variant="outline" onClick={() => setScannerOpen(true)}>
+                  <ScanLine className="h-4 w-4" />
+                </Button>
               </div>
             </div>
 
+            {/* Buscar por nombre */}
+            <div>
+              <Label>O buscar por nombre</Label>
+              <Input
+                value={nameSearch}
+                onChange={(e) => setNameSearch(e.target.value)}
+                placeholder="Escribí al menos 2 letras…"
+              />
+              {nameSearch.trim().length >= 2 && (
+                <div className="mt-1 max-h-40 overflow-auto rounded-md border bg-card">
+                  {batch.items
+                    .filter((i) => i.product_name.toLowerCase().includes(nameSearch.toLowerCase()))
+                    .map((item) => (
+                      <button
+                        key={item.barcode}
+                        type="button"
+                        disabled={confirmed.has(item.barcode)}
+                        onClick={() => {
+                          confirmBarcode(item.barcode);
+                          setNameSearch("");
+                        }}
+                        className="flex w-full items-center justify-between gap-2 border-b px-3 py-2 text-left text-xs last:border-b-0 hover:bg-muted disabled:opacity-40"
+                      >
+                        <span className="truncate font-medium">{item.product_name}</span>
+                        <span className="shrink-0 text-muted-foreground">×{item.quantity}</span>
+                      </button>
+                    ))}
+                  {batch.items.filter((i) => i.product_name.toLowerCase().includes(nameSearch.toLowerCase())).length === 0 && (
+                    <div className="px-3 py-2 text-xs text-muted-foreground">Sin resultados en este envío</div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Quién envía / recibe */}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
                 <Label>Envía</Label>
@@ -258,64 +445,14 @@ function ReceiveDialog({
               </div>
             </div>
 
-            <div>
-              <Label>Cantidad recibida</Label>
-              <Input
-                type="number"
-                inputMode="decimal"
-                step="any"
-                min={0}
-                value={qty}
-                onChange={(e) => setQty(e.target.value)}
-              />
-              {Number(qty) !== Number(transfer.quantity) && (
-                <p className="mt-1 text-xs text-amber-600">
-                  Difiere de lo enviado ({transfer.quantity}).
-                </p>
-              )}
-            </div>
-
-            <div>
-              <Label>Pistolá el código para confirmar</Label>
-              <div className="flex gap-2">
-                <Input
-                  autoFocus
-                  value={scanned}
-                  onChange={(e) => setScanned(e.target.value)}
-                  placeholder="Escaneá o tipeá el código…"
-                  className="font-mono"
-                  inputMode="numeric"
-                />
-                <Button type="button" variant="outline" onClick={() => setScannerOpen(true)}>
-                  <Camera className="h-4 w-4" /> Cámara
-                </Button>
-              </div>
-              {scanned && (
-                <div className={`mt-1 inline-flex items-center gap-1 text-xs ${matches ? "text-emerald-600" : "text-red-600"}`}>
-                  {matches ? <Check className="h-3 w-3" /> : <AlertCircle className="h-3 w-3" />}
-                  {matches ? "Código coincide" : "No coincide con el traspaso"}
-                </div>
-              )}
-            </div>
-
+            {/* Foto */}
             <div>
               <Label>Foto evidencia de recepción</Label>
               <div className="flex flex-wrap items-center gap-2">
-                <input
-                  ref={photoRef}
-                  type="file"
-                  accept="image/*"
-                  capture="environment"
-                  className="hidden"
-                  onChange={(e) => setPhoto(e.target.files?.[0] ?? null)}
-                />
-                <input
-                  ref={galleryRef}
-                  type="file"
-                  accept="image/*"
-                  className="hidden"
-                  onChange={(e) => setPhoto(e.target.files?.[0] ?? null)}
-                />
+                <input ref={photoRef} type="file" accept="image/*" capture="environment" className="hidden"
+                  onChange={(e) => setPhoto(e.target.files?.[0] ?? null)} />
+                <input ref={galleryRef} type="file" accept="image/*" className="hidden"
+                  onChange={(e) => setPhoto(e.target.files?.[0] ?? null)} />
                 <Button type="button" variant="outline" onClick={() => photoRef.current?.click()}>
                   <Camera className="h-4 w-4" /> Tomar foto
                 </Button>
@@ -331,15 +468,16 @@ function ReceiveDialog({
         )}
         <DialogFooter>
           <Button variant="outline" onClick={onClose} disabled={busy}>Cancelar</Button>
-          <Button onClick={confirm} disabled={busy || !matches || !photo}>
-            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />} Confirmar recepción
+          <Button onClick={confirm} disabled={busy || !allConfirmed || !photo}>
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+            Confirmar recepción {batch && `(${confirmed.size}/${batch.items.length})`}
           </Button>
         </DialogFooter>
 
         <BarcodeScanner
           open={scannerOpen}
           onClose={() => setScannerOpen(false)}
-          onDetected={(code) => setScanned(code)}
+          onDetected={(code) => confirmBarcode(code)}
         />
       </DialogContent>
     </Dialog>
