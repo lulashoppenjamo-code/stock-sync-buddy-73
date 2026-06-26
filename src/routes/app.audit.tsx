@@ -131,14 +131,23 @@ function AuditPage() {
   const { data: categories = [] } = useQuery({
     queryKey: ["categories"],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from("products")
-        .select("category")
-        .not("category", "is", null);
-      if (error) throw error;
-      const set = new Set<string>();
-      for (const r of data ?? []) if (r.category) set.add(r.category);
-      return Array.from(set).sort();
+      // Fetch all unique categories using range pagination to bypass the 1000-row default limit
+      const allCategories = new Set<string>();
+      const pageSize = 1000;
+      let from = 0;
+      while (true) {
+        const { data, error } = await supabase
+          .from("products")
+          .select("category")
+          .not("category", "is", null)
+          .not("category", "eq", "")
+          .range(from, from + pageSize - 1);
+        if (error) throw error;
+        for (const r of data ?? []) if (r.category) allCategories.add(r.category.trim());
+        if ((data ?? []).length < pageSize) break;
+        from += pageSize;
+      }
+      return Array.from(allCategories).sort((a, b) => a.localeCompare(b, "es"));
     },
   });
 
