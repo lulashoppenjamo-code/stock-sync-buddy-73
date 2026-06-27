@@ -56,17 +56,20 @@ export function parseCsv(file: File): Promise<ParsedRow[]> {
         let missingIdx = 0;
         const stamp = Date.now().toString(36).toUpperCase();
         for (const r of res.data) {
-          let barcode = pick(r, ["Barcode", "barcode", "Codigo", "Código", "CodigoBarras"]);
-          const product_name = pick(r, ["ProductName", "Product", "Producto", "Nombre", "product_name"]);
-          if (!product_name) continue;
+          let barcode = pick(r, ["Barcode", "barcode", "BARCODE", "Codigo", "Código", "CodigoBarras"]);
+          const base_name = pick(r, ["ProductName", "Product", "Producto", "Nombre", "product_name", "ITEM_NAME", "ItemName"]);
+          if (!base_name) continue;
+          // If there's a variant name, append it to the product name
+          const variant = pick(r, ["VARIANT_NAME", "VariantName", "Variant", "Variante", "variant_name"]);
+          const product_name = variant ? `${base_name} ${variant}`.trim() : base_name;
           if (!barcode) {
             missingIdx++;
             // Synthetic code so products without barcode are still imported.
             barcode = `SIN-${stamp}-${String(missingIdx).padStart(4, "0")}`;
           }
-          const uom = pick(r, ["UoM", "Uom", "Unidad", "Unit"]) || null;
-          const category = pick(r, ["Category", "Categoria", "Categoría", "category"]) || null;
-          const stock_a = parseNum(pick(r, ["StockA", "Stock_A", "Stock A", "Mina", "StockMina", "Stock Mina"]));
+          const uom = pick(r, ["UoM", "Uom", "Unidad", "Unit", "ITEM_TYPE"]) || null;
+          const category = pick(r, ["Category", "Categoria", "Categoría", "category", "CATEGORY"]) || null;
+          const stock_a = parseNum(pick(r, ["StockA", "Stock_A", "Stock A", "Mina", "StockMina", "Stock Mina", "STOCK"]));
           const stock_b = parseNum(pick(r, ["StockB", "Stock_B", "Stock B", "Morelos", "StockMorelos", "Stock Morelos"]));
           rows.push({ barcode, product_name, uom, category, stock_a, stock_b });
         }
