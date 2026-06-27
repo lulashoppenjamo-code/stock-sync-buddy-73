@@ -10,6 +10,22 @@ type Props = {
   continuous?: boolean;
 };
 
+function playBeep() {
+  try {
+    const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(1480, ctx.currentTime); // high beep
+    gain.gain.setValueAtTime(0.4, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.12);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 0.12);
+  } catch { /* ignore if audio not available */ }
+}
+
 export function BarcodeScanner({ open, onClose, onDetected, continuous = false }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -69,11 +85,13 @@ export function BarcodeScanner({ open, onClose, onDetected, continuous = false }
                   const now = Date.now();
                   if (now - lastEmitRef.current >= 800) {
                     lastEmitRef.current = now;
+                    playBeep();
                     setLastCode(code);
                     onDetected(code);
                   }
                 } else {
                   stopAll();
+                  playBeep();
                   onDetected(code);
                   onClose();
                   return;
