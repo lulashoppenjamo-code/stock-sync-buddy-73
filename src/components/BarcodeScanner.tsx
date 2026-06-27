@@ -1,24 +1,9 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { Html5Qrcode, Html5QrcodeSupportedFormats } from "html5-qrcode";
+import { BrowserMultiFormatReader, NotFoundException } from "@zxing/browser";
+import { DecodeHintType, BarcodeFormat } from "@zxing/library";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Loader2, ZoomIn, ZoomOut } from "lucide-react";
-
-const SCANNER_ID = "html5qr-scanner";
-
-// All barcode formats that products use
-const BARCODE_FORMATS = [
-  Html5QrcodeSupportedFormats.EAN_13,
-  Html5QrcodeSupportedFormats.EAN_8,
-  Html5QrcodeSupportedFormats.CODE_128,
-  Html5QrcodeSupportedFormats.CODE_39,
-  Html5QrcodeSupportedFormats.CODE_93,
-  Html5QrcodeSupportedFormats.UPC_A,
-  Html5QrcodeSupportedFormats.UPC_E,
-  Html5QrcodeSupportedFormats.ITF,
-  Html5QrcodeSupportedFormats.QR_CODE,
-  Html5QrcodeSupportedFormats.DATA_MATRIX,
-];
+import { Loader2 } from "lucide-react";
 
 type Props = {
   open: boolean;
@@ -27,98 +12,116 @@ type Props = {
   continuous?: boolean;
 };
 
-export function BarcodeScanner({ open, onClose, onDetected, continuous = false }: Props) {
-  const scannerRef = useRef<Html5Qrcode | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [starting, setStarting] = useState(false);
-  const [lastCode, setLastCode] = useState<string | null>(null);
-  const lastEmitAtRef = useRef<number>(0);
-  const isRunningRef = useRef(false);
-  const containerRef = useRef<HTMLDivElement>(null);
+const HINTS = new Map();
+HINTS.set(DecodeHintType.POSSIBLE_FORMATS, [
+  BarcodeFormat.EAN_13,
+  BarcodeFormat.EAN_8,
+  BarcodeFormat.CODE_128,
+  BarcodeFormat.CODE_39,
+  BarcodeFormat.CODE_93,
+  BarcodeFormat.UPC_A,
+  BarcodeFormat.UPC_E,
+  BarcodeFormat.ITF,
+  BarcodeFormat.QR_CODE,
+  BarcodeFormat.DATA_MATRIX,
+  BarcodeFormat.AZTEC,
+]);
+HINTS.set(DecodeHintType.TRY_HARDER, true);
 
-  const stopScanner = useCallback(async () => {
-    if (scannerRef.current && isRunningRef.current) {
-      try {
-        await scannerRef.current.stop();
-        scannerRef.current.clear();
-      } catch { /* noop */ }
-      isRunningRef.current = false;
+export function BarcodeScanner({ open, onClose, onDetected, continuous = false }: Props) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const readerRef = useRef<BrowserMultiFormatReader | null>(null);
+  const lastEmitRef = useRef<number>(0);
+  const [starting, setStarting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [lastCode, setLastCode] = useState<string | null>(null);
+  const activeRef = useRef(false);
+
+  const stopReader = useCallback(async () => {
+    activeRef.current = false;
+    if (readerRef.current) {
+      try { BrowserMultiFormatReader.releaseAllStreams(); } catch { /* noop */ }
+      readerRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
     }
   }, []);
 
-  const handleDetected = useCallback((code: string) => {
-    const trimmed = code.trim();
-    if (!trimmed) return;
-    if (continuous) {
-      const now = Date.now();
-      if (now - lastEmitAtRef.current < 800) return; // debounce 800ms
-      lastEmitAtRef.current = now;
-      onDetected(trimmed);
-      setLastCode(trimmed);
-    } else {
-      stopScanner();
-      onDetected(trimmed);
-      setLastCode(trimmed);
-      onClose();
-    }
-  }, [onDetected, onClose, continuous, stopScanner]);
+  const handleClose = useCallback(async () => {
+    await stopReader();
+    onClose();
+  }, [stopReader, onClose]);
 
   useEffect(() => {
     if (!open) return;
     setError(null);
-    setStarting(true);
     setLastCode(null);
+    setStarting(true);
+    activeRef.current = true;
 
-    const timer = setTimeout(async () => {
+    const reader = new BrowserMultiFormatReader(HINTS, {
+      delayBetweenScanAttempts: 50,
+    });
+    readerRef.current = reader;
+
+    (async () => {
       try {
-        // Get container width for responsive qrbox
-        const containerW = containerRef.current?.offsetWidth ?? 320;
-        const boxW = Math.min(containerW - 32, 300);
-        const boxH = Math.round(boxW * 0.45); // wide rectangle for barcodes
+        // Pick the back camera
+        const devices = await BrowserMultiFormatReader.listVideoInputDevices();
+        const back = devices.find((d) =>
+          d.label.toLowerCase().includes("back") ||
+          d.label.toLowerCase().includes("rear") ||
+          d.label.toLowerCase().includes("environment") ||
+          d.label.toLowerCase().includes("trasera")
+        ) ?? devices[devices.length - 1]; // fallback to last camera
 
-        const scanner = new Html5Qrcode(SCANNER_ID, {
-          formatsToSupport: BARCODE_FORMATS,
-          verbose: false,
-        });
-        scannerRef.current = scanner;
+        if (!back) throw new Error("No se encontró ninguna cámara.");
 
-        await scanner.start(
-          { facingMode: "environment" },
-          {
-            fps: 20,
-            qrbox: { width: boxW, height: boxH },
-            aspectRatio: 1.7,
-            disableFlip: false,
-          },
-          (decodedText) => handleDetected(decodedText),
-          () => { /* per-frame error, ignore */ }
+        setStarting(false);
+
+        await reader.decodeFromVideoDevice(
+          back.deviceId,
+          videoRef.current!,
+          (result, err) => {
+            if (!activeRef.current) return;
+            if (result) {
+              const code = result.getText().trim();
+              if (!code) return;
+
+              if (continuous) {
+                const now = Date.now();
+                if (now - lastEmitRef.current < 800) return;
+                lastEmitRef.current = now;
+                setLastCode(code);
+                onDetected(code);
+              } else {
+                stopReader();
+                onDetected(code);
+                onClose();
+              }
+            }
+            if (err && !(err instanceof NotFoundException)) {
+              // Real errors (not just "nothing found in frame")
+              console.warn("ZXing error:", err);
+            }
+          }
         );
-
-        isRunningRef.current = true;
       } catch (e) {
+        setStarting(false);
         const msg = (e as Error).message ?? "";
-        if (msg.toLowerCase().includes("permission")) {
+        if (msg.toLowerCase().includes("permission") || msg.toLowerCase().includes("denied")) {
           setError("Permiso de cámara denegado. Habilitalo en la configuración del navegador.");
-        } else if (msg.toLowerCase().includes("notfound") || msg.toLowerCase().includes("not found")) {
-          setError("No se encontró ninguna cámara trasera.");
+        } else if (msg.toLowerCase().includes("notfound") || msg.toLowerCase().includes("not found") || msg.toLowerCase().includes("no se encontró")) {
+          setError("No se encontró ninguna cámara.");
         } else {
           setError(msg || "No se pudo abrir la cámara.");
         }
-      } finally {
-        setStarting(false);
       }
-    }, 350);
+    })();
 
-    return () => {
-      clearTimeout(timer);
-      stopScanner();
-    };
-  }, [open, handleDetected, stopScanner]);
-
-  const handleClose = useCallback(async () => {
-    await stopScanner();
-    onClose();
-  }, [stopScanner, onClose]);
+    return () => { stopReader(); };
+  }, [open, continuous, onDetected, onClose, stopReader]);
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) handleClose(); }}>
@@ -127,11 +130,17 @@ export function BarcodeScanner({ open, onClose, onDetected, continuous = false }
           <DialogTitle>Escanear código de barras</DialogTitle>
         </DialogHeader>
 
-        <div ref={containerRef} className="relative bg-black" style={{ aspectRatio: "16/9" }}>
-          {/* Scanner renders here */}
-          <div id={SCANNER_ID} className="w-full h-full" />
+        <div className="relative bg-black" style={{ aspectRatio: "16/9" }}>
+          {/* Video element */}
+          <video
+            ref={videoRef}
+            className="h-full w-full object-cover"
+            autoPlay
+            muted
+            playsInline
+          />
 
-          {/* Loading overlay */}
+          {/* Loading */}
           {starting && (
             <div className="absolute inset-0 grid place-items-center bg-black">
               <div className="flex flex-col items-center gap-2 text-white">
@@ -141,34 +150,38 @@ export function BarcodeScanner({ open, onClose, onDetected, continuous = false }
             </div>
           )}
 
-          {/* Scan area guide overlay */}
+          {/* Scan guide — rectangular for barcodes */}
           {!starting && !error && (
             <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-              <div className="relative" style={{ width: "80%", height: "40%" }}>
-                {/* Corner markers */}
-                {[
-                  "top-0 left-0 border-t-2 border-l-2",
-                  "top-0 right-0 border-t-2 border-r-2",
-                  "bottom-0 left-0 border-b-2 border-l-2",
-                  "bottom-0 right-0 border-b-2 border-r-2",
-                ].map((cls, i) => (
-                  <div key={i} className={`absolute h-5 w-5 border-white ${cls}`} />
-                ))}
-                {/* Scan line animation */}
-                <div className="absolute inset-x-0 top-0 h-0.5 animate-[scan_2s_linear_infinite] bg-red-400 opacity-80" />
+              <div className="relative w-4/5" style={{ height: "35%" }}>
+                {/* Corner brackets */}
+                <div className="absolute top-0 left-0 h-6 w-6 border-t-2 border-l-2 border-red-400" />
+                <div className="absolute top-0 right-0 h-6 w-6 border-t-2 border-r-2 border-red-400" />
+                <div className="absolute bottom-0 left-0 h-6 w-6 border-b-2 border-l-2 border-red-400" />
+                <div className="absolute bottom-0 right-0 h-6 w-6 border-b-2 border-r-2 border-red-400" />
+                {/* Scan line */}
+                <div className="absolute inset-x-0 top-0 h-0.5 bg-red-400 opacity-80"
+                  style={{ animation: "scanline 2s ease-in-out infinite" }} />
               </div>
+              <style>{`
+                @keyframes scanline {
+                  0% { transform: translateY(0); }
+                  50% { transform: translateY(calc(var(--scan-height, 60px))); }
+                  100% { transform: translateY(0); }
+                }
+              `}</style>
             </div>
           )}
 
-          {/* Last scanned code */}
+          {/* Last scanned */}
           {continuous && lastCode && (
-            <div className="pointer-events-none absolute top-2 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-emerald-500/90 px-3 py-1 font-mono text-xs text-white shadow-lg">
+            <div className="pointer-events-none absolute top-3 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-emerald-500/90 px-3 py-1 font-mono text-xs text-white shadow-lg">
               ✓ {lastCode}
             </div>
           )}
 
-          {/* Instructions */}
-          {!error && (
+          {/* Hint */}
+          {!error && !starting && (
             <div className="pointer-events-none absolute bottom-2 left-0 right-0 text-center text-[10px] text-white/70">
               {continuous ? "Modo continuo — cada lectura suma 1" : "Centrá el código dentro del recuadro"}
             </div>
@@ -177,12 +190,12 @@ export function BarcodeScanner({ open, onClose, onDetected, continuous = false }
 
         {/* Error */}
         {error && (
-          <div className="mx-4 my-2 rounded-md bg-red-50 dark:bg-red-950/30 border border-red-200 p-3 text-xs text-red-700 dark:text-red-300">
+          <div className="mx-4 my-2 rounded-md border border-red-200 bg-red-50 dark:bg-red-950/30 p-3 text-xs text-red-700 dark:text-red-300">
             ⚠ {error}
           </div>
         )}
 
-        <div className="flex justify-end gap-2 px-4 pb-4 pt-2">
+        <div className="flex justify-end px-4 pb-4 pt-2">
           <Button variant="outline" onClick={handleClose}>
             {continuous ? "Listo" : "Cancelar"}
           </Button>
