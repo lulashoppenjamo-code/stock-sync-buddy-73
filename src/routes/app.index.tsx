@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Upload, Search, Loader2, FileSpreadsheet, Check, Plus, Trash2, FolderPlus } from "lucide-react";
+import { Upload, Search, Loader2, FileSpreadsheet, Check, Plus, Trash2, FolderPlus, Lock } from "lucide-react";
 import { toast } from "sonner";
 import { parseCsv, buildDiff, applyImport, type ImportDiff } from "@/lib/csv-utils";
 import { getCollaborator } from "@/lib/session";
@@ -32,19 +32,40 @@ type Product = {
   updated_at: string;
 };
 
+// ── Debounce hook ──────────────────────────────────────────────────────
+function useDebounce<T>(value: T, delay = 300): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(value), delay);
+    return () => clearTimeout(t);
+  }, [value, delay]);
+  return debounced;
+}
+
 function ProductsPage() {
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState<string>("__all__");
+  const debouncedSearch = useDebounce(search, 250);
+
   const { data, isLoading } = useQuery({
     queryKey: ["products"],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from("products")
-        .select("barcode, product_name, uom, category, stock_a, stock_b, updated_at")
-        .order("product_name")
-        .limit(5000);
-      if (error) throw error;
-      return data as Product[];
+      // Paginate to get ALL products, not just first 5000
+      const all: Product[] = [];
+      const pageSize = 1000;
+      let from = 0;
+      while (true) {
+        const { data, error } = await supabase
+          .from("products")
+          .select("barcode, product_name, uom, category, stock_a, stock_b, updated_at")
+          .order("product_name")
+          .range(from, from + pageSize - 1);
+        if (error) throw error;
+        all.push(...(data as Product[]));
+        if ((data ?? []).length < pageSize) break;
+        from += pageSize;
+      }
+      return all;
     },
   });
 
@@ -60,23 +81,27 @@ function ProductsPage() {
     },
   });
 
-  const categories = Array.from(
-    new Set([
+  const categories = useMemo(() =>
+    Array.from(new Set([
       ...managedCategories,
       ...(data ?? []).map((p) => p.category).filter((c): c is string => !!c),
-    ]),
-  ).sort();
+    ])).sort(),
+    [managedCategories, data]
+  );
 
-  const filtered = (data ?? []).filter((p) => {
-    if (category !== "__all__" && (p.category ?? "") !== category) return false;
-    if (!search.trim()) return true;
-    const q = search.toLowerCase();
-    return p.product_name.toLowerCase().includes(q) || p.barcode.includes(q);
-  });
+  const filtered = useMemo(() =>
+    (data ?? []).filter((p) => {
+      if (category !== "__all__" && (p.category ?? "") !== category) return false;
+      if (!debouncedSearch.trim()) return true;
+      const q = debouncedSearch.toLowerCase();
+      return p.product_name.toLowerCase().includes(q) || p.barcode.includes(q);
+    }),
+    [data, category, debouncedSearch]
+  );
 
-  const totalUnits = filtered.reduce(
-    (s, p) => s + Number(p.stock_a) + Number(p.stock_b),
-    0,
+  const totalUnits = useMemo(() =>
+    filtered.reduce((s, p) => s + Number(p.stock_a) + Number(p.stock_b), 0),
+    [filtered]
   );
 
   return (
@@ -105,16 +130,12 @@ function ProductsPage() {
           className="h-10 w-full rounded-md border bg-background px-2 text-sm sm:w-auto"
         >
           <option value="__all__">Todas las categorías</option>
-          {categories.map((c) => (
-            <option key={c} value={c}>
-              {c}
-            </option>
-          ))}
+          {categories.map((c) => <option key={c} value={c}>{c}</option>)}
         </select>
       </div>
 
       <p className="text-xs text-muted-foreground">
-        Tip: tocá el total para editarlo. Se guarda al confirmar (✓ o Enter).
+        Tip: tocá el total para editarlo. Se requiere confirmación antes de guardar.
       </p>
 
       <Card>
@@ -139,7 +160,7 @@ function ProductsPage() {
                 ) : filtered.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={4} className="py-12 text-center text-muted-foreground">
-                      Sin productos. Importá un CSV para empezar.
+                      {search ? "Sin resultados para esa búsqueda." : "Sin productos. Importá un CSV para empezar."}
                     </TableCell>
                   </TableRow>
                 ) : (
@@ -157,6 +178,7 @@ function ProductsPage() {
                       <TableCell className="text-right">
                         <TotalStockCell
                           barcode={p.barcode}
+                          productName={p.product_name}
                           value={Number(p.stock_a) + Number(p.stock_b)}
                         />
                       </TableCell>
@@ -171,106 +193,136 @@ function ProductsPage() {
 
       <p className="text-xs text-muted-foreground">
         Total: {filtered.length} producto{filtered.length === 1 ? "" : "s"} · {totalUnits} unidades en sistema
+        {(data ?? []).length > filtered.length && ` (de ${(data ?? []).length} totales)`}
       </p>
     </div>
   );
 }
 
-function TotalStockCell({
-  barcode,
-  value,
-}: {
-  barcode: string;
-  value: number;
-}) {
+// ── TotalStockCell with confirmation dialog ────────────────────────────
+function TotalStockCell({ barcode, productName, value }: { barcode: string; productName: string; value: number }) {
   const qc = useQueryClient();
   const [editing, setEditing] = useState(false);
   const [val, setVal] = useState(String(value));
   const [saving, setSaving] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [pendingVal, setPendingVal] = useState<number | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    if (!editing) setVal(String(value));
-  }, [value, editing]);
+  useEffect(() => { if (!editing) setVal(String(value)); }, [value, editing]);
+  useEffect(() => { if (editing) inputRef.current?.select(); }, [editing]);
 
-  useEffect(() => {
-    if (editing) inputRef.current?.select();
-  }, [editing]);
-
-  async function save() {
+  function requestSave() {
     const n = Number(val);
-    if (!Number.isFinite(n) || n < 0) {
-      toast.error("Cantidad inválida");
-      return;
-    }
-    if (n === value) {
-      setEditing(false);
-      return;
-    }
+    if (!Number.isFinite(n) || n < 0) { toast.error("Cantidad inválida"); return; }
+    if (n === value) { setEditing(false); return; }
+    setPendingVal(n);
+    setConfirmOpen(true);
+  }
+
+  async function confirmSave() {
+    if (pendingVal === null) return;
     setSaving(true);
+    setConfirmOpen(false);
     try {
-      // Single global stock — store full amount in stock_a, keep stock_b at 0.
+      const collab = getCollaborator();
       const { error } = await supabase
         .from("products")
-        .update({ stock_a: n, stock_b: 0 })
+        .update({ stock_a: pendingVal, stock_b: 0 })
         .eq("barcode", barcode);
       if (error) throw error;
-      toast.success("Stock actualizado");
+      // Log the stock change
+      await supabase.from("audits").insert({
+        branch: "A",
+        barcode,
+        product_name: productName,
+        system_stock: value,
+        physical_count: pendingVal,
+        difference: pendingVal - value,
+        collaborator_id: collab?.id ?? null,
+        collaborator_name: collab?.name ?? "Desconocido",
+        client_uid: `stock-edit-${crypto.randomUUID()}`,
+      });
+      toast.success(`Stock actualizado: ${value} → ${pendingVal}`);
       setEditing(false);
       qc.invalidateQueries({ queryKey: ["products"] });
     } catch (e) {
       toast.error((e as Error).message);
     } finally {
       setSaving(false);
+      setPendingVal(null);
     }
   }
 
   if (!editing) {
     return (
-      <button
-        onClick={() => setEditing(true)}
+      <button onClick={() => setEditing(true)}
         className="rounded px-2 py-1 tabular-nums hover:bg-muted"
-        aria-label="Editar stock total"
-      >
+        aria-label="Editar stock total">
         {value}
       </button>
     );
   }
 
   return (
-    <div className="flex items-center justify-end gap-1">
-      <Input
-        ref={inputRef}
-        type="number"
-        inputMode="decimal"
-        step="any"
-        min={0}
-        value={val}
-        onChange={(e) => setVal(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") save();
-          if (e.key === "Escape") setEditing(false);
-        }}
-        onBlur={save}
-        disabled={saving}
-        className="h-8 w-20 text-right"
-      />
-      <Button
-        type="button"
-        size="icon"
-        variant="ghost"
-        className="h-8 w-8"
-        onMouseDown={(e) => e.preventDefault()}
-        onClick={save}
-        disabled={saving}
-        aria-label="Guardar"
-      >
-        {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
-      </Button>
-    </div>
+    <>
+      <div className="flex items-center justify-end gap-1">
+        <Input ref={inputRef} type="number" inputMode="decimal" step="any" min={0}
+          value={val} onChange={(e) => setVal(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") requestSave(); if (e.key === "Escape") setEditing(false); }}
+          onBlur={requestSave} disabled={saving}
+          className="h-8 w-20 text-right" />
+        <Button type="button" size="icon" variant="ghost" className="h-8 w-8"
+          onMouseDown={(e) => e.preventDefault()} onClick={requestSave} disabled={saving}>
+          {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+        </Button>
+      </div>
+
+      {/* Confirmation dialog */}
+      <Dialog open={confirmOpen} onOpenChange={(o) => { if (!o) { setConfirmOpen(false); setEditing(false); } }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Lock className="h-4 w-4" /> Confirmar cambio de stock
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2 text-sm">
+            <p className="font-medium truncate">{productName}</p>
+            <div className="flex items-center gap-3 rounded-md bg-muted p-3 tabular-nums">
+              <div className="text-center">
+                <div className="text-xs text-muted-foreground">Actual</div>
+                <div className="text-xl font-bold">{value}</div>
+              </div>
+              <div className="text-muted-foreground">→</div>
+              <div className="text-center">
+                <div className="text-xs text-muted-foreground">Nuevo</div>
+                <div className={`text-xl font-bold ${(pendingVal ?? 0) < value ? "text-red-600" : "text-emerald-600"}`}>
+                  {pendingVal}
+                </div>
+              </div>
+              <div className="text-center">
+                <div className="text-xs text-muted-foreground">Diferencia</div>
+                <div className={`text-sm font-semibold ${(pendingVal ?? 0) - value < 0 ? "text-red-600" : "text-emerald-600"}`}>
+                  {(pendingVal ?? 0) - value > 0 ? "+" : ""}{(pendingVal ?? 0) - value}
+                </div>
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">Este cambio quedará registrado en el historial de auditorías.</p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setConfirmOpen(false); setEditing(false); }}>Cancelar</Button>
+            <Button onClick={confirmSave} disabled={saving}>
+              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+              Confirmar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 
+// ── ImportCsvButton (unchanged logic, same as before) ──────────────────
 function ImportCsvButton() {
   const qc = useQueryClient();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -287,18 +339,11 @@ function ImportCsvButton() {
     setBusy(true);
     try {
       const rows = await parseCsv(file);
-      if (!rows.length) {
-        toast.error("CSV vacío. Columnas: ProductName, Barcode, UoM, Category, StockA, StockB");
-        return;
-      }
+      if (!rows.length) { toast.error("CSV vacío. Columnas: ProductName, Barcode, UoM, Category, StockA, StockB"); return; }
       const d = await buildDiff(rows);
-      setDiff(d);
-      setFilename(file.name);
-    } catch (e) {
-      toast.error((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
+      setDiff(d); setFilename(file.name);
+    } catch (e) { toast.error((e as Error).message); }
+    finally { setBusy(false); }
   }
 
   async function confirmApply() {
@@ -306,42 +351,22 @@ function ImportCsvButton() {
     setBusy(true);
     try {
       const collab = getCollaborator();
-      const res = await applyImport(
-        diff,
-        { updateName, updateUom, updateCategory, updateStockA, updateStockB },
-        collab,
-        filename,
-      );
+      const res = await applyImport(diff, { updateName, updateUom, updateCategory, updateStockA, updateStockB }, collab, filename);
       toast.success(`Importación lista: +${res.inserted} nuevos, ${res.updated} actualizados`);
-      setDiff(null);
-      setFilename(null);
+      setDiff(null); setFilename(null);
       qc.invalidateQueries({ queryKey: ["products"] });
       qc.invalidateQueries({ queryKey: ["categories"] });
-    } catch (e) {
-      toast.error((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
+    } catch (e) { toast.error((e as Error).message); }
+    finally { setBusy(false); }
   }
 
   return (
     <>
-      <input
-        ref={inputRef}
-        type="file"
-        accept=".csv,text/csv"
-        className="hidden"
-        onChange={(e) => {
-          const f = e.target.files?.[0];
-          e.target.value = "";
-          if (f) onFile(f);
-        }}
-      />
+      <input ref={inputRef} type="file" accept=".csv,text/csv" className="hidden"
+        onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) onFile(f); }} />
       <Button onClick={() => inputRef.current?.click()} disabled={busy}>
-        {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
-        Importar CSV
+        {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />} Importar CSV
       </Button>
-
       <Dialog open={!!diff} onOpenChange={(o) => !o && setDiff(null)}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
@@ -357,26 +382,22 @@ function ImportCsvButton() {
                 <Stat label="Idénticos" value={diff.identical} tone="muted" />
               </div>
               <p className="text-xs text-muted-foreground">
-                Nuevos se crean con la categoría y stocks del CSV (sin stock → 0). Para existentes, elegí qué actualizar.
+                Nuevos se crean con la categoría y stocks del CSV. Para existentes, elegí qué actualizar.
               </p>
               {diff.changedItems.length > 0 && (
                 <div className="space-y-2 rounded-md border p-3">
                   <div className="text-sm font-medium">Actualizar en existentes:</div>
-                  <label className="flex items-center gap-2 text-sm">
-                    <Checkbox checked={updateName} onCheckedChange={(v) => setUpdateName(!!v)} /> Nombre
-                  </label>
-                  <label className="flex items-center gap-2 text-sm">
-                    <Checkbox checked={updateUom} onCheckedChange={(v) => setUpdateUom(!!v)} /> Unidad (UoM)
-                  </label>
-                  <label className="flex items-center gap-2 text-sm">
-                    <Checkbox checked={updateCategory} onCheckedChange={(v) => setUpdateCategory(!!v)} /> Categoría
-                  </label>
-                  <label className="flex items-center gap-2 text-sm">
-                    <Checkbox checked={updateStockA} onCheckedChange={(v) => setUpdateStockA(!!v)} /> Stock {BRANCH_LABELS.A} (sobrescribe)
-                  </label>
-                  <label className="flex items-center gap-2 text-sm">
-                    <Checkbox checked={updateStockB} onCheckedChange={(v) => setUpdateStockB(!!v)} /> Stock {BRANCH_LABELS.B} (sobrescribe)
-                  </label>
+                  {[
+                    [updateName, setUpdateName, "Nombre"],
+                    [updateUom, setUpdateUom, "Unidad (UoM)"],
+                    [updateCategory, setUpdateCategory, "Categoría"],
+                    [updateStockA, setUpdateStockA, `Stock ${BRANCH_LABELS.A} (sobrescribe)`],
+                    [updateStockB, setUpdateStockB, `Stock ${BRANCH_LABELS.B} (sobrescribe)`],
+                  ].map(([val, setter, label]) => (
+                    <label key={label as string} className="flex items-center gap-2 text-sm">
+                      <Checkbox checked={val as boolean} onCheckedChange={(v) => (setter as any)(!!v)} /> {label as string}
+                    </label>
+                  ))}
                 </div>
               )}
               {diff.newItems.length > 0 && (
@@ -384,10 +405,7 @@ function ImportCsvButton() {
                   <summary className="cursor-pointer">Ver primeros 10 nuevos</summary>
                   <ul className="mt-2 space-y-1">
                     {diff.newItems.slice(0, 10).map((r) => (
-                      <li key={r.barcode} className="font-mono">
-                        {r.barcode} — {r.product_name}
-                        {r.category ? ` · ${r.category}` : ""}
-                      </li>
+                      <li key={r.barcode} className="font-mono">{r.barcode} — {r.product_name}{r.category ? ` · ${r.category}` : ""}</li>
                     ))}
                   </ul>
                 </details>
@@ -395,9 +413,7 @@ function ImportCsvButton() {
             </div>
           )}
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDiff(null)} disabled={busy}>
-              Cancelar
-            </Button>
+            <Button variant="outline" onClick={() => setDiff(null)} disabled={busy}>Cancelar</Button>
             <Button onClick={confirmApply} disabled={busy}>
               {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : "Aplicar"}
             </Button>
@@ -418,13 +434,10 @@ function AddProductButton({ categories }: { categories: string[] }) {
   const [total, setTotal] = useState("0");
   const [busy, setBusy] = useState(false);
 
-  function reset() {
-    setBarcode(""); setName(""); setUom(""); setCategory(""); setTotal("0");
-  }
+  function reset() { setBarcode(""); setName(""); setUom(""); setCategory(""); setTotal("0"); }
 
   async function save() {
-    const b = barcode.trim();
-    const n = name.trim();
+    const b = barcode.trim(); const n = name.trim();
     if (!b || !n) { toast.error("Código y nombre son obligatorios"); return; }
     const t = Number(total) || 0;
     if (t < 0) { toast.error("Stock inválido"); return; }
@@ -433,19 +446,15 @@ function AddProductButton({ categories }: { categories: string[] }) {
       const { data: existing } = await supabase.from("products").select("barcode").eq("barcode", b).maybeSingle();
       if (existing) { toast.error("Ya existe un producto con ese código"); return; }
       const { error } = await supabase.from("products").insert({
-        barcode: b, product_name: n, uom: uom.trim() || null, category: category.trim() || null,
-        stock_a: t, stock_b: 0,
+        barcode: b, product_name: n, uom: uom.trim() || null,
+        category: category.trim() || null, stock_a: t, stock_b: 0,
       });
       if (error) throw error;
       toast.success("Producto agregado");
       qc.invalidateQueries({ queryKey: ["products"] });
-      reset();
-      setOpen(false);
-    } catch (e) {
-      toast.error((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
+      reset(); setOpen(false);
+    } catch (e) { toast.error((e as Error).message); }
+    finally { setBusy(false); }
   }
 
   return (
@@ -455,37 +464,30 @@ function AddProductButton({ categories }: { categories: string[] }) {
       </Button>
       <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) reset(); }}>
         <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>Agregar producto</DialogTitle>
-          </DialogHeader>
+          <DialogHeader><DialogTitle>Agregar producto</DialogTitle></DialogHeader>
           <div className="space-y-3">
-            <div>
-              <label className="text-xs font-medium text-muted-foreground">Código de barras *</label>
-              <Input value={barcode} onChange={(e) => setBarcode(e.target.value)} className="font-mono" autoFocus />
-            </div>
-            <div>
-              <label className="text-xs font-medium text-muted-foreground">Nombre *</label>
-              <Input value={name} onChange={(e) => setName(e.target.value)} />
-            </div>
-            <div>
-              <label className="text-xs font-medium text-muted-foreground">Unidad (UoM)</label>
-              <Input value={uom} onChange={(e) => setUom(e.target.value)} placeholder="PZA, KG…" />
-            </div>
+            {[
+              { label: "Código de barras *", value: barcode, setter: setBarcode, props: { className: "font-mono", autoFocus: true } },
+              { label: "Nombre *", value: name, setter: setName, props: {} },
+              { label: "Unidad (UoM)", value: uom, setter: setUom, props: { placeholder: "PZA, KG…" } },
+            ].map(({ label, value, setter, props }) => (
+              <div key={label}>
+                <label className="text-xs font-medium text-muted-foreground">{label}</label>
+                <Input value={value} onChange={(e) => setter(e.target.value)} {...props} />
+              </div>
+            ))}
             <div>
               <label className="text-xs font-medium text-muted-foreground">Categoría</label>
-              <Input
-                value={category}
-                onChange={(e) => setCategory(e.target.value)}
-                placeholder="Ej: Limpieza, Bebidas…"
-                list="add-product-categories"
-              />
+              <Input value={category} onChange={(e) => setCategory(e.target.value)}
+                placeholder="Ej: Limpieza, Bebidas…" list="add-product-categories" />
               <datalist id="add-product-categories">
                 {categories.map((c) => <option key={c} value={c} />)}
               </datalist>
             </div>
             <div>
               <label className="text-xs font-medium text-muted-foreground">Stock total</label>
-              <Input type="number" inputMode="decimal" step="any" min={0} value={total} onChange={(e) => setTotal(e.target.value)} />
+              <Input type="number" inputMode="decimal" step="any" min={0} value={total}
+                onChange={(e) => setTotal(e.target.value)} />
             </div>
           </div>
           <DialogFooter>
@@ -501,12 +503,11 @@ function AddProductButton({ categories }: { categories: string[] }) {
 }
 
 function Stat({ label, value, tone }: { label: string; value: number; tone: "positive" | "warning" | "muted" }) {
-  const cls =
-    tone === "positive"
-      ? "bg-emerald-50 text-emerald-900 dark:bg-emerald-900/30 dark:text-emerald-100"
-      : tone === "warning"
-        ? "bg-amber-50 text-amber-900 dark:bg-amber-900/30 dark:text-amber-100"
-        : "bg-muted text-foreground";
+  const cls = tone === "positive"
+    ? "bg-emerald-50 text-emerald-900 dark:bg-emerald-900/30 dark:text-emerald-100"
+    : tone === "warning"
+      ? "bg-amber-50 text-amber-900 dark:bg-amber-900/30 dark:text-amber-100"
+      : "bg-muted text-foreground";
   return (
     <div className={`rounded-md p-3 ${cls}`}>
       <div className="text-xs">{label}</div>
@@ -527,20 +528,12 @@ function NewCategoryButton() {
     setBusy(true);
     try {
       const { error } = await supabase.from("categories").insert({ name: n });
-      if (error) {
-        if (error.code === "23505") toast.error("Esa categoría ya existe");
-        else throw error;
-        return;
-      }
+      if (error) { if (error.code === "23505") toast.error("Esa categoría ya existe"); else throw error; return; }
       toast.success(`Categoría "${n}" creada`);
-      setName("");
-      setOpen(false);
+      setName(""); setOpen(false);
       qc.invalidateQueries({ queryKey: ["categories"] });
-    } catch (e) {
-      toast.error((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
+    } catch (e) { toast.error((e as Error).message); }
+    finally { setBusy(false); }
   }
 
   return (
@@ -551,13 +544,9 @@ function NewCategoryButton() {
       <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) setName(""); }}>
         <DialogContent className="max-w-sm">
           <DialogHeader><DialogTitle>Nueva categoría</DialogTitle></DialogHeader>
-          <Input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Ej: Limpieza, Bebidas…"
-            autoFocus
-            onKeyDown={(e) => { if (e.key === "Enter") save(); }}
-          />
+          <Input value={name} onChange={(e) => setName(e.target.value)}
+            placeholder="Ej: Limpieza, Bebidas…" autoFocus
+            onKeyDown={(e) => { if (e.key === "Enter") save(); }} />
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)} disabled={busy}>Cancelar</Button>
             <Button onClick={save} disabled={busy}>
@@ -583,14 +572,10 @@ function DeleteAllProductsButton({ hasProducts }: { hasProducts: boolean }) {
       const { error } = await supabase.from("products").delete().neq("barcode", "__never__");
       if (error) throw error;
       toast.success("Inventario borrado");
-      setConfirm("");
-      setOpen(false);
+      setConfirm(""); setOpen(false);
       qc.invalidateQueries({ queryKey: ["products"] });
-    } catch (e) {
-      toast.error((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
+    } catch (e) { toast.error((e as Error).message); }
+    finally { setBusy(false); }
   }
 
   return (
@@ -604,8 +589,7 @@ function DeleteAllProductsButton({ hasProducts }: { hasProducts: boolean }) {
         <AlertDialogHeader>
           <AlertDialogTitle>¿Borrar TODO el inventario?</AlertDialogTitle>
           <AlertDialogDescription>
-            Esta acción elimina <strong>todos los productos</strong> de la base. Útil para volver a cargar
-            el inventario por categoría desde cero. No se puede deshacer.
+            Esta acción elimina <strong>todos los productos</strong> de la base. No se puede deshacer.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <div className="space-y-1">
@@ -614,11 +598,8 @@ function DeleteAllProductsButton({ hasProducts }: { hasProducts: boolean }) {
         </div>
         <AlertDialogFooter>
           <AlertDialogCancel disabled={busy}>Cancelar</AlertDialogCancel>
-          <AlertDialogAction
-            onClick={(e) => { e.preventDefault(); wipe(); }}
-            disabled={busy || confirm !== "BORRAR"}
-            className="bg-red-600 hover:bg-red-700"
-          >
+          <AlertDialogAction onClick={(e) => { e.preventDefault(); wipe(); }}
+            disabled={busy || confirm !== "BORRAR"} className="bg-red-600 hover:bg-red-700">
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />} Borrar todo
           </AlertDialogAction>
         </AlertDialogFooter>
