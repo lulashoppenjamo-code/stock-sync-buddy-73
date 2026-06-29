@@ -61,7 +61,6 @@ function TransferPage() {
   const [receiver, setReceiver] = useState("");
   useEffect(() => { if (me?.name && !sender) setSender(me.name); }, [me?.name, sender]);
   const [photo, setPhoto] = useState<File | null>(null);
-  // Restore cart from localStorage on mount
   const [cart, setCart] = useState<CartItem[]>(() => loadCart());
   const [busy, setBusy] = useState(false);
   const [scannerOpen, setScannerOpen] = useState(false);
@@ -69,7 +68,6 @@ function TransferPage() {
   const galleryRef = useRef<HTMLInputElement>(null);
   const barcodeRef = useRef<HTMLInputElement>(null);
 
-  // Persist cart to localStorage on every change
   useEffect(() => { saveCart(cart); }, [cart]);
 
   const { data: collaborators = [] } = useQuery({
@@ -141,9 +139,12 @@ function TransferPage() {
       const path = `${batchId}.${ext}`;
       const up = await supabase.storage.from("transfer-photos").upload(path, photo, { contentType: photo.type, upsert: true });
       if (up.error) throw up.error;
-      // Use public URL instead of signed URL to avoid expiration
-      const { data: urlData } = supabase.storage.from("transfer-photos").getPublicUrl(path);
-      const photo_url = urlData?.publicUrl ?? path;
+
+      // ✅ FIX: usar signed URL igual que recepción
+      const { data: signed } = await supabase.storage
+        .from("transfer-photos")
+        .createSignedUrl(path, 60 * 60 * 24 * 365);
+      const photo_url = signed?.signedUrl ?? path;
 
       const rows = cart.map((c) => ({
         barcode: c.barcode, product_name: c.product_name, quantity: c.quantity,
@@ -174,10 +175,9 @@ function TransferPage() {
         )}
       </div>
 
-      {/* Persisted cart banner */}
       {cart.length > 0 && (
         <div className="rounded-md border border-blue-200 bg-blue-50 dark:bg-blue-950/30 px-3 py-2 text-xs text-blue-800 dark:text-blue-200">
-          📦 Carrito guardado: {cart.length} producto{cart.length === 1 ? "" : "s"} · {totalItems} unidades. Se conserva si cerrás la pantalla.
+          📦 Carrito guardado: {cart.length} producto{cart.length === 1 ? "" : "s"} · {totalItems} unidades.
         </div>
       )}
 
@@ -270,7 +270,6 @@ function TransferPage() {
                     <div className="truncate text-sm font-medium">{c.product_name}</div>
                     <div className="font-mono text-xs text-muted-foreground">{c.barcode} · stock: {c.total_stock}</div>
                   </div>
-                  {/* +/- buttons like the reference app */}
                   <div className="flex items-center gap-1 shrink-0">
                     <button type="button" onClick={() => updateCartQty(c.barcode, c.quantity - 1)}
                       disabled={c.quantity <= 1}
