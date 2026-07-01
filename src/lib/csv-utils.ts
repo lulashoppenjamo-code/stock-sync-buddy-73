@@ -134,135 +134,121 @@ export async function buildDiff(rows: ParsedRow[]): Promise<ImportDiff> {
   return diff;
 }
 
-export const IMPORT_BATCH_SIZE = 100;
+export type ImportError = { barcode: string; product_name: string; message: string };
 
-export type ApplyProgress = {
-  done: number;
-  total: number;
-  phase: "insert" | "update";
-};
+const CHUNK_SIZE = 200;
+const MAX_ATTEMPTS = 3;
 
-export type ApplyError = {
-  barcode: string;
-  product_name: string;
-  message: string;
-};
+function isRetryable(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  // Network-level failures (dropped connection, timeout, offline) are worth retrying.
+  // Data/validation errors from Postgres are not.
+  return /fetch|network|timeout|ECONN|NetworkError/i.test(msg);
+}
 
-export type ApplyResult = {
-  inserted: number;
-  updated: number;
-  errors: ApplyError[];
-  /** true if the import was cut short by a hard failure (e.g. network/DB down) */
-  aborted: boolean;
-  /** present when `aborted` is true: exactly where the process stopped */
-  failedAt?: { barcode: string; product_name: string; index: number; total: number; message: string };
-};
+function sleep(ms: number) {
+  return new Promise((res) => setTimeout(res, ms));
+}
+
+// Runs `fn` with retries for transient network errors. Throws the last error if all attempts fail.
+async function withRetry<T>(fn: () => Promise<T>, attempts = MAX_ATTEMPTS): Promise<T> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (attempt === attempts || !isRetryable(err)) throw err;
+      await sleep(300 * attempt); // simple backoff: 300ms, 600ms...
+    }
+  }
+  throw lastErr;
+}
 
 export async function applyImport(
   diff: ImportDiff,
   opts: { updateName: boolean; updateUom: boolean; updateCategory: boolean; updateStockA: boolean; updateStockB: boolean },
   collab: { id: string; name: string } | null,
   filename: string | null,
-  onProgress?: (p: ApplyProgress) => void,
-): Promise<ApplyResult> {
-  const total = diff.newItems.length + diff.changedItems.length;
-  let done = 0;
+) {
+  const errors: ImportError[] = [];
   let inserted = 0;
   let updated = 0;
-  const errors: ApplyError[] = [];
 
-  // ── Fase 1: altas, en lotes de 100 ────────────────────────────────────
-  for (let i = 0; i < diff.newItems.length; i += IMPORT_BATCH_SIZE) {
-    const chunk = diff.newItems.slice(i, i + IMPORT_BATCH_SIZE);
+  // ── New items: batched upsert, chunk-level retry, failures don't block other chunks ──
+  for (let i = 0; i < diff.newItems.length; i += CHUNK_SIZE) {
+    const chunk = diff.newItems.slice(i, i + CHUNK_SIZE);
     try {
-      const { error } = await supabase.from("products").upsert(
-        chunk.map((r) => ({
-          barcode: r.barcode,
-          product_name: r.product_name,
-          uom: r.uom,
-          category: r.category,
-          stock_a: r.stock_a ?? 0,
-          stock_b: r.stock_b ?? 0,
-        })),
-        { onConflict: "barcode", ignoreDuplicates: true },
-      );
-      if (error) throw error;
+      await withRetry(async () => {
+        const { error } = await supabase.from("products").upsert(
+          chunk.map((r) => ({
+            barcode: r.barcode,
+            product_name: r.product_name,
+            uom: r.uom,
+            category: r.category,
+            stock_a: r.stock_a ?? 0,
+            stock_b: r.stock_b ?? 0,
+          })),
+          { onConflict: "barcode", ignoreDuplicates: true },
+        );
+        if (error) throw error;
+      });
       inserted += chunk.length;
-      done += chunk.length;
-      onProgress?.({ done, total, phase: "insert" });
-    } catch (e) {
-      // Fallo "duro" (red/DB caída, etc.): lo ya confirmado en lotes previos
-      // queda guardado en la base. Reportamos el punto exacto donde se detuvo.
-      return {
-        inserted,
-        updated,
-        errors,
-        aborted: true,
-        failedAt: {
-          barcode: chunk[0].barcode,
-          product_name: chunk[0].product_name,
-          index: i + 1,
-          total,
-          message: (e as Error).message ?? "Error desconocido",
-        },
-      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      for (const r of chunk) errors.push({ barcode: r.barcode, product_name: r.product_name, message });
     }
   }
 
-  // ── Fase 2: actualizaciones, en lotes de 100 (en paralelo dentro del lote) ─
-  for (let i = 0; i < diff.changedItems.length; i += IMPORT_BATCH_SIZE) {
-    const chunk = diff.changedItems.slice(i, i + IMPORT_BATCH_SIZE);
-    const results = await Promise.allSettled(
-      chunk.map(async (c) => {
-        const patch: {
-          product_name?: string;
-          uom?: string | null;
-          category?: string | null;
-          stock_a?: number;
-          stock_b?: number;
-        } = {};
-        if (opts.updateName && c.nameChanged) patch.product_name = c.next.product_name;
-        if (opts.updateUom && c.uomChanged) patch.uom = c.next.uom;
-        if (opts.updateCategory && c.categoryChanged) patch.category = c.next.category;
-        if (opts.updateStockA && c.stockAChanged && c.next.stock_a != null) patch.stock_a = c.next.stock_a;
-        if (opts.updateStockB && c.stockBChanged && c.next.stock_b != null) patch.stock_b = c.next.stock_b;
-        if (Object.keys(patch).length === 0) return { skipped: true };
-        const { error } = await supabase.from("products").update(patch).eq("barcode", c.barcode);
+  // ── Changed items: build the full target row (current + only the flagged fields) so we
+  // can batch with upsert instead of one `update` request per row. ──
+  const rowsToUpdate = diff.changedItems
+    .map((c) => {
+      const patch: Record<string, unknown> = {};
+      if (opts.updateName && c.nameChanged) patch.product_name = c.next.product_name;
+      if (opts.updateUom && c.uomChanged) patch.uom = c.next.uom;
+      if (opts.updateCategory && c.categoryChanged) patch.category = c.next.category;
+      if (opts.updateStockA && c.stockAChanged && c.next.stock_a != null) patch.stock_a = c.next.stock_a;
+      if (opts.updateStockB && c.stockBChanged && c.next.stock_b != null) patch.stock_b = c.next.stock_b;
+      if (Object.keys(patch).length === 0) return null;
+      return {
+        barcode: c.barcode,
+        product_name: c.current.product_name,
+        uom: c.current.uom,
+        category: c.current.category,
+        stock_a: c.current.stock_a,
+        stock_b: c.current.stock_b,
+        ...patch,
+        _product_name_label: (patch.product_name as string | undefined) ?? c.current.product_name,
+      };
+    })
+    .filter((r): r is NonNullable<typeof r> => r !== null);
+
+  for (let i = 0; i < rowsToUpdate.length; i += CHUNK_SIZE) {
+    const chunk = rowsToUpdate.slice(i, i + CHUNK_SIZE);
+    try {
+      await withRetry(async () => {
+        const { error } = await supabase.from("products").upsert(
+          chunk.map(({ _product_name_label, ...row }) => row),
+          { onConflict: "barcode" },
+        );
         if (error) throw error;
-        return { skipped: false };
-      }),
-    );
-
-    results.forEach((r, idx) => {
-      const c = chunk[idx];
-      if (r.status === "fulfilled") {
-        if (!r.value.skipped) updated++;
-      } else {
-        errors.push({
-          barcode: c.barcode,
-          product_name: c.next.product_name,
-          message: (r.reason as Error)?.message ?? "Error desconocido",
-        });
-      }
-    });
-
-    done += chunk.length;
-    onProgress?.({ done, total, phase: "update" });
+      });
+      updated += chunk.length;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      for (const r of chunk) errors.push({ barcode: r.barcode, product_name: r._product_name_label, message });
+    }
   }
 
-  // El registro de historial no debe hacer fallar toda la importación si falla.
-  try {
-    await supabase.from("csv_imports").insert({
-      filename,
-      new_count: inserted,
-      updated_count: updated,
-      skipped_count: diff.identical + (diff.changedItems.length - updated - errors.length),
-      collaborator_id: collab?.id ?? null,
-      collaborator_name: collab?.name ?? null,
-    });
-  } catch {
-    // no crítico: la importación de productos ya se completó
-  }
+  await supabase.from("csv_imports").insert({
+    filename,
+    new_count: inserted,
+    updated_count: updated,
+    skipped_count: diff.identical + errors.length,
+    collaborator_id: collab?.id ?? null,
+    collaborator_name: collab?.name ?? null,
+  });
 
-  return { inserted, updated, errors, aborted: false };
+  return { inserted, updated, errors };
 }
