@@ -12,9 +12,10 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Upload, Search, Loader2, FileSpreadsheet, Check, Plus, Trash2, FolderPlus, Lock } from "lucide-react";
+import { Progress } from "@/components/ui/progress";
+import { Upload, Search, Loader2, FileSpreadsheet, Check, Plus, Trash2, FolderPlus, Lock, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
-import { parseCsv, buildDiff, applyImport, type ImportDiff } from "@/lib/csv-utils";
+import { parseCsv, buildDiff, applyImport, type ImportDiff, type ApplyProgress, type ApplyResult } from "@/lib/csv-utils";
 import { getCollaborator } from "@/lib/session";
 import { BRANCH_LABELS } from "@/lib/branches";
 
@@ -322,7 +323,7 @@ function TotalStockCell({ barcode, productName, value }: { barcode: string; prod
   );
 }
 
-// ── ImportCsvButton (unchanged logic, same as before) ──────────────────
+// ── ImportCsvButton ──────────────────────────────────────────────────────
 function ImportCsvButton() {
   const qc = useQueryClient();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -334,6 +335,8 @@ function ImportCsvButton() {
   const [updateStockA, setUpdateStockA] = useState(false);
   const [updateStockB, setUpdateStockB] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<ApplyProgress | null>(null);
+  const [result, setResult] = useState<ApplyResult | null>(null);
 
   async function onFile(file: File) {
     setBusy(true);
@@ -349,16 +352,36 @@ function ImportCsvButton() {
   async function confirmApply() {
     if (!diff) return;
     setBusy(true);
+    setResult(null);
+    setProgress({ done: 0, total: diff.newItems.length + diff.changedItems.length, phase: "insert" });
     try {
       const collab = getCollaborator();
-      const res = await applyImport(diff, { updateName, updateUom, updateCategory, updateStockA, updateStockB }, collab, filename);
-      toast.success(`Importación lista: +${res.inserted} nuevos, ${res.updated} actualizados`);
-      setDiff(null); setFilename(null);
-      qc.invalidateQueries({ queryKey: ["products"] });
-      qc.invalidateQueries({ queryKey: ["categories"] });
-    } catch (e) { toast.error((e as Error).message); }
-    finally { setBusy(false); }
+      const res = await applyImport(
+        diff,
+        { updateName, updateUom, updateCategory, updateStockA, updateStockB },
+        collab,
+        filename,
+        (p) => setProgress(p),
+      );
+      setResult(res);
+      if (!res.aborted) {
+        qc.invalidateQueries({ queryKey: ["products"] });
+        qc.invalidateQueries({ queryKey: ["categories"] });
+      }
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
   }
+
+  function closeAll() {
+    setDiff(null); setFilename(null); setProgress(null); setResult(null);
+  }
+
+  const total = progress?.total ?? 0;
+  const pct = total > 0 ? Math.round(((progress?.done ?? 0) / total) * 100) : 0;
+  const isImporting = busy && !result;
 
   return (
     <>
@@ -367,14 +390,70 @@ function ImportCsvButton() {
       <Button onClick={() => inputRef.current?.click()} disabled={busy}>
         {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />} Importar CSV
       </Button>
-      <Dialog open={!!diff} onOpenChange={(o) => !o && setDiff(null)}>
+      <Dialog open={!!diff} onOpenChange={(o) => !o && !isImporting && closeAll()}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <FileSpreadsheet className="h-5 w-5" /> Vista previa de importación
+              <FileSpreadsheet className="h-5 w-5" />
+              {result ? "Resultado de la importación" : "Vista previa de importación"}
             </DialogTitle>
           </DialogHeader>
-          {diff && (
+
+          {/* Progreso en curso */}
+          {diff && isImporting && (
+            <div className="space-y-3 py-2">
+              <Progress value={pct} />
+              <p className="text-sm text-center text-muted-foreground">
+                {progress?.phase === "insert" ? "Importando" : "Actualizando"}{" "}
+                {(progress?.done ?? 0).toLocaleString("es-MX")} de {total.toLocaleString("es-MX")}...
+              </p>
+              <p className="text-xs text-center text-muted-foreground">
+                Podés dejar esta ventana abierta, la importación sigue en segundo plano.
+              </p>
+            </div>
+          )}
+
+          {/* Resumen final */}
+          {result && (
+            <div className="space-y-4 text-sm">
+              {result.aborted && result.failedAt && (
+                <div className="flex items-start gap-2 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-destructive">
+                  <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+                  <div>
+                    <p className="font-medium">La importación se detuvo</p>
+                    <p className="text-xs mt-1">
+                      Falló en el producto <span className="font-mono">{result.failedAt.barcode}</span> — {result.failedAt.product_name}
+                      {" "}(posición {result.failedAt.index} de {result.failedAt.total}). {result.failedAt.message}
+                    </p>
+                    <p className="text-xs mt-1">
+                      Lo procesado hasta ese punto ya quedó guardado. Podés volver a importar el mismo archivo:
+                      lo ya cargado se detectará como idéntico y solo continuará desde ahí.
+                    </p>
+                  </div>
+                </div>
+              )}
+              <div className="grid grid-cols-3 gap-2">
+                <Stat label="Nuevos" value={result.inserted} tone="positive" />
+                <Stat label="Actualizados" value={result.updated} tone="warning" />
+                <Stat label="Errores" value={result.errors.length} tone={result.errors.length ? "warning" : "muted"} />
+              </div>
+              {result.errors.length > 0 && (
+                <details className="rounded-md border p-2 text-xs" open>
+                  <summary className="cursor-pointer font-medium">Ver errores ({result.errors.length})</summary>
+                  <ul className="mt-2 space-y-1 max-h-40 overflow-y-auto">
+                    {result.errors.map((e) => (
+                      <li key={e.barcode} className="font-mono">
+                        {e.barcode} — {e.product_name}: <span className="text-destructive">{e.message}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+            </div>
+          )}
+
+          {/* Vista previa antes de aplicar */}
+          {diff && !isImporting && !result && (
             <div className="space-y-4 text-sm">
               <div className="grid grid-cols-3 gap-2">
                 <Stat label="Nuevos" value={diff.newItems.length} tone="positive" />
@@ -412,11 +491,18 @@ function ImportCsvButton() {
               )}
             </div>
           )}
+
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDiff(null)} disabled={busy}>Cancelar</Button>
-            <Button onClick={confirmApply} disabled={busy}>
-              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : "Aplicar"}
-            </Button>
+            {result ? (
+              <Button onClick={closeAll}>Cerrar</Button>
+            ) : (
+              <>
+                <Button variant="outline" onClick={closeAll} disabled={isImporting}>Cancelar</Button>
+                <Button onClick={confirmApply} disabled={isImporting}>
+                  {isImporting ? <Loader2 className="h-4 w-4 animate-spin" /> : "Aplicar"}
+                </Button>
+              </>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
