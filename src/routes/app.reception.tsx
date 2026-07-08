@@ -56,6 +56,55 @@ function extractBatchId(client_uid: string | null, fallback: string): string {
   return match ? match[1] : fallback;
 }
 
+// --- Persistencia local del progreso de recepción ---
+// Evita perder las unidades ya pistoleadas si se sale accidentalmente
+// de la pantalla o se toca otra sección antes de confirmar.
+const PROGRESS_PREFIX = "reception-progress-";
+
+type SavedProgress = {
+  scannedCounts: Record<string, number>;
+  sender?: string;
+  receiver?: string;
+};
+
+function loadReceptionProgress(batchId: string): SavedProgress | null {
+  try {
+    const raw = localStorage.getItem(PROGRESS_PREFIX + batchId);
+    if (!raw) return null;
+    return JSON.parse(raw) as SavedProgress;
+  } catch {
+    return null;
+  }
+}
+
+function saveReceptionProgress(
+  batchId: string,
+  scannedCounts: Map<string, number>,
+  sender: string,
+  receiver: string
+) {
+  try {
+    localStorage.setItem(
+      PROGRESS_PREFIX + batchId,
+      JSON.stringify({
+        scannedCounts: Object.fromEntries(scannedCounts),
+        sender,
+        receiver,
+      })
+    );
+  } catch {
+    // almacenamiento no disponible, se ignora
+  }
+}
+
+function clearReceptionProgress(batchId: string) {
+  try {
+    localStorage.removeItem(PROGRESS_PREFIX + batchId);
+  } catch {
+    // no-op
+  }
+}
+
 function groupByBatch(transfers: PendingTransfer[]): BatchGroup[] {
   const map = new Map<string, BatchGroup>();
   for (const t of transfers) {
@@ -209,9 +258,13 @@ function BatchReceiveDialog({
   const [sender, setSender] = useState<string>("");
   const [receiver, setReceiver] = useState<string>("");
   const [nameSearch, setNameSearch] = useState("");
-  // Mapa barcode -> cuántas unidades se han pistoleado (debe llegar a item.quantity)
+  // Mapa item.id -> cuántas unidades se han recibido (debe llegar a item.quantity)
+  // Se usa el id del artículo (no el código de barras) porque puede haber
+  // más de un artículo sin código de barras en el mismo envío.
   const [scannedCounts, setScannedCounts] = useState<Map<string, number>>(new Map());
   const [scanInput, setScanInput] = useState("");
+  // Cantidad tecleada manualmente por artículo en la búsqueda por nombre
+  const [manualQtyInputs, setManualQtyInputs] = useState<Record<string, string>>({});
   const photoRef = useRef<HTMLInputElement>(null);
   const galleryRef = useRef<HTMLInputElement>(null);
   const scanInputRef = useRef<HTMLInputElement>(null);
@@ -231,55 +284,88 @@ function BatchReceiveDialog({
 
   useEffect(() => {
     if (batch) {
-      setSender(batch.sender_name);
-      setReceiver(me?.name ?? batch.receiver_name ?? "");
-      setScannedCounts(new Map());
+      const saved = loadReceptionProgress(batch.batchId);
+      if (saved) {
+        setScannedCounts(new Map(Object.entries(saved.scannedCounts)));
+        setSender(saved.sender || batch.sender_name);
+        setReceiver(saved.receiver || me?.name || batch.receiver_name || "");
+        toast.info("Se restauró el progreso guardado de este envío");
+      } else {
+        setSender(batch.sender_name);
+        setReceiver(me?.name ?? batch.receiver_name ?? "");
+        setScannedCounts(new Map());
+      }
       setPhoto(null);
       setScanInput("");
       setNameSearch("");
+      setManualQtyInputs({});
     }
-  }, [batch, me?.name]);
+    // Solo se re-ejecuta cuando cambia el envío activo, no en cada refetch
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [batch?.batchId]);
 
-  const batchBarcodes = batch?.items.map((i) => i.barcode) ?? [];
-
-  // Un producto está completo cuando se pistoleó la cantidad exacta
-  function isItemComplete(barcode: string): boolean {
-    const item = batch?.items.find((i) => i.barcode === barcode);
+  // Un producto está completo cuando se recibió la cantidad exacta
+  function isItemComplete(itemId: string): boolean {
+    const item = batch?.items.find((i) => i.id === itemId);
     if (!item) return false;
-    return (scannedCounts.get(barcode) ?? 0) >= item.quantity;
+    return (scannedCounts.get(itemId) ?? 0) >= item.quantity;
   }
 
-  const allConfirmed = batch !== null && batch.items.every((i) => isItemComplete(i.barcode));
+  const allConfirmed = batch !== null && batch.items.every((i) => isItemComplete(i.id));
 
-  // Total pistoleado vs total esperado
+  // Total recibido vs total esperado
   const totalScanned = Array.from(scannedCounts.values()).reduce((s, v) => s + v, 0);
   const totalExpected = batch?.totalQuantity ?? 0;
 
-  function scanUnit(code: string) {
-    const c = code.trim();
-    if (!c) return;
-    if (!batchBarcodes.includes(c)) {
-      toast.error("Ese código no pertenece a este envío");
-      setScanInput("");
-      return;
-    }
-    const item = batch?.items.find((i) => i.barcode === c);
-    if (!item) return;
-    const current = scannedCounts.get(c) ?? 0;
+  // Suma `n` unidades al artículo (por id) y guarda el progreso automáticamente.
+  function addUnits(itemId: string, n: number) {
+    const item = batch?.items.find((i) => i.id === itemId);
+    if (!item || !batch) return;
+    const current = scannedCounts.get(itemId) ?? 0;
     if (current >= item.quantity) {
       toast.info(`${item.product_name} ya tiene las ${item.quantity} unidades completas`);
-      setScanInput("");
       return;
     }
-    const next = current + 1;
-    setScannedCounts((prev) => new Map(prev).set(c, next));
+    const next = Math.min(item.quantity, current + n);
+    setScannedCounts((prev) => {
+      const map = new Map(prev).set(itemId, next);
+      saveReceptionProgress(batch.batchId, map, sender, receiver);
+      return map;
+    });
     if (next === item.quantity) {
       toast.success(`✓ ${item.product_name} completo (${next}/${item.quantity})`);
     } else {
       toast.success(`${item.product_name}: ${next}/${item.quantity} unidades`);
     }
+  }
+
+  // Pistoleo por código de barras (pistola o input). Solo aplica a artículos
+  // que sí tienen código de barras asignado.
+  function scanUnit(code: string) {
+    const c = code.trim();
+    if (!c) return;
+    const item = batch?.items.find((i) => i.barcode && i.barcode === c);
+    if (!item) {
+      toast.error("Ese código no pertenece a este envío");
+      setScanInput("");
+      return;
+    }
+    addUnits(item.id, 1);
     setScanInput("");
     scanInputRef.current?.focus();
+  }
+
+  // Captura manual de piezas para un artículo (usado solo en la búsqueda por
+  // nombre, para artículos que no se pueden pistolear porque no tienen
+  // código de barras, o cuando es más rápido teclear la cantidad).
+  function addManualQty(itemId: string) {
+    const item = batch?.items.find((i) => i.id === itemId);
+    if (!item) return;
+    const raw = manualQtyInputs[itemId];
+    const n = raw && raw.trim() !== "" ? parseInt(raw, 10) : 1;
+    if (!n || n <= 0) return;
+    addUnits(itemId, n);
+    setManualQtyInputs((prev) => ({ ...prev, [itemId]: "" }));
   }
 
   async function confirm() {
@@ -312,13 +398,16 @@ function BatchReceiveDialog({
           received_by_id: collab.id,
           received_by_name: collab.name,
           received_photo_url,
-          received_scanned_barcode: Array.from(scannedCounts.entries()).map(([bc, qty]) => `${bc}x${qty}`).join(","),
+          received_scanned_barcode: batch.items
+            .map((i) => `${i.barcode || i.product_name}x${scannedCounts.get(i.id) ?? 0}`)
+            .join(","),
           received_sender_name: sender.trim(),
           received_receiver_name: receiver.trim(),
         })
         .in("id", ids);
       if (error) throw error;
 
+      clearReceptionProgress(batch.batchId);
       toast.success(`${ids.length} producto${ids.length === 1 ? "" : "s"} recibidos`);
       onDone();
     } catch (e) {
@@ -348,7 +437,7 @@ function BatchReceiveDialog({
             {/* Lista de productos con progreso por unidades */}
             <div className="divide-y rounded-md border">
               {batch.items.map((item) => {
-                const scanned = scannedCounts.get(item.barcode) ?? 0;
+                const scanned = scannedCounts.get(item.id) ?? 0;
                 const done = scanned >= item.quantity;
                 return (
                   <div key={item.id} className={`flex items-center gap-2 px-3 py-2 text-xs ${done ? "bg-emerald-50 dark:bg-emerald-950/20" : ""}`}>
@@ -359,19 +448,23 @@ function BatchReceiveDialog({
                       <div className={`truncate font-medium ${done ? "line-through text-muted-foreground" : ""}`}>
                         {item.product_name}
                       </div>
-                      <div className="font-mono text-muted-foreground">{item.barcode}</div>
+                      {item.barcode ? (
+                        <div className="font-mono text-muted-foreground">{item.barcode}</div>
+                      ) : (
+                        <div className="italic text-amber-600">Sin código · buscá por nombre abajo</div>
+                      )}
                     </div>
                     {/* Contador de unidades */}
                     <div className={`shrink-0 text-xs font-bold tabular-nums ${done ? "text-emerald-600" : scanned > 0 ? "text-amber-600" : "text-muted-foreground"}`}>
                       {scanned}/{item.quantity}
                     </div>
-                    {!done && (
+                    {!done && item.barcode && (
                       <Button
                         type="button"
                         size="sm"
                         variant="ghost"
                         className="h-7 text-xs"
-                        onClick={() => scanUnit(item.barcode)}
+                        onClick={() => addUnits(item.id, 1)}
                       >
                         +1
                       </Button>
@@ -411,33 +504,73 @@ function BatchReceiveDialog({
 
             {/* Buscar por nombre */}
             <div>
-              <Label>O buscar por nombre (suma +1)</Label>
+              <Label>O buscar por nombre (para artículos sin código)</Label>
               <Input
                 value={nameSearch}
                 onChange={(e) => setNameSearch(e.target.value)}
                 placeholder="Escribí al menos 2 letras…"
               />
+              <p className="mt-1 text-xs text-muted-foreground">
+                Cuando buscás por nombre podés teclear directamente cuántas piezas llegaron, sin pistolar una por una.
+              </p>
               {nameSearch.trim().length >= 2 && (
-                <div className="mt-1 max-h-40 overflow-auto rounded-md border bg-card">
+                <div className="mt-1 max-h-56 overflow-auto rounded-md border bg-card">
                   {batch.items
                     .filter((i) => i.product_name.toLowerCase().includes(nameSearch.toLowerCase()))
                     .map((item) => {
-                      const scanned = scannedCounts.get(item.barcode) ?? 0;
+                      const scanned = scannedCounts.get(item.id) ?? 0;
                       const done = scanned >= item.quantity;
+                      const remaining = item.quantity - scanned;
                       return (
-                        <button
-                          key={item.barcode}
-                          type="button"
-                          disabled={done}
-                          onClick={() => {
-                            scanUnit(item.barcode);
-                            setNameSearch("");
-                          }}
-                          className="flex w-full items-center justify-between gap-2 border-b px-3 py-2 text-left text-xs last:border-b-0 hover:bg-muted disabled:opacity-40"
+                        <div
+                          key={item.id}
+                          className={`flex items-center justify-between gap-2 border-b px-3 py-2 text-xs last:border-b-0 ${done ? "bg-emerald-50 dark:bg-emerald-950/20" : ""}`}
                         >
-                          <span className="truncate font-medium">{item.product_name}</span>
-                          <span className="shrink-0 text-muted-foreground">{scanned}/{item.quantity}</span>
-                        </button>
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate font-medium">{item.product_name}</div>
+                            <div className="text-muted-foreground">
+                              {item.barcode ? (
+                                <span className="font-mono">{item.barcode}</span>
+                              ) : (
+                                <span className="italic text-amber-600">Sin código de barras</span>
+                              )}
+                              {" · "}{scanned}/{item.quantity}
+                            </div>
+                          </div>
+                          {done ? (
+                            <Check className="h-4 w-4 shrink-0 text-emerald-600" />
+                          ) : (
+                            <div className="flex shrink-0 items-center gap-1">
+                              <Input
+                                type="number"
+                                inputMode="numeric"
+                                min={1}
+                                max={remaining}
+                                placeholder={`${remaining}`}
+                                value={manualQtyInputs[item.id] ?? ""}
+                                onChange={(e) =>
+                                  setManualQtyInputs((prev) => ({ ...prev, [item.id]: e.target.value }))
+                                }
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") {
+                                    e.preventDefault();
+                                    addManualQty(item.id);
+                                  }
+                                }}
+                                className="h-7 w-14 px-1 text-center text-xs"
+                              />
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                className="h-7 px-2 text-xs"
+                                onClick={() => addManualQty(item.id)}
+                              >
+                                Agregar
+                              </Button>
+                            </div>
+                          )}
+                        </div>
                       );
                     })}
                   {batch.items.filter((i) => i.product_name.toLowerCase().includes(nameSearch.toLowerCase())).length === 0 && (
@@ -451,7 +584,13 @@ function BatchReceiveDialog({
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
                 <Label>Envía</Label>
-                <Select value={sender} onValueChange={setSender}>
+                <Select
+                  value={sender}
+                  onValueChange={(v) => {
+                    setSender(v);
+                    if (batch) saveReceptionProgress(batch.batchId, scannedCounts, v, receiver);
+                  }}
+                >
                   <SelectTrigger><SelectValue placeholder="Seleccionar…" /></SelectTrigger>
                   <SelectContent>
                     {collaborators.map((c) => (
@@ -465,7 +604,13 @@ function BatchReceiveDialog({
               </div>
               <div>
                 <Label>Recibe</Label>
-                <Select value={receiver} onValueChange={setReceiver}>
+                <Select
+                  value={receiver}
+                  onValueChange={(v) => {
+                    setReceiver(v);
+                    if (batch) saveReceptionProgress(batch.batchId, scannedCounts, sender, v);
+                  }}
+                >
                   <SelectTrigger><SelectValue placeholder="Seleccionar…" /></SelectTrigger>
                   <SelectContent>
                     {collaborators.map((c) => (
