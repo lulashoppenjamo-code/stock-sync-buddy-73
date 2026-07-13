@@ -578,8 +578,13 @@ function AuditPage() {
               </div>
             </div>
           )}
-          <DialogFooter>
-            <Button onClick={() => setSummaryData(null)}>Cerrar</Button>
+          <DialogFooter className="gap-2 sm:gap-0">
+            {summaryFinal && (
+              <Link to="/app/audit-history" className="inline-flex items-center justify-center gap-1 rounded-md border px-3 py-2 text-sm hover:bg-muted">
+                <History className="h-4 w-4" /> Ver historial
+              </Link>
+            )}
+            <Button onClick={() => { setSummaryData(null); setSummaryFinal(false); }}>Cerrar</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
