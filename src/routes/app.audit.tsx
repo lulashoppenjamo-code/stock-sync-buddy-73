@@ -294,9 +294,12 @@ function AuditPage() {
         <h1 className="mr-auto text-xl font-semibold tracking-tight">Auditoría</h1>
         {counts.size > 0 && (
           <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200">
-            {counts.size} productos · {totalCounted} unidades
+            {counts.size} · {totalCounted}
           </span>
         )}
+        <Link to="/app/audit-history" className="flex items-center gap-1 rounded-md border px-2 py-1 text-xs hover:bg-muted">
+          <History className="h-3.5 w-3.5" /> Historial
+        </Link>
       </div>
 
       {/* ── Category + Branch selector ── */}
