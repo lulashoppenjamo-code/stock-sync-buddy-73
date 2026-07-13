@@ -497,10 +497,16 @@ function AuditPage() {
 
             {/* Save button at bottom too */}
             {counts.size > 0 && (
-              <Button onClick={saveCount} disabled={saving} className="w-full mt-2">
-                {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                Guardar conteo ({counts.size} productos · {totalCounted} unidades)
-              </Button>
+              <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <Button onClick={saveCount} disabled={saving || finalizing} variant="outline" className="w-full">
+                  {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                  Guardar parcial ({counts.size})
+                </Button>
+                <Button onClick={finalizeCount} disabled={saving || finalizing} className="w-full">
+                  {finalizing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Flag className="h-4 w-4" />}
+                  Finalizar conteo
+                </Button>
+              </div>
             )}
           </div>
         </>
