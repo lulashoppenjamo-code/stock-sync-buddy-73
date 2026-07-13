@@ -62,7 +62,9 @@ function AuditPage() {
   const [nameSearch, setNameSearch] = useState("");
   const [scanning, setScanning] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [finalizing, setFinalizing] = useState(false);
   const [summaryData, setSummaryData] = useState<CountEntry[] | null>(null);
+  const [summaryFinal, setSummaryFinal] = useState(false);
   const scanRef = useRef<HTMLInputElement>(null);
   const qc = useQueryClient();
 
