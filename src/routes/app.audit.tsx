@@ -235,6 +235,45 @@ function AuditPage() {
     }
   }
 
+  // ── Finalize count: persist snapshot to audit_history, THEN clear local state ──
+  async function finalizeCount() {
+    if (counts.size === 0) return toast.error("No hay productos contados");
+    const collab = getCollaborator();
+    if (!collab) return toast.error("Sesión expirada");
+    if (!confirm(`Finalizar conteo de "${category}"? Se guardará el resumen y se cerrará esta sesión.`)) return;
+    setFinalizing(true);
+    try {
+      const sessionId = crypto.randomUUID();
+      const snapshot = Array.from(counts.values());
+      const rows = snapshot.map((c) => ({
+        session_id: sessionId,
+        category,
+        branch,
+        barcode: c.barcode,
+        product_name: c.product_name,
+        system_stock: c.system_stock,
+        counted_quantity: c.count,
+        difference: c.count - c.system_stock,
+        collaborator_id: collab.id,
+        collaborator_name: collab.name,
+      }));
+      const { error } = await supabase.from("audit_history").insert(rows);
+      if (error) throw error;
+      // Only NOW clear local state (persist confirmed)
+      setSummaryData(snapshot);
+      setSummaryFinal(true);
+      setCounts(new Map());
+      clearCatState();
+      qc.invalidateQueries({ queryKey: ["audit_history"] });
+      toast.success("Conteo finalizado y guardado en historial");
+    } catch (e) {
+      toast.error("No se pudo guardar: " + (e as Error).message);
+    } finally {
+      setFinalizing(false);
+    }
+  }
+
+
   // Filtered product list for name search
   const filteredProducts = useMemo(() =>
     nameSearch.trim().length >= 2
