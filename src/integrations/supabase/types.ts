@@ -14,6 +14,51 @@ export type Database = {
   }
   public: {
     Tables: {
+      audit_history: {
+        Row: {
+          barcode: string
+          branch: string
+          category: string
+          collaborator_id: string | null
+          collaborator_name: string | null
+          counted_quantity: number
+          created_at: string
+          difference: number
+          id: string
+          product_name: string
+          session_id: string
+          system_stock: number
+        }
+        Insert: {
+          barcode: string
+          branch: string
+          category: string
+          collaborator_id?: string | null
+          collaborator_name?: string | null
+          counted_quantity: number
+          created_at?: string
+          difference: number
+          id?: string
+          product_name: string
+          session_id: string
+          system_stock: number
+        }
+        Update: {
+          barcode?: string
+          branch?: string
+          category?: string
+          collaborator_id?: string | null
+          collaborator_name?: string | null
+          counted_quantity?: number
+          created_at?: string
+          difference?: number
+          id?: string
+          product_name?: string
+          session_id?: string
+          system_stock?: number
+        }
+        Relationships: []
+      }
       audits: {
         Row: {
           barcode: string
