@@ -15,6 +15,7 @@ import { Route as AppIndexRouteImport } from './routes/app.index'
 import { Route as AppTransferRouteImport } from './routes/app.transfer'
 import { Route as AppReceptionRouteImport } from './routes/app.reception'
 import { Route as AppHistoryRouteImport } from './routes/app.history'
+import { Route as AppAuditHistoryRouteImport } from './routes/app.audit-history'
 import { Route as AppAuditRouteImport } from './routes/app.audit'
 import { Route as AppAdminRouteImport } from './routes/app.admin'
 
@@ -48,6 +49,11 @@ const AppHistoryRoute = AppHistoryRouteImport.update({
   path: '/history',
   getParentRoute: () => AppRoute,
 } as any)
+const AppAuditHistoryRoute = AppAuditHistoryRouteImport.update({
+  id: '/audit-history',
+  path: '/audit-history',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppAuditRoute = AppAuditRouteImport.update({
   id: '/audit',
   path: '/audit',
@@ -64,6 +70,7 @@ export interface FileRoutesByFullPath {
   '/app': typeof AppRouteWithChildren
   '/app/admin': typeof AppAdminRoute
   '/app/audit': typeof AppAuditRoute
+  '/app/audit-history': typeof AppAuditHistoryRoute
   '/app/history': typeof AppHistoryRoute
   '/app/reception': typeof AppReceptionRoute
   '/app/transfer': typeof AppTransferRoute
@@ -73,6 +80,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/app/admin': typeof AppAdminRoute
   '/app/audit': typeof AppAuditRoute
+  '/app/audit-history': typeof AppAuditHistoryRoute
   '/app/history': typeof AppHistoryRoute
   '/app/reception': typeof AppReceptionRoute
   '/app/transfer': typeof AppTransferRoute
@@ -84,6 +92,7 @@ export interface FileRoutesById {
   '/app': typeof AppRouteWithChildren
   '/app/admin': typeof AppAdminRoute
   '/app/audit': typeof AppAuditRoute
+  '/app/audit-history': typeof AppAuditHistoryRoute
   '/app/history': typeof AppHistoryRoute
   '/app/reception': typeof AppReceptionRoute
   '/app/transfer': typeof AppTransferRoute
@@ -96,6 +105,7 @@ export interface FileRouteTypes {
     | '/app'
     | '/app/admin'
     | '/app/audit'
+    | '/app/audit-history'
     | '/app/history'
     | '/app/reception'
     | '/app/transfer'
@@ -105,6 +115,7 @@ export interface FileRouteTypes {
     | '/'
     | '/app/admin'
     | '/app/audit'
+    | '/app/audit-history'
     | '/app/history'
     | '/app/reception'
     | '/app/transfer'
@@ -115,6 +126,7 @@ export interface FileRouteTypes {
     | '/app'
     | '/app/admin'
     | '/app/audit'
+    | '/app/audit-history'
     | '/app/history'
     | '/app/reception'
     | '/app/transfer'
@@ -170,6 +182,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppHistoryRouteImport
       parentRoute: typeof AppRoute
     }
+    '/app/audit-history': {
+      id: '/app/audit-history'
+      path: '/audit-history'
+      fullPath: '/app/audit-history'
+      preLoaderRoute: typeof AppAuditHistoryRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/app/audit': {
       id: '/app/audit'
       path: '/audit'
@@ -190,6 +209,7 @@ declare module '@tanstack/react-router' {
 interface AppRouteChildren {
   AppAdminRoute: typeof AppAdminRoute
   AppAuditRoute: typeof AppAuditRoute
+  AppAuditHistoryRoute: typeof AppAuditHistoryRoute
   AppHistoryRoute: typeof AppHistoryRoute
   AppReceptionRoute: typeof AppReceptionRoute
   AppTransferRoute: typeof AppTransferRoute
@@ -199,6 +219,7 @@ interface AppRouteChildren {
 const AppRouteChildren: AppRouteChildren = {
   AppAdminRoute: AppAdminRoute,
   AppAuditRoute: AppAuditRoute,
+  AppAuditHistoryRoute: AppAuditHistoryRoute,
   AppHistoryRoute: AppHistoryRoute,
   AppReceptionRoute: AppReceptionRoute,
   AppTransferRoute: AppTransferRoute,

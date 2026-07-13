@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { supabase } from "@/integrations/supabase/client";
@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { Loader2, ScanLine, Save, Search, CheckCircle2, Minus, Plus, Trash2, ClipboardList } from "lucide-react";
+import { Loader2, ScanLine, Save, Search, CheckCircle2, Minus, Plus, Trash2, ClipboardList, Flag, History } from "lucide-react";
 import { toast } from "sonner";
 import { getCollaborator } from "@/lib/session";
 import { BarcodeScanner } from "@/components/BarcodeScanner";
@@ -62,7 +62,9 @@ function AuditPage() {
   const [nameSearch, setNameSearch] = useState("");
   const [scanning, setScanning] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [finalizing, setFinalizing] = useState(false);
   const [summaryData, setSummaryData] = useState<CountEntry[] | null>(null);
+  const [summaryFinal, setSummaryFinal] = useState(false);
   const scanRef = useRef<HTMLInputElement>(null);
   const qc = useQueryClient();
 
@@ -233,6 +235,45 @@ function AuditPage() {
     }
   }
 
+  // ── Finalize count: persist snapshot to audit_history, THEN clear local state ──
+  async function finalizeCount() {
+    if (counts.size === 0) return toast.error("No hay productos contados");
+    const collab = getCollaborator();
+    if (!collab) return toast.error("Sesión expirada");
+    if (!confirm(`Finalizar conteo de "${category}"? Se guardará el resumen y se cerrará esta sesión.`)) return;
+    setFinalizing(true);
+    try {
+      const sessionId = crypto.randomUUID();
+      const snapshot = Array.from(counts.values());
+      const rows = snapshot.map((c) => ({
+        session_id: sessionId,
+        category,
+        branch,
+        barcode: c.barcode,
+        product_name: c.product_name,
+        system_stock: c.system_stock,
+        counted_quantity: c.count,
+        difference: c.count - c.system_stock,
+        collaborator_id: collab.id,
+        collaborator_name: collab.name,
+      }));
+      const { error } = await supabase.from("audit_history").insert(rows);
+      if (error) throw error;
+      // Only NOW clear local state (persist confirmed)
+      setSummaryData(snapshot);
+      setSummaryFinal(true);
+      setCounts(new Map());
+      clearCatState();
+      qc.invalidateQueries({ queryKey: ["audit_history"] });
+      toast.success("Conteo finalizado y guardado en historial");
+    } catch (e) {
+      toast.error("No se pudo guardar: " + (e as Error).message);
+    } finally {
+      setFinalizing(false);
+    }
+  }
+
+
   // Filtered product list for name search
   const filteredProducts = useMemo(() =>
     nameSearch.trim().length >= 2
@@ -253,9 +294,12 @@ function AuditPage() {
         <h1 className="mr-auto text-xl font-semibold tracking-tight">Auditoría</h1>
         {counts.size > 0 && (
           <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200">
-            {counts.size} productos · {totalCounted} unidades
+            {counts.size} · {totalCounted}
           </span>
         )}
+        <Link to="/app/audit-history" className="flex items-center gap-1 rounded-md border px-2 py-1 text-xs hover:bg-muted">
+          <History className="h-3.5 w-3.5" /> Historial
+        </Link>
       </div>
 
       {/* ── Category + Branch selector ── */}
@@ -453,10 +497,16 @@ function AuditPage() {
 
             {/* Save button at bottom too */}
             {counts.size > 0 && (
-              <Button onClick={saveCount} disabled={saving} className="w-full mt-2">
-                {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                Guardar conteo ({counts.size} productos · {totalCounted} unidades)
-              </Button>
+              <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <Button onClick={saveCount} disabled={saving || finalizing} variant="outline" className="w-full">
+                  {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                  Guardar parcial ({counts.size})
+                </Button>
+                <Button onClick={finalizeCount} disabled={saving || finalizing} className="w-full">
+                  {finalizing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Flag className="h-4 w-4" />}
+                  Finalizar conteo
+                </Button>
+              </div>
             )}
           </div>
         </>
@@ -470,10 +520,10 @@ function AuditPage() {
       )}
 
       {/* ── Summary dialog ── */}
-      <Dialog open={!!summaryData} onOpenChange={(o) => { if (!o) setSummaryData(null); }}>
+      <Dialog open={!!summaryData} onOpenChange={(o) => { if (!o) { setSummaryData(null); setSummaryFinal(false); } }}>
         <DialogContent className="max-h-[90vh] max-w-md overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Resultado del conteo — {category}</DialogTitle>
+            <DialogTitle>{summaryFinal ? "Conteo finalizado" : "Resultado del conteo"} — {category}</DialogTitle>
           </DialogHeader>
           {summaryData && (
             <div className="space-y-3 text-sm">
@@ -528,8 +578,13 @@ function AuditPage() {
               </div>
             </div>
           )}
-          <DialogFooter>
-            <Button onClick={() => setSummaryData(null)}>Cerrar</Button>
+          <DialogFooter className="gap-2 sm:gap-0">
+            {summaryFinal && (
+              <Link to="/app/audit-history" className="inline-flex items-center justify-center gap-1 rounded-md border px-3 py-2 text-sm hover:bg-muted">
+                <History className="h-4 w-4" /> Ver historial
+              </Link>
+            )}
+            <Button onClick={() => { setSummaryData(null); setSummaryFinal(false); }}>Cerrar</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

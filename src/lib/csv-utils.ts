@@ -136,13 +136,21 @@ export async function buildDiff(rows: ParsedRow[]): Promise<ImportDiff> {
 
 export type ImportError = { barcode: string; product_name: string; message: string };
 
+export type ApplyProgress = { done: number; total: number; phase: "insert" | "update" };
+
+export type ApplyResult = {
+  inserted: number;
+  updated: number;
+  errors: ImportError[];
+  aborted?: boolean;
+  failedAt?: { barcode: string; product_name: string; index: number; total: number; message: string };
+};
+
 const CHUNK_SIZE = 200;
 const MAX_ATTEMPTS = 3;
 
 function isRetryable(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
-  // Network-level failures (dropped connection, timeout, offline) are worth retrying.
-  // Data/validation errors from Postgres are not.
   return /fetch|network|timeout|ECONN|NetworkError/i.test(msg);
 }
 
@@ -150,7 +158,6 @@ function sleep(ms: number) {
   return new Promise((res) => setTimeout(res, ms));
 }
 
-// Runs `fn` with retries for transient network errors. Throws the last error if all attempts fail.
 async function withRetry<T>(fn: () => Promise<T>, attempts = MAX_ATTEMPTS): Promise<T> {
   let lastErr: unknown;
   for (let attempt = 1; attempt <= attempts; attempt++) {
@@ -159,7 +166,7 @@ async function withRetry<T>(fn: () => Promise<T>, attempts = MAX_ATTEMPTS): Prom
     } catch (err) {
       lastErr = err;
       if (attempt === attempts || !isRetryable(err)) throw err;
-      await sleep(300 * attempt); // simple backoff: 300ms, 600ms...
+      await sleep(300 * attempt);
     }
   }
   throw lastErr;
@@ -170,7 +177,8 @@ export async function applyImport(
   opts: { updateName: boolean; updateUom: boolean; updateCategory: boolean; updateStockA: boolean; updateStockB: boolean },
   collab: { id: string; name: string } | null,
   filename: string | null,
-) {
+  onProgress?: (p: ApplyProgress) => void,
+): Promise<ApplyResult> {
   const errors: ImportError[] = [];
   let inserted = 0;
   let updated = 0;
@@ -194,6 +202,7 @@ export async function applyImport(
         if (error) throw error;
       });
       inserted += chunk.length;
+      onProgress?.({ done: inserted, total: diff.newItems.length + diff.changedItems.length, phase: "insert" });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       for (const r of chunk) errors.push({ barcode: r.barcode, product_name: r.product_name, message });
@@ -235,6 +244,7 @@ export async function applyImport(
         if (error) throw error;
       });
       updated += chunk.length;
+      onProgress?.({ done: inserted + updated, total: diff.newItems.length + diff.changedItems.length, phase: "update" });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       for (const r of chunk) errors.push({ barcode: r.barcode, product_name: r._product_name_label, message });
