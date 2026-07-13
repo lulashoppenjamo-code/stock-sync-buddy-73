@@ -520,10 +520,10 @@ function AuditPage() {
       )}
 
       {/* ── Summary dialog ── */}
-      <Dialog open={!!summaryData} onOpenChange={(o) => { if (!o) setSummaryData(null); }}>
+      <Dialog open={!!summaryData} onOpenChange={(o) => { if (!o) { setSummaryData(null); setSummaryFinal(false); } }}>
         <DialogContent className="max-h-[90vh] max-w-md overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Resultado del conteo — {category}</DialogTitle>
+            <DialogTitle>{summaryFinal ? "Conteo finalizado" : "Resultado del conteo"} — {category}</DialogTitle>
           </DialogHeader>
           {summaryData && (
             <div className="space-y-3 text-sm">
