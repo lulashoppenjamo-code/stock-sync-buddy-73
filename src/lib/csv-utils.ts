@@ -244,6 +244,7 @@ export async function applyImport(
         if (error) throw error;
       });
       updated += chunk.length;
+      onProgress?.({ done: inserted + updated, total: diff.newItems.length + diff.changedItems.length, phase: "update" });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       for (const r of chunk) errors.push({ barcode: r.barcode, product_name: r._product_name_label, message });
