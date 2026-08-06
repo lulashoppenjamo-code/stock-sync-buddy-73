@@ -149,10 +149,26 @@ export type ApplyResult = {
 const CHUNK_SIZE = 200;
 const MAX_ATTEMPTS = 3;
 
+export function formatError(err: unknown): string {
+  if (!err) return "Error desconocido";
+  if (typeof err === "string") return err;
+  const e = err as { message?: string; details?: string; hint?: string; code?: string };
+  const parts = [e.message, e.details, e.hint].filter((p): p is string => !!p && p.trim() !== "");
+  if (parts.length > 0) return e.code ? `${parts.join(" — ")} (${e.code})` : parts.join(" — ");
+  try {
+    const json = JSON.stringify(err);
+    if (json && json !== "{}") return json;
+  } catch {
+    /* ignore */
+  }
+  return "Error desconocido";
+}
+
 function isRetryable(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err);
+  const msg = formatError(err);
   return /fetch|network|timeout|ECONN|NetworkError/i.test(msg);
 }
+
 
 function sleep(ms: number) {
   return new Promise((res) => setTimeout(res, ms));
