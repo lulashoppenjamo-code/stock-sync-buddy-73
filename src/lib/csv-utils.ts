@@ -318,14 +318,19 @@ export async function applyImport(
   });
 
 
-  await supabase.from("csv_imports").insert({
-    filename,
-    new_count: inserted,
-    updated_count: updated,
-    skipped_count: diff.identical + errors.length,
-    collaborator_id: collab?.id ?? null,
-    collaborator_name: collab?.name ?? null,
-  });
+  try {
+    await supabase.from("csv_imports").insert({
+      filename,
+      new_count: inserted,
+      updated_count: updated,
+      skipped_count: diff.identical + errors.length,
+      collaborator_id: collab?.id ?? null,
+      collaborator_name: collab?.name ?? null,
+    });
+  } catch {
+    /* el registro del historial no debe invalidar la importación */
+  }
+
 
   return { inserted, updated, errors };
 }
