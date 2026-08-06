@@ -220,7 +220,7 @@ export async function applyImport(
       inserted += chunk.length;
       onProgress?.({ done: inserted, total: diff.newItems.length + diff.changedItems.length, phase: "insert" });
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = formatError(err);
       for (const r of chunk) errors.push({ barcode: r.barcode, product_name: r.product_name, message });
     }
   }
@@ -262,7 +262,7 @@ export async function applyImport(
       updated += chunk.length;
       onProgress?.({ done: inserted + updated, total: diff.newItems.length + diff.changedItems.length, phase: "update" });
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = formatError(err);
       for (const r of chunk) errors.push({ barcode: r.barcode, product_name: r._product_name_label, message });
     }
   }
