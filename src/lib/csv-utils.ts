@@ -188,6 +188,75 @@ async function withRetry<T>(fn: () => Promise<T>, attempts = MAX_ATTEMPTS): Prom
   throw lastErr;
 }
 
+type ProductRow = {
+  barcode: string;
+  product_name: string;
+  uom: string | null;
+  category: string | null;
+  stock_a: number;
+  stock_b: number;
+};
+
+function sanitize(r: ProductRow): ProductRow {
+  const clean = (s: string | null, max: number) => {
+    if (s == null) return null;
+    const t = s.replace(/\u0000/g, "").trim().slice(0, max);
+    return t === "" ? null : t;
+  };
+  const num = (n: number) => (Number.isFinite(n) ? n : 0);
+  return {
+    barcode: (clean(r.barcode, 120) ?? "").toString(),
+    product_name: clean(r.product_name, 300) ?? "Sin nombre",
+    uom: clean(r.uom, 60),
+    category: clean(r.category, 120),
+    stock_a: num(Number(r.stock_a)),
+    stock_b: num(Number(r.stock_b)),
+  };
+}
+
+/**
+ * Upsert rows in chunks. If a chunk fails, it is split recursively and finally
+ * retried row by row, so a single bad row never blocks the rest of the file.
+ */
+async function upsertProducts(
+  rows: ProductRow[],
+  ignoreDuplicates: boolean,
+  errors: ImportError[],
+  onOk: (n: number) => void,
+): Promise<void> {
+  const send = async (batch: ProductRow[]) => {
+    const { error } = await supabase
+      .from("products")
+      .upsert(batch, { onConflict: "barcode", ignoreDuplicates });
+    if (error) throw error;
+  };
+
+  const run = async (batch: ProductRow[]): Promise<void> => {
+    if (batch.length === 0) return;
+    try {
+      await withRetry(() => send(batch));
+      onOk(batch.length);
+      return;
+    } catch (err) {
+      if (batch.length === 1) {
+        errors.push({
+          barcode: batch[0].barcode,
+          product_name: batch[0].product_name,
+          message: formatError(err),
+        });
+        return;
+      }
+      const mid = Math.floor(batch.length / 2);
+      await run(batch.slice(0, mid));
+      await run(batch.slice(mid));
+    }
+  };
+
+  for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
+    await run(rows.slice(i, i + CHUNK_SIZE));
+  }
+}
+
 export async function applyImport(
   diff: ImportDiff,
   opts: { updateName: boolean; updateUom: boolean; updateCategory: boolean; updateStockA: boolean; updateStockB: boolean },
@@ -199,82 +268,69 @@ export async function applyImport(
   let inserted = 0;
   let updated = 0;
 
-  // ── New items: batched upsert, chunk-level retry, failures don't block other chunks ──
-  for (let i = 0; i < diff.newItems.length; i += CHUNK_SIZE) {
-    const chunk = diff.newItems.slice(i, i + CHUNK_SIZE);
-    try {
-      await withRetry(async () => {
-        const { error } = await supabase.from("products").upsert(
-          chunk.map((r) => ({
-            barcode: r.barcode,
-            product_name: r.product_name,
-            uom: r.uom,
-            category: r.category,
-            stock_a: r.stock_a ?? 0,
-            stock_b: r.stock_b ?? 0,
-          })),
-          { onConflict: "barcode", ignoreDuplicates: true },
-        );
-        if (error) throw error;
-      });
-      inserted += chunk.length;
-      onProgress?.({ done: inserted, total: diff.newItems.length + diff.changedItems.length, phase: "insert" });
-    } catch (err) {
-      const message = formatError(err);
-      for (const r of chunk) errors.push({ barcode: r.barcode, product_name: r.product_name, message });
-    }
+  const newRows: ProductRow[] = diff.newItems
+    .map((r) =>
+      sanitize({
+        barcode: r.barcode,
+        product_name: r.product_name,
+        uom: r.uom,
+        category: r.category,
+        stock_a: r.stock_a ?? 0,
+        stock_b: r.stock_b ?? 0,
+      }),
+    )
+    .filter((r) => r.barcode !== "");
+
+  const updateLabels = new Map<string, string>();
+  const rowsToUpdate: ProductRow[] = [];
+  for (const c of diff.changedItems) {
+    const patch: Partial<ProductRow> = {};
+    if (opts.updateName && c.nameChanged) patch.product_name = c.next.product_name;
+    if (opts.updateUom && c.uomChanged) patch.uom = c.next.uom;
+    if (opts.updateCategory && c.categoryChanged) patch.category = c.next.category;
+    if (opts.updateStockA && c.stockAChanged && c.next.stock_a != null) patch.stock_a = c.next.stock_a;
+    if (opts.updateStockB && c.stockBChanged && c.next.stock_b != null) patch.stock_b = c.next.stock_b;
+    if (Object.keys(patch).length === 0) continue;
+    const row = sanitize({
+      barcode: c.barcode,
+      product_name: c.current.product_name,
+      uom: c.current.uom,
+      category: c.current.category,
+      stock_a: c.current.stock_a,
+      stock_b: c.current.stock_b,
+      ...patch,
+    });
+    if (row.barcode === "") continue;
+    updateLabels.set(row.barcode, row.product_name);
+    rowsToUpdate.push(row);
   }
 
-  // ── Changed items: build the full target row (current + only the flagged fields) so we
-  // can batch with upsert instead of one `update` request per row. ──
-  const rowsToUpdate = diff.changedItems
-    .map((c) => {
-      const patch: Record<string, unknown> = {};
-      if (opts.updateName && c.nameChanged) patch.product_name = c.next.product_name;
-      if (opts.updateUom && c.uomChanged) patch.uom = c.next.uom;
-      if (opts.updateCategory && c.categoryChanged) patch.category = c.next.category;
-      if (opts.updateStockA && c.stockAChanged && c.next.stock_a != null) patch.stock_a = c.next.stock_a;
-      if (opts.updateStockB && c.stockBChanged && c.next.stock_b != null) patch.stock_b = c.next.stock_b;
-      if (Object.keys(patch).length === 0) return null;
-      return {
-        barcode: c.barcode,
-        product_name: c.current.product_name,
-        uom: c.current.uom,
-        category: c.current.category,
-        stock_a: c.current.stock_a,
-        stock_b: c.current.stock_b,
-        ...patch,
-        _product_name_label: (patch.product_name as string | undefined) ?? c.current.product_name,
-      };
-    })
-    .filter((r): r is NonNullable<typeof r> => r !== null);
+  const total = newRows.length + rowsToUpdate.length;
 
-  for (let i = 0; i < rowsToUpdate.length; i += CHUNK_SIZE) {
-    const chunk = rowsToUpdate.slice(i, i + CHUNK_SIZE);
-    try {
-      await withRetry(async () => {
-        const { error } = await supabase.from("products").upsert(
-          chunk.map(({ _product_name_label, ...row }) => row),
-          { onConflict: "barcode" },
-        );
-        if (error) throw error;
-      });
-      updated += chunk.length;
-      onProgress?.({ done: inserted + updated, total: diff.newItems.length + diff.changedItems.length, phase: "update" });
-    } catch (err) {
-      const message = formatError(err);
-      for (const r of chunk) errors.push({ barcode: r.barcode, product_name: r._product_name_label, message });
-    }
-  }
-
-  await supabase.from("csv_imports").insert({
-    filename,
-    new_count: inserted,
-    updated_count: updated,
-    skipped_count: diff.identical + errors.length,
-    collaborator_id: collab?.id ?? null,
-    collaborator_name: collab?.name ?? null,
+  await upsertProducts(newRows, true, errors, (n) => {
+    inserted += n;
+    onProgress?.({ done: inserted, total, phase: "insert" });
   });
+
+  await upsertProducts(rowsToUpdate, false, errors, (n) => {
+    updated += n;
+    onProgress?.({ done: inserted + updated, total, phase: "update" });
+  });
+
+
+  try {
+    await supabase.from("csv_imports").insert({
+      filename,
+      new_count: inserted,
+      updated_count: updated,
+      skipped_count: diff.identical + errors.length,
+      collaborator_id: collab?.id ?? null,
+      collaborator_name: collab?.name ?? null,
+    });
+  } catch {
+    /* el registro del historial no debe invalidar la importación */
+  }
+
 
   return { inserted, updated, errors };
 }
