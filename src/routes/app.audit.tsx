@@ -6,11 +6,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { Loader2, ScanLine, Save, Search, CheckCircle2, Minus, Plus, Trash2, ClipboardList, Flag, History } from "lucide-react";
+import { Loader2, ScanLine, Save, Search, CheckCircle2, Minus, Plus, Trash2, ClipboardList, Flag, History, WifiOff } from "lucide-react";
 import { toast } from "sonner";
 import { getCollaborator } from "@/lib/session";
 import { BarcodeScanner } from "@/components/BarcodeScanner";
 import { branchLabel } from "@/lib/branches";
+import { useOnline } from "@/hooks/use-online";
+import { enqueue } from "@/lib/offline-queue";
 
 export const Route = createFileRoute("/app/audit")({
   component: AuditPage,
@@ -50,8 +52,16 @@ function startOfTodayIso() {
   const d = new Date(); d.setHours(0, 0, 0, 0); return d.toISOString();
 }
 
+// ── Stock color helper ─────────────────────────────────────────────────
+function stockColor(stock: number): string {
+  if (stock < 0) return "text-red-600 dark:text-red-400";
+  if (stock === 0) return "text-amber-500 dark:text-amber-400";
+  return "";
+}
+
 // ── Main page ──────────────────────────────────────────────────────────
 function AuditPage() {
+  const online = useOnline();
   const _saved = useMemo(() => loadCatState(), []);
   const [category, setCategory] = useState(_saved?.category ?? "");
   const [branch, setBranch] = useState<"A" | "B">(_saved?.branch ?? "A");
@@ -92,12 +102,15 @@ function AuditPage() {
       }
       return Array.from(all).sort((a, b) => a.localeCompare(b, "es"));
     },
+    // Use cached data when offline
+    staleTime: online ? 30_000 : Infinity,
   });
 
   // ── Products of selected category ──
   const { data: products = [] } = useQuery({
     queryKey: ["cat-products", category],
     enabled: !!category,
+    staleTime: online ? 30_000 : Infinity,
     queryFn: async () => {
       const { data, error } = await supabase
         .from("products")
@@ -109,11 +122,11 @@ function AuditPage() {
     },
   });
 
-  // ── Real-time: ALL audits of today for this category (summed by barcode+user) ──
+  // ── Real-time audits of today ──
   const { data: realtimeAudits = [] } = useQuery({
     queryKey: ["audits-realtime", category],
-    enabled: !!category && products.length > 0,
-    refetchInterval: 5_000,
+    enabled: !!category && products.length > 0 && online,
+    refetchInterval: online ? 5_000 : false,
     queryFn: async () => {
       const barcodes = products.map((p) => p.barcode);
       if (!barcodes.length) return [];
@@ -128,7 +141,7 @@ function AuditPage() {
     },
   });
 
-  // Sum realtime audits per barcode (all users combined)
+  // Sum realtime audits per barcode
   const realtimeSums = useMemo(() => {
     const map = new Map<string, { total: number; byUser: Map<string, number> }>();
     for (const a of realtimeAudits) {
@@ -145,6 +158,7 @@ function AuditPage() {
   async function lookupProduct(barcode: string): Promise<Product | null> {
     const local = products.find((p) => p.barcode === barcode);
     if (local) return local;
+    if (!online) { toast.error(`Producto no encontrado localmente: ${barcode}`); return null; }
     const { data, error } = await supabase
       .from("products").select("barcode, product_name, category, stock_a, stock_b")
       .eq("barcode", barcode).maybeSingle();
@@ -178,7 +192,7 @@ function AuditPage() {
     toast.success(`+1 · ${prod.product_name}`);
     setScanInput("");
     scanRef.current?.focus();
-  }, [products, category]);
+  }, [products, category, online]);
 
   function setCount(barcode: string, val: number) {
     const prod = products.find((p) => p.barcode === barcode);
@@ -201,7 +215,7 @@ function AuditPage() {
     if (!newCat) clearCatState();
   }
 
-  // ── Save all counts ──
+  // ── Save all counts (online → Supabase, offline → queue) ──
   async function saveCount() {
     if (counts.size === 0) return toast.error("No hay productos contados");
     const collab = getCollaborator();
@@ -220,14 +234,31 @@ function AuditPage() {
         collaborator_name: collab.name,
         client_uid: `audit-${sessionId}-${c.barcode}`,
       }));
-      const { error } = await supabase.from("audits").insert(rows);
-      if (error) throw error;
+
+      if (online) {
+        const { error } = await supabase.from("audits").insert(rows);
+        if (error) throw error;
+        toast.success(`Conteo guardado — ${rows.length} productos`);
+      } else {
+        // Queue each row for later sync
+        for (const row of rows) {
+          await enqueue({
+            kind: "audit",
+            uid: row.client_uid,
+            createdAt: Date.now(),
+            payload: row,
+          });
+        }
+        toast.success(`Sin internet — ${rows.length} productos guardados localmente. Se sincronizarán automáticamente.`);
+      }
 
       setSummaryData(Array.from(counts.values()));
       setCounts(new Map());
       clearCatState();
-      qc.invalidateQueries({ queryKey: ["audits"] });
-      qc.invalidateQueries({ queryKey: ["audits-realtime", category] });
+      if (online) {
+        qc.invalidateQueries({ queryKey: ["audits"] });
+        qc.invalidateQueries({ queryKey: ["audits-realtime", category] });
+      }
     } catch (e) {
       toast.error((e as Error).message);
     } finally {
@@ -235,7 +266,7 @@ function AuditPage() {
     }
   }
 
-  // ── Finalize count: persist snapshot to audit_history, THEN clear local state ──
+  // ── Finalize count ──
   async function finalizeCount() {
     if (counts.size === 0) return toast.error("No hay productos contados");
     const collab = getCollaborator();
@@ -257,22 +288,29 @@ function AuditPage() {
         collaborator_id: collab.id,
         collaborator_name: collab.name,
       }));
-      const { error } = await supabase.from("audit_history").insert(rows);
-      if (error) throw error;
-      // Only NOW clear local state (persist confirmed)
+
+      if (online) {
+        const { error } = await supabase.from("audit_history").insert(rows);
+        if (error) throw error;
+        toast.success("Conteo finalizado y guardado en historial");
+      } else {
+        // Save snapshot to localStorage for later sync
+        const pendingKey = `inv.pending.finalize.${sessionId}`;
+        localStorage.setItem(pendingKey, JSON.stringify({ rows, savedAt: Date.now() }));
+        toast.success("Sin internet — conteo guardado localmente. Se subirá al historial cuando haya conexión.");
+      }
+
       setSummaryData(snapshot);
       setSummaryFinal(true);
       setCounts(new Map());
       clearCatState();
-      qc.invalidateQueries({ queryKey: ["audit_history"] });
-      toast.success("Conteo finalizado y guardado en historial");
+      if (online) qc.invalidateQueries({ queryKey: ["audit_history"] });
     } catch (e) {
       toast.error("No se pudo guardar: " + (e as Error).message);
     } finally {
       setFinalizing(false);
     }
   }
-
 
   // Filtered product list for name search
   const filteredProducts = useMemo(() =>
@@ -297,10 +335,27 @@ function AuditPage() {
             {counts.size} · {totalCounted}
           </span>
         )}
+        {/* Offline indicator */}
+        {!online && (
+          <span className="flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">
+            <WifiOff className="h-3 w-3" /> Sin internet
+          </span>
+        )}
         <Link to="/app/audit-history" className="flex items-center gap-1 rounded-md border px-2 py-1 text-xs hover:bg-muted">
           <History className="h-3.5 w-3.5" /> Historial
         </Link>
       </div>
+
+      {/* ── Offline banner ── */}
+      {!online && (
+        <div className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/30 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+          <WifiOff className="h-4 w-4 mt-0.5 shrink-0" />
+          <div>
+            <p className="font-medium">Modo sin conexión</p>
+            <p className="mt-0.5">Podés seguir contando. Los conteos se guardarán en este dispositivo y se sincronizarán automáticamente cuando vuelva el internet.</p>
+          </div>
+        </div>
+      )}
 
       {/* ── Category + Branch selector ── */}
       <Card>
@@ -381,16 +436,19 @@ function AuditPage() {
               </div>
               {nameSearch.trim().length >= 2 && (
                 <div className="max-h-40 overflow-auto rounded-md border bg-card">
-                  {filteredProducts.map((p) => (
-                    <button key={p.barcode} type="button"
-                      onClick={() => { addCount(p.barcode); setNameSearch(""); }}
-                      className="flex w-full items-center justify-between border-b px-3 py-2 text-left text-sm last:border-b-0 hover:bg-muted">
-                      <span className="truncate font-medium">{p.product_name}</span>
-                      <span className="ml-2 shrink-0 text-xs text-muted-foreground">
-                        Sys: {Number(p.stock_a) + Number(p.stock_b)}
-                      </span>
-                    </button>
-                  ))}
+                  {filteredProducts.map((p) => {
+                    const sys = Number(p.stock_a) + Number(p.stock_b);
+                    return (
+                      <button key={p.barcode} type="button"
+                        onClick={() => { addCount(p.barcode); setNameSearch(""); }}
+                        className="flex w-full items-center justify-between border-b px-3 py-2 text-left text-sm last:border-b-0 hover:bg-muted">
+                        <span className="truncate font-medium">{p.product_name}</span>
+                        <span className={`ml-2 shrink-0 text-xs ${stockColor(sys)}`}>
+                          Sys: {sys}
+                        </span>
+                      </button>
+                    );
+                  })}
                   {filteredProducts.length === 0 && (
                     <div className="p-3 text-xs text-muted-foreground">Sin resultados</div>
                   )}
@@ -418,7 +476,6 @@ function AuditPage() {
                 const entry = counts.get(p.barcode);
                 const sys = Number(p.stock_a) + Number(p.stock_b);
                 const rt = realtimeSums.get(p.barcode);
-                // Total = my local count + what's already saved today by anyone
                 const myCount = entry?.count ?? 0;
                 const savedToday = rt?.total ?? 0;
                 const grandTotal = myCount + savedToday;
@@ -439,7 +496,13 @@ function AuditPage() {
                         <div className={`font-medium leading-snug ${isCounted ? "" : "text-muted-foreground"}`}>
                           {p.product_name}
                         </div>
-                        <div className="font-mono text-muted-foreground">{p.barcode}</div>
+                        {/* Barcode + stock with color */}
+                        <div className="flex items-center gap-2 font-mono text-muted-foreground">
+                          <span>{p.barcode}</span>
+                          <span className={`font-semibold ${stockColor(sys)}`}>
+                            {sys < 0 ? `⚠ ${sys}` : sys === 0 ? "● 0" : ""}
+                          </span>
+                        </div>
 
                         {/* Real-time counters from other users */}
                         {rt && rt.byUser.size > 0 && (
@@ -489,18 +552,21 @@ function AuditPage() {
 
               {products.length === 0 && (
                 <div className="py-8 text-center text-xs text-muted-foreground">
-                  <Loader2 className="mx-auto mb-2 h-4 w-4 animate-spin" />
-                  Cargando productos…
+                  {online ? (
+                    <><Loader2 className="mx-auto mb-2 h-4 w-4 animate-spin" />Cargando productos…</>
+                  ) : (
+                    <><WifiOff className="mx-auto mb-2 h-4 w-4" />Sin conexión — los productos se cargan desde caché</>
+                  )}
                 </div>
               )}
             </div>
 
-            {/* Save button at bottom too */}
+            {/* Save + Finalize buttons */}
             {counts.size > 0 && (
               <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
                 <Button onClick={saveCount} disabled={saving || finalizing} variant="outline" className="w-full">
                   {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                  Guardar parcial ({counts.size})
+                  {online ? `Guardar parcial (${counts.size})` : `Guardar offline (${counts.size})`}
                 </Button>
                 <Button onClick={finalizeCount} disabled={saving || finalizing} className="w-full">
                   {finalizing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Flag className="h-4 w-4" />}
@@ -527,7 +593,6 @@ function AuditPage() {
           </DialogHeader>
           {summaryData && (
             <div className="space-y-3 text-sm">
-              {/* Totals summary */}
               <div className="grid grid-cols-3 gap-2">
                 <div className="rounded-md bg-emerald-50 dark:bg-emerald-950/20 p-2 text-center">
                   <div className="text-[10px] text-muted-foreground">Sin diferencia</div>
@@ -551,9 +616,9 @@ function AuditPage() {
 
               <p className="text-xs text-muted-foreground">
                 Sucursal: {branchLabel(branch)} · {summaryData.length} productos
+                {!online && " · Guardado localmente (pendiente de sincronizar)"}
               </p>
 
-              {/* Product detail */}
               <div className="divide-y rounded-md border">
                 {summaryData
                   .sort((a, b) => (a.count - a.system_stock) - (b.count - b.system_stock))
@@ -579,7 +644,7 @@ function AuditPage() {
             </div>
           )}
           <DialogFooter className="gap-2 sm:gap-0">
-            {summaryFinal && (
+            {summaryFinal && online && (
               <Link to="/app/audit-history" className="inline-flex items-center justify-center gap-1 rounded-md border px-3 py-2 text-sm hover:bg-muted">
                 <History className="h-4 w-4" /> Ver historial
               </Link>
