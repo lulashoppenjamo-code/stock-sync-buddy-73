@@ -8,11 +8,13 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Camera, ArrowRight, Loader2, Send, ScanLine, Trash2, RotateCcw } from "lucide-react";
+import { Camera, ArrowRight, Loader2, Send, ScanLine, Trash2, RotateCcw, WifiOff } from "lucide-react";
 import { toast } from "sonner";
 import { getCollaborator, useCollaborator } from "@/lib/session";
 import { BRANCH_LABELS } from "@/lib/branches";
 import { BarcodeScanner } from "@/components/BarcodeScanner";
+import { useOnline } from "@/hooks/use-online";
+import { enqueue } from "@/lib/offline-queue";
 
 export const Route = createFileRoute("/app/transfer")({
   component: TransferPage,
@@ -40,6 +42,39 @@ function clearCart() {
   try { localStorage.removeItem(CART_KEY); } catch { /* ignore */ }
 }
 
+// Offline pending transfers
+const OFFLINE_TRANSFERS_KEY = "inv.offline.transfers.v1";
+type OfflineTransfer = {
+  id: string;
+  cart: CartItem[];
+  origin: Branch;
+  destination: Branch;
+  sender: string;
+  receiver: string;
+  photoBase64: string;
+  photoType: string;
+  photoName: string;
+  savedAt: number;
+};
+
+function loadOfflineTransfers(): OfflineTransfer[] {
+  try { const r = localStorage.getItem(OFFLINE_TRANSFERS_KEY); return r ? JSON.parse(r) : []; }
+  catch { return []; }
+}
+function saveOfflineTransfer(t: OfflineTransfer) {
+  try {
+    const existing = loadOfflineTransfers();
+    existing.push(t);
+    localStorage.setItem(OFFLINE_TRANSFERS_KEY, JSON.stringify(existing));
+  } catch { /* ignore */ }
+}
+function removeOfflineTransfer(id: string) {
+  try {
+    const existing = loadOfflineTransfers().filter((t) => t.id !== id);
+    localStorage.setItem(OFFLINE_TRANSFERS_KEY, JSON.stringify(existing));
+  } catch { /* ignore */ }
+}
+
 function useDebounce<T>(value: T, delay = 300): T {
   const [debounced, setDebounced] = useState(value);
   useEffect(() => {
@@ -49,8 +84,27 @@ function useDebounce<T>(value: T, delay = 300): T {
   return debounced;
 }
 
+// Convert File to base64
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve((reader.result as string).split(",")[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+// Convert base64 back to Blob
+function base64ToBlob(base64: string, type: string): Blob {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new Blob([bytes], { type });
+}
+
 function TransferPage() {
   const qc = useQueryClient();
+  const online = useOnline();
   const [barcode, setBarcode] = useState("");
   const [nameSearch, setNameSearch] = useState("");
   const debouncedNameSearch = useDebounce(nameSearch, 300);
@@ -64,14 +118,24 @@ function TransferPage() {
   const [cart, setCart] = useState<CartItem[]>(() => loadCart());
   const [busy, setBusy] = useState(false);
   const [scannerOpen, setScannerOpen] = useState(false);
+  const [syncingOffline, setSyncingOffline] = useState(false);
+  const [pendingOffline, setPendingOffline] = useState<OfflineTransfer[]>(() => loadOfflineTransfers());
   const photoRef = useRef<HTMLInputElement>(null);
   const galleryRef = useRef<HTMLInputElement>(null);
   const barcodeRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => { saveCart(cart); }, [cart]);
 
+  // Auto-sync offline transfers when back online
+  useEffect(() => {
+    if (online && pendingOffline.length > 0) {
+      syncOfflineTransfers();
+    }
+  }, [online]);
+
   const { data: collaborators = [] } = useQuery({
     queryKey: ["collaborators-active"],
+    staleTime: online ? 30_000 : Infinity,
     queryFn: async () => {
       const { data, error } = await supabase.from("collaborators").select("id, name").eq("active", true).order("name");
       if (error) throw error;
@@ -81,7 +145,7 @@ function TransferPage() {
 
   const { data: nameResults = [] } = useQuery({
     queryKey: ["product-search-name", debouncedNameSearch],
-    enabled: debouncedNameSearch.trim().length >= 2,
+    enabled: debouncedNameSearch.trim().length >= 2 && online,
     queryFn: async () => {
       const { data, error } = await supabase
         .from("products")
@@ -97,6 +161,18 @@ function TransferPage() {
   async function addBarcode(code: string) {
     const c = code.trim();
     if (!c) return;
+    if (!online) {
+      // Check if product is already in cart
+      const existing = cart.find((x) => x.barcode === c);
+      if (existing) {
+        setCart((prev) => prev.map((x) => x.barcode === c ? { ...x, quantity: x.quantity + 1 } : x));
+        toast.success(`+1 · ${existing.product_name}`);
+        setBarcode(""); barcodeRef.current?.focus();
+        return;
+      }
+      toast.error("Sin internet — solo podés agregar productos que ya están en el carrito");
+      return;
+    }
     const { data, error } = await supabase
       .from("products").select("barcode, product_name, uom, stock_a, stock_b")
       .eq("barcode", c).maybeSingle();
@@ -113,8 +189,7 @@ function TransferPage() {
       return [...prev, { barcode: data.barcode, product_name: data.product_name, uom: data.uom, total_stock: total, quantity: 1 }];
     });
     toast.success(`+1 · ${data.product_name}`);
-    setBarcode("");
-    setNameSearch("");
+    setBarcode(""); setNameSearch("");
     barcodeRef.current?.focus();
   }
 
@@ -122,6 +197,47 @@ function TransferPage() {
   function updateCartQty(bc: string, q: number) { setCart((prev) => prev.map((c) => (c.barcode === bc ? { ...c, quantity: Math.max(1, q) } : c))); }
 
   const totalItems = useMemo(() => cart.reduce((s, c) => s + c.quantity, 0), [cart]);
+
+  // ── Sync offline transfers when back online ──
+  async function syncOfflineTransfers() {
+    if (!online || syncingOffline) return;
+    const pending = loadOfflineTransfers();
+    if (!pending.length) return;
+    setSyncingOffline(true);
+    let synced = 0;
+    for (const t of pending) {
+      try {
+        const blob = base64ToBlob(t.photoBase64, t.photoType);
+        const ext = t.photoName.split(".").pop() || "jpg";
+        const path = `${t.id}.${ext}`;
+        const up = await supabase.storage.from("transfer-photos").upload(path, blob, { contentType: t.photoType, upsert: true });
+        if (up.error) throw up.error;
+        const { data: signed } = await supabase.storage.from("transfer-photos").createSignedUrl(path, 60 * 60 * 24 * 365);
+        const photo_url = signed?.signedUrl ?? path;
+        const collab = getCollaborator();
+        const rows = t.cart.map((c) => ({
+          barcode: c.barcode, product_name: c.product_name, quantity: c.quantity,
+          origin: t.origin, destination: t.destination,
+          sender_name: t.sender, receiver_name: t.receiver,
+          photo_url, collaborator_id: collab?.id ?? null, collaborator_name: collab?.name ?? t.sender,
+          client_uid: `transfer-${t.id}-${c.barcode}`,
+        }));
+        const { error } = await supabase.from("transfers").insert(rows);
+        if (error) throw error;
+        removeOfflineTransfer(t.id);
+        synced++;
+      } catch (e) {
+        console.warn("[offline-transfer] sync failed:", e);
+      }
+    }
+    const remaining = loadOfflineTransfers();
+    setPendingOffline(remaining);
+    setSyncingOffline(false);
+    if (synced > 0) {
+      toast.success(`${synced} traspaso${synced === 1 ? "" : "s"} offline sincronizado${synced === 1 ? "" : "s"}`);
+      qc.invalidateQueries({ queryKey: ["transfers"] });
+    }
+  }
 
   async function submitAll() {
     if (cart.length === 0) return toast.error("Agregá al menos un producto");
@@ -135,17 +251,37 @@ function TransferPage() {
     setBusy(true);
     try {
       const batchId = crypto.randomUUID();
+
+      if (!online) {
+        // Save offline
+        const photoBase64 = await fileToBase64(photo);
+        const offlineTransfer: OfflineTransfer = {
+          id: batchId,
+          cart: [...cart],
+          origin,
+          destination,
+          sender: sender.trim(),
+          receiver: receiver.trim(),
+          photoBase64,
+          photoType: photo.type,
+          photoName: photo.name,
+          savedAt: Date.now(),
+        };
+        saveOfflineTransfer(offlineTransfer);
+        setPendingOffline(loadOfflineTransfers());
+        toast.success(`Sin internet — ${cart.length} producto${cart.length === 1 ? "" : "s"} guardado${cart.length === 1 ? "" : "s"} localmente. Se enviará cuando haya conexión.`);
+        setCart([]); clearCart();
+        setBarcode(""); setNameSearch(""); setPhoto(null);
+        return;
+      }
+
+      // Online flow
       const ext = (photo.name.split(".").pop() || "jpg").toLowerCase();
       const path = `${batchId}.${ext}`;
       const up = await supabase.storage.from("transfer-photos").upload(path, photo, { contentType: photo.type, upsert: true });
       if (up.error) throw up.error;
-
-      // ✅ FIX: usar signed URL igual que recepción
-      const { data: signed } = await supabase.storage
-        .from("transfer-photos")
-        .createSignedUrl(path, 60 * 60 * 24 * 365);
+      const { data: signed } = await supabase.storage.from("transfer-photos").createSignedUrl(path, 60 * 60 * 24 * 365);
       const photo_url = signed?.signedUrl ?? path;
-
       const rows = cart.map((c) => ({
         barcode: c.barcode, product_name: c.product_name, quantity: c.quantity,
         origin, destination, sender_name: sender.trim(), receiver_name: receiver.trim(),
@@ -154,7 +290,6 @@ function TransferPage() {
       }));
       const { error } = await supabase.from("transfers").insert(rows);
       if (error) throw error;
-
       toast.success(`${rows.length} traspaso${rows.length === 1 ? "" : "s"} registrado${rows.length === 1 ? "" : "s"}`);
       setCart([]); clearCart();
       setBarcode(""); setNameSearch(""); setPhoto(null);
@@ -167,6 +302,11 @@ function TransferPage() {
     <div className="space-y-4">
       <div className="flex items-center gap-2">
         <h1 className="mr-auto text-xl font-semibold tracking-tight">Traspaso entre sucursales</h1>
+        {!online && (
+          <span className="flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800">
+            <WifiOff className="h-3 w-3" /> Sin internet
+          </span>
+        )}
         {cart.length > 0 && (
           <button type="button" onClick={() => { setCart([]); clearCart(); }}
             className="flex items-center gap-1 text-xs text-muted-foreground hover:text-red-500">
@@ -174,6 +314,32 @@ function TransferPage() {
           </button>
         )}
       </div>
+
+      {/* Offline banner */}
+      {!online && (
+        <div className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/30 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+          <WifiOff className="h-4 w-4 mt-0.5 shrink-0" />
+          <div>
+            <p className="font-medium">Modo sin conexión</p>
+            <p className="mt-0.5">El traspaso se guardará en este dispositivo y se enviará automáticamente cuando vuelva el internet.</p>
+          </div>
+        </div>
+      )}
+
+      {/* Pending offline transfers */}
+      {pendingOffline.length > 0 && (
+        <div className="rounded-md border border-blue-200 bg-blue-50 dark:bg-blue-950/30 px-3 py-2 text-xs text-blue-800 dark:text-blue-200">
+          <div className="flex items-center justify-between">
+            <span>📤 {pendingOffline.length} traspaso{pendingOffline.length === 1 ? "" : "s"} pendiente{pendingOffline.length === 1 ? "" : "s"} de sincronizar</span>
+            {online && (
+              <button type="button" onClick={syncOfflineTransfers} disabled={syncingOffline}
+                className="ml-2 underline font-medium">
+                {syncingOffline ? "Sincronizando…" : "Sincronizar ahora"}
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {cart.length > 0 && (
         <div className="rounded-md border border-blue-200 bg-blue-50 dark:bg-blue-950/30 px-3 py-2 text-xs text-blue-800 dark:text-blue-200">
@@ -224,12 +390,15 @@ function TransferPage() {
                 <ScanLine className="h-4 w-4" /> Cámara
               </Button>
             </div>
+            {!online && (
+              <p className="mt-1 text-xs text-amber-600">Sin internet — solo podés agregar productos ya en el carrito por código</p>
+            )}
           </div>
           <div>
             <Label htmlFor="name-search">O buscar por nombre</Label>
             <Input id="name-search" value={nameSearch} onChange={(e) => setNameSearch(e.target.value)}
-              placeholder="Escribí al menos 2 letras…" />
-            {debouncedNameSearch.trim().length >= 2 && nameResults.length > 0 && (
+              placeholder={online ? "Escribí al menos 2 letras…" : "No disponible sin internet"} disabled={!online} />
+            {online && debouncedNameSearch.trim().length >= 2 && nameResults.length > 0 && (
               <div className="mt-1 max-h-56 overflow-auto rounded-md border bg-card">
                 {nameResults.map((r) => (
                   <button key={r.barcode} type="button" onClick={() => addBarcode(r.barcode)}
@@ -245,7 +414,7 @@ function TransferPage() {
                 ))}
               </div>
             )}
-            {debouncedNameSearch.trim().length >= 2 && nameResults.length === 0 && (
+            {online && debouncedNameSearch.trim().length >= 2 && nameResults.length === 0 && (
               <div className="mt-1 text-xs text-muted-foreground">Sin resultados</div>
             )}
           </div>
@@ -331,7 +500,10 @@ function TransferPage() {
 
           <Button type="button" onClick={submitAll} disabled={busy || cart.length === 0 || origin === destination} className="w-full">
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-            Confirmar {cart.length > 0 ? `${cart.length} producto${cart.length === 1 ? "" : "s"} · ${totalItems} unidades` : "traspaso"}
+            {online
+              ? `Confirmar ${cart.length > 0 ? `${cart.length} producto${cart.length === 1 ? "" : "s"} · ${totalItems} unidades` : "traspaso"}`
+              : `Guardar offline (${cart.length} producto${cart.length === 1 ? "" : "s"})`
+            }
           </Button>
         </CardContent>
       </Card>
