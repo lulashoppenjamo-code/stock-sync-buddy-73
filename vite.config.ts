@@ -29,8 +29,9 @@ export default defineConfig({
         workbox: {
           skipWaiting: true,
           clientsClaim: true,
+          globPatterns: [],
           navigateFallbackDenylist: [/^\/~oauth/, /^\/api\//],
-          additionalManifestEntries: [{ url: "/offline.html", revision: "1" }],
+          additionalManifestEntries: [{ url: "/offline.html", revision: "2" }],
           runtimeCaching: [
             {
               urlPattern: ({ request }) => request.mode === "navigate",
