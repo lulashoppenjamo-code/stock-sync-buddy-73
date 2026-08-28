@@ -10,7 +10,7 @@ export default defineConfig({
       VitePWA({
         registerType: "autoUpdate",
         injectRegister: null,
-        devOptions: { enabled: true },
+        devOptions: { enabled: false },
         filename: "sw.js",
         manifest: {
           name: "Inventario A/B",
@@ -28,11 +28,26 @@ export default defineConfig({
         },
         workbox: {
           navigateFallbackDenylist: [/^\/~oauth/, /^\/api\//],
+          additionalManifestEntries: [{ url: "/offline.html", revision: "1" }],
           runtimeCaching: [
             {
               urlPattern: ({ request }) => request.mode === "navigate",
               handler: "NetworkFirst",
-              options: { cacheName: "html-pages", networkTimeoutSeconds: 4 },
+              options: {
+                cacheName: "html-pages",
+                networkTimeoutSeconds: 4,
+                plugins: [
+                  {
+                    // Si no hay red y esta ruta nunca se cacheo, mostramos offline.html
+                    // en vez de dejar que el navegador falle con su pantalla nativa.
+                    handlerDidError: async () => {
+                      const cache = await caches.open("html-pages");
+                      const fallback = await cache.match("/offline.html");
+                      return fallback || Response.error();
+                    },
+                  },
+                ],
+              },
             },
             {
               urlPattern: ({ url }) => url.origin === self.location.origin && /\.(?:js|css|woff2?)$/.test(url.pathname),
