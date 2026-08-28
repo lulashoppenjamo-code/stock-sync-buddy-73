@@ -10,7 +10,7 @@ export default defineConfig({
       VitePWA({
         registerType: "autoUpdate",
         injectRegister: null,
-        devOptions: { enabled: false },
+        devOptions: { enabled: true },
         filename: "sw.js",
         manifest: {
           name: "Inventario A/B",
