@@ -6,9 +6,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { Loader2, ScanLine, Save, Search, CheckCircle2, Minus, Plus, Trash2, ClipboardList, Flag, History, WifiOff } from "lucide-react";
+import { Loader2, ScanLine, Save, Search, CheckCircle2, Minus, Plus, Trash2, ClipboardList, Flag, History, WifiOff, ShieldAlert, RotateCcw, Pencil } from "lucide-react";
 import { toast } from "sonner";
-import { getCollaborator } from "@/lib/session";
+import { getCollaborator, useCollaborator } from "@/lib/session";
 import { BarcodeScanner } from "@/components/BarcodeScanner";
 import { branchLabel } from "@/lib/branches";
 import { useOnline } from "@/hooks/use-online";
@@ -32,6 +32,24 @@ type CountEntry = {
   count: number;
   system_stock: number;
 };
+
+type HistoryRow = {
+  id: string;
+  category: string;
+  branch: "A" | "B";
+  session_id: string;
+  barcode: string;
+  product_name: string;
+  system_stock: number;
+  counted_quantity: number;
+  created_at: string;
+};
+
+// Acción de administrador pendiente de confirmar con PIN
+type AdminAction =
+  | { type: "reset"; category: string; branch: "A" | "B" }
+  | { type: "deleteRow"; row: HistoryRow }
+  | { type: "editRow"; row: HistoryRow; newQty: number };
 
 // ── localStorage persistence ───────────────────────────────────────────
 const CAT_KEY = "inv.audit.category.v2";
@@ -127,15 +145,12 @@ function AuditPage() {
       const { startIso, endIso } = monthRange();
       const { data, error } = await supabase
         .from("audit_history")
-        .select("category, branch, session_id, barcode, product_name, system_stock, counted_quantity, created_at")
+        .select("id, category, branch, session_id, barcode, product_name, system_stock, counted_quantity, created_at")
         .gte("created_at", startIso)
         .lte("created_at", endIso)
         .order("created_at", { ascending: true });
       if (error) throw error;
-      return data as Array<{
-        category: string; branch: "A" | "B"; session_id: string; barcode: string;
-        product_name: string; system_stock: number; counted_quantity: number; created_at: string;
-      }>;
+      return data as HistoryRow[];
     },
   });
 
@@ -152,6 +167,59 @@ function AuditPage() {
   }, [monthlyHistory]);
 
   const [reportCategory, setReportCategory] = useState<string | null>(null);
+
+  // ── Admin: reiniciar / editar / eliminar conteos (requiere PIN de admin) ──
+  const me = useCollaborator();
+  const [adminAction, setAdminAction] = useState<AdminAction | null>(null);
+  const [adminPin, setAdminPin] = useState("");
+  const [adminBusy, setAdminBusy] = useState(false);
+
+  async function confirmAdminAction() {
+    if (!me) return;
+    if (adminPin.length < 4) { toast.error("Ingresá tu PIN de administrador"); return; }
+    if (!adminAction) return;
+    setAdminBusy(true);
+    try {
+      if (adminAction.type === "reset") {
+        const { data, error } = await supabase.rpc("admin_reset_audit_category", {
+          p_admin_id: me.id,
+          p_admin_pin: adminPin,
+          p_category: adminAction.category,
+          p_branch: adminAction.branch,
+        });
+        if (error) throw error;
+        toast.success(`Conteo reiniciado — ${data ?? 0} registros eliminados. Ya se puede volver a contar.`);
+        if (category === adminAction.category && branch === adminAction.branch) {
+          setCounts(new Map());
+          clearCatState();
+        }
+      } else if (adminAction.type === "deleteRow") {
+        const { error } = await supabase.rpc("admin_delete_audit_history_row", {
+          p_admin_id: me.id,
+          p_admin_pin: adminPin,
+          p_row_id: adminAction.row.id,
+        });
+        if (error) throw error;
+        toast.success("Registro eliminado");
+      } else if (adminAction.type === "editRow") {
+        const { error } = await supabase.rpc("admin_update_audit_history_row", {
+          p_admin_id: me.id,
+          p_admin_pin: adminPin,
+          p_row_id: adminAction.row.id,
+          p_counted_quantity: adminAction.newQty,
+        });
+        if (error) throw error;
+        toast.success("Cantidad actualizada");
+      }
+      setAdminAction(null);
+      setAdminPin("");
+      qc.invalidateQueries({ queryKey: ["audit-history-month"] });
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setAdminBusy(false);
+    }
+  }
 
   // Reporte combinado de una categoría (une el conteo de ambas sucursales del mes)
   function buildCategoryReport(cat: string) {
@@ -513,9 +581,21 @@ function AuditPage() {
           <p className="text-xs text-muted-foreground max-w-xs">
             Solo se permite un conteo por categoría al mes ({monthLabel()}). Podés ver el reporte combinado desde el corte mensual de arriba.
           </p>
-          <Button size="sm" variant="outline" onClick={() => setReportCategory(category)}>
-            Ver reporte
-          </Button>
+          <div className="flex gap-2">
+            <Button size="sm" variant="outline" onClick={() => setReportCategory(category)}>
+              Ver reporte
+            </Button>
+            {me?.is_admin && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="border-amber-400 text-amber-700 hover:bg-amber-50 dark:text-amber-300"
+                onClick={() => setAdminAction({ type: "reset", category, branch })}
+              >
+                <RotateCcw className="h-4 w-4" /> Reiniciar (admin)
+              </Button>
+            )}
+          </div>
         </div>
       )}
 
@@ -836,6 +916,40 @@ function AuditPage() {
                     <div className="p-3 text-xs text-muted-foreground">Sin conteos registrados este mes.</div>
                   )}
                 </div>
+
+                {/* ── Panel de administrador ── */}
+                {me?.is_admin && (
+                  <div className="space-y-3 rounded-md border border-amber-300 bg-amber-50/60 p-3 dark:bg-amber-950/10">
+                    <div className="flex items-center gap-1.5 text-xs font-semibold text-amber-800 dark:text-amber-300">
+                      <ShieldAlert className="h-3.5 w-3.5" /> Panel de administrador
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                      {(["A", "B"] as const).map((b) => (
+                        <Button key={b} size="sm" variant="outline"
+                          disabled={!(b === "A" ? st?.hasA : st?.hasB)}
+                          className="border-amber-400 text-amber-700 hover:bg-amber-100 dark:text-amber-300"
+                          onClick={() => setAdminAction({ type: "reset", category: reportCategory!, branch: b })}>
+                          <RotateCcw className="h-3.5 w-3.5" /> Reiniciar {branchLabel(b)}
+                        </Button>
+                      ))}
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <p className="text-[11px] font-medium text-muted-foreground">Registros individuales (editar/eliminar)</p>
+                      <div className="max-h-56 divide-y overflow-y-auto rounded-md border bg-background">
+                        {monthlyHistory.filter((h) => h.category === reportCategory).map((h) => (
+                          <AdminHistoryRow key={h.id} row={h}
+                            onEdit={() => setAdminAction({ type: "editRow", row: h, newQty: h.counted_quantity })}
+                            onDelete={() => setAdminAction({ type: "deleteRow", row: h })} />
+                        ))}
+                        {monthlyHistory.filter((h) => h.category === reportCategory).length === 0 && (
+                          <div className="p-2 text-[11px] text-muted-foreground">Sin registros individuales.</div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             );
           })()}
@@ -845,9 +959,94 @@ function AuditPage() {
         </DialogContent>
       </Dialog>
 
+      {/* ── Confirmación de admin (PIN) ── */}
+      <Dialog open={!!adminAction} onOpenChange={(o) => { if (!o) { setAdminAction(null); setAdminPin(""); } }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-1.5 text-amber-700 dark:text-amber-300">
+              <ShieldAlert className="h-4 w-4" />
+              {adminAction?.type === "reset" && "Reiniciar conteo"}
+              {adminAction?.type === "deleteRow" && "Eliminar registro"}
+              {adminAction?.type === "editRow" && "Editar cantidad contada"}
+            </DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-3 text-sm">
+            {adminAction?.type === "reset" && (
+              <p className="text-muted-foreground">
+                Se eliminarán todos los conteos de <strong>"{adminAction.category}"</strong> en{" "}
+                <strong>{branchLabel(adminAction.branch)}</strong> registrados este mes, y la categoría
+                quedará habilitada para volver a contarse.
+              </p>
+            )}
+            {adminAction?.type === "deleteRow" && (
+              <p className="text-muted-foreground">
+                Se eliminará el registro de <strong>{adminAction.row.product_name}</strong> ({adminAction.row.counted_quantity} unid., {branchLabel(adminAction.row.branch)}).
+              </p>
+            )}
+            {adminAction?.type === "editRow" && (
+              <div className="space-y-2">
+                <p className="text-muted-foreground">{adminAction.row.product_name}</p>
+                <Input
+                  type="number"
+                  min={0}
+                  value={adminAction.newQty}
+                  onChange={(e) => setAdminAction((prev) =>
+                    prev && prev.type === "editRow" ? { ...prev, newQty: Number(e.target.value) } : prev
+                  )}
+                />
+              </div>
+            )}
+
+            <div>
+              <label className="text-xs font-medium text-muted-foreground">Tu PIN de administrador</label>
+              <Input
+                type="password"
+                inputMode="numeric"
+                autoFocus
+                value={adminPin}
+                onChange={(e) => setAdminPin(e.target.value.replace(/\D/g, ""))}
+                placeholder="PIN"
+                className="mt-1"
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setAdminAction(null); setAdminPin(""); }}>Cancelar</Button>
+            <Button variant="destructive" disabled={adminBusy} onClick={confirmAdminAction}>
+              {adminBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : null} Confirmar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Camera scanner */}
       <BarcodeScanner open={scanning} onClose={() => setScanning(false)}
         continuous onDetected={(c) => addCount(c)} />
+    </div>
+  );
+}
+
+function AdminHistoryRow({ row, onEdit, onDelete }: { row: HistoryRow; onEdit: () => void; onDelete: () => void }) {
+  const diff = row.counted_quantity - row.system_stock;
+  return (
+    <div className="flex items-center gap-2 px-2 py-1.5 text-[11px]">
+      <div className="min-w-0 flex-1">
+        <div className="truncate font-medium">{row.product_name}</div>
+        <div className="text-muted-foreground">
+          {branchLabel(row.branch)} · Sys: {row.system_stock} · Contado: {row.counted_quantity}{" "}
+          <span className={diff === 0 ? "text-emerald-600" : diff < 0 ? "text-red-600" : "text-amber-600"}>
+            ({diff === 0 ? "✓" : diff > 0 ? `+${diff}` : diff})
+          </span>
+        </div>
+      </div>
+      <button type="button" onClick={onEdit} className="shrink-0 rounded p-1 hover:bg-muted" aria-label="Editar">
+        <Pencil className="h-3.5 w-3.5" />
+      </button>
+      <button type="button" onClick={onDelete} className="shrink-0 rounded p-1 text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30" aria-label="Eliminar">
+        <Trash2 className="h-3.5 w-3.5" />
+      </button>
     </div>
   );
 }
