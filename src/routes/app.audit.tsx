@@ -52,6 +52,19 @@ function startOfTodayIso() {
   const d = new Date(); d.setHours(0, 0, 0, 0); return d.toISOString();
 }
 
+// ── Monthly cutoff helpers (día 1 al último día del mes) ────────────────
+function monthRange() {
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+  const end = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+  return { start, end, startIso: start.toISOString(), endIso: end.toISOString() };
+}
+function monthLabel() {
+  const { start, end } = monthRange();
+  const fmt = (d: Date) => d.toLocaleDateString("es-MX", { day: "numeric", month: "long" });
+  return `${fmt(start)} al ${fmt(end)}`;
+}
+
 // ── Stock color helper ─────────────────────────────────────────────────
 function stockColor(stock: number): string {
   if (stock < 0) return "text-red-600 dark:text-red-400";
@@ -105,6 +118,57 @@ function AuditPage() {
     // Use cached data when offline
     staleTime: online ? 30_000 : Infinity,
   });
+
+  // ── Historial del mes (todas las categorías) — para el corte mensual ──
+  const { data: monthlyHistory = [] } = useQuery({
+    queryKey: ["audit-history-month"],
+    staleTime: online ? 30_000 : Infinity,
+    queryFn: async () => {
+      const { startIso, endIso } = monthRange();
+      const { data, error } = await supabase
+        .from("audit_history")
+        .select("category, branch, session_id, barcode, product_name, system_stock, counted_quantity, created_at")
+        .gte("created_at", startIso)
+        .lte("created_at", endIso)
+        .order("created_at", { ascending: true });
+      if (error) throw error;
+      return data as Array<{
+        category: string; branch: "A" | "B"; session_id: string; barcode: string;
+        product_name: string; system_stock: number; counted_quantity: number; created_at: string;
+      }>;
+    },
+  });
+
+  // Estado por categoría: ¿ya se contó este mes en sucursal A / B?
+  const categoryStatus = useMemo(() => {
+    const map = new Map<string, { hasA: boolean; hasB: boolean }>();
+    for (const row of monthlyHistory) {
+      const entry = map.get(row.category) ?? { hasA: false, hasB: false };
+      if (row.branch === "A") entry.hasA = true;
+      if (row.branch === "B") entry.hasB = true;
+      map.set(row.category, entry);
+    }
+    return map;
+  }, [monthlyHistory]);
+
+  const [reportCategory, setReportCategory] = useState<string | null>(null);
+
+  // Reporte combinado de una categoría (une el conteo de ambas sucursales del mes)
+  function buildCategoryReport(cat: string) {
+    const rows = monthlyHistory.filter((r) => r.category === cat);
+    const merged = new Map<string, { barcode: string; product_name: string; system_stock: number; counted: number }>();
+    for (const r of rows) {
+      const e = merged.get(r.barcode) ?? { barcode: r.barcode, product_name: r.product_name, system_stock: r.system_stock, counted: 0 };
+      e.counted += Number(r.counted_quantity);
+      merged.set(r.barcode, e);
+    }
+    return Array.from(merged.values());
+  }
+
+  // Esta categoría/sucursal ya se contó este mes → no se permite recontar
+  const alreadyCountedThisMonth = category
+    ? (branch === "A" ? categoryStatus.get(category)?.hasA : categoryStatus.get(category)?.hasB) ?? false
+    : false;
 
   // ── Products of selected category ──
   const { data: products = [] } = useQuery({
@@ -271,6 +335,9 @@ function AuditPage() {
     if (counts.size === 0) return toast.error("No hay productos contados");
     const collab = getCollaborator();
     if (!collab) return toast.error("Sesión expirada");
+    if (alreadyCountedThisMonth) {
+      return toast.error(`"${category}" ya se contó este mes en ${branchLabel(branch)}. Solo se permite 1 conteo por mes.`);
+    }
     if (!confirm(`Finalizar conteo de "${category}"? Se guardará el resumen y se cerrará esta sesión.`)) return;
     setFinalizing(true);
     try {
@@ -304,7 +371,10 @@ function AuditPage() {
       setSummaryFinal(true);
       setCounts(new Map());
       clearCatState();
-      if (online) qc.invalidateQueries({ queryKey: ["audit_history"] });
+      if (online) {
+        qc.invalidateQueries({ queryKey: ["audit_history"] });
+        qc.invalidateQueries({ queryKey: ["audit-history-month"] });
+      }
     } catch (e) {
       toast.error("No se pudo guardar: " + (e as Error).message);
     } finally {
@@ -357,6 +427,40 @@ function AuditPage() {
         </div>
       )}
 
+      {/* ── Corte mensual por categoría ── */}
+      <Card>
+        <CardContent className="p-3 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-medium text-muted-foreground">Corte mensual por categoría</span>
+            <span className="text-[10px] text-muted-foreground">{monthLabel()}</span>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {categories.map((c) => {
+              const st = categoryStatus.get(c);
+              const done = !!st?.hasA && !!st?.hasB;
+              const partial = !done && (!!st?.hasA || !!st?.hasB);
+              return (
+                <button key={c} type="button"
+                  onClick={() => setReportCategory(c)}
+                  disabled={!st}
+                  className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                    done
+                      ? "border-emerald-500 bg-emerald-500 text-white"
+                      : partial
+                      ? "border-amber-300 bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-200"
+                      : "border-transparent bg-muted text-muted-foreground"
+                  }`}>
+                  {c}{done ? " ✓" : partial ? " ½" : ""}
+                </button>
+              );
+            })}
+            {categories.length === 0 && (
+              <span className="text-xs text-muted-foreground">Sin categorías aún</span>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
       {/* ── Category + Branch selector ── */}
       <Card>
         <CardContent className="p-3 space-y-3">
@@ -400,7 +504,22 @@ function AuditPage() {
         </CardContent>
       </Card>
 
-      {category && (
+      {category && alreadyCountedThisMonth && (
+        <div className="flex flex-col items-center gap-2 rounded-md border border-emerald-300 bg-emerald-50 dark:bg-emerald-950/20 py-8 text-center">
+          <CheckCircle2 className="h-8 w-8 text-emerald-600" />
+          <p className="text-sm font-medium text-emerald-800 dark:text-emerald-200">
+            "{category}" ya se contó este mes en {branchLabel(branch)}
+          </p>
+          <p className="text-xs text-muted-foreground max-w-xs">
+            Solo se permite un conteo por categoría al mes ({monthLabel()}). Podés ver el reporte combinado desde el corte mensual de arriba.
+          </p>
+          <Button size="sm" variant="outline" onClick={() => setReportCategory(category)}>
+            Ver reporte
+          </Button>
+        </div>
+      )}
+
+      {category && !alreadyCountedThisMonth && (
         <>
           {/* ── Scanner ── */}
           <Card>
@@ -650,6 +769,78 @@ function AuditPage() {
               </Link>
             )}
             <Button onClick={() => { setSummaryData(null); setSummaryFinal(false); }}>Cerrar</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Reporte mensual por categoría ── */}
+      <Dialog open={!!reportCategory} onOpenChange={(o) => { if (!o) setReportCategory(null); }}>
+        <DialogContent className="max-h-[90vh] max-w-md overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Reporte mensual — {reportCategory}</DialogTitle>
+          </DialogHeader>
+          {reportCategory && (() => {
+            const rows = buildCategoryReport(reportCategory);
+            const st = categoryStatus.get(reportCategory);
+            const bothDone = !!st?.hasA && !!st?.hasB;
+            return (
+              <div className="space-y-3 text-sm">
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="rounded-md bg-emerald-50 dark:bg-emerald-950/20 p-2 text-center">
+                    <div className="text-[10px] text-muted-foreground">Sin diferencia</div>
+                    <div className="text-lg font-bold text-emerald-700">
+                      {rows.filter((r) => r.counted === r.system_stock).length}
+                    </div>
+                  </div>
+                  <div className="rounded-md bg-red-50 dark:bg-red-950/20 p-2 text-center">
+                    <div className="text-[10px] text-muted-foreground">Faltantes</div>
+                    <div className="text-lg font-bold text-red-600">
+                      {rows.filter((r) => r.counted < r.system_stock).length}
+                    </div>
+                  </div>
+                  <div className="rounded-md bg-amber-50 dark:bg-amber-950/20 p-2 text-center">
+                    <div className="text-[10px] text-muted-foreground">Sobrantes</div>
+                    <div className="text-lg font-bold text-amber-600">
+                      {rows.filter((r) => r.counted > r.system_stock).length}
+                    </div>
+                  </div>
+                </div>
+
+                <p className="text-xs text-muted-foreground">
+                  {monthLabel()} · {rows.length} productos
+                  {!bothDone && " · Falta contar en alguna sucursal — reporte parcial"}
+                </p>
+
+                <div className="divide-y rounded-md border">
+                  {rows
+                    .sort((a, b) => (a.counted - a.system_stock) - (b.counted - b.system_stock))
+                    .map((r) => {
+                      const diff = r.counted - r.system_stock;
+                      return (
+                        <div key={r.barcode}
+                          className={`flex items-center gap-2 px-3 py-2.5 text-xs ${diff === 0 ? "bg-emerald-50 dark:bg-emerald-950/20" : diff < 0 ? "bg-red-50 dark:bg-red-950/20" : "bg-amber-50 dark:bg-amber-950/20"}`}>
+                          <div className="min-w-0 flex-1">
+                            <div className="font-medium truncate">{r.product_name}</div>
+                            <div className="font-mono text-muted-foreground">{r.barcode}</div>
+                          </div>
+                          <div className="shrink-0 text-right space-y-0.5">
+                            <div className="text-muted-foreground">Sys: {r.system_stock} · Contado: {r.counted}</div>
+                            <div className={`font-bold ${diff === 0 ? "text-emerald-600" : diff < 0 ? "text-red-600" : "text-amber-600"}`}>
+                              {diff === 0 ? "✓ Correcto" : diff > 0 ? `+${diff} SOBRA` : `${diff} FALTA`}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  {rows.length === 0 && (
+                    <div className="p-3 text-xs text-muted-foreground">Sin conteos registrados este mes.</div>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+          <DialogFooter>
+            <Button onClick={() => setReportCategory(null)}>Cerrar</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
