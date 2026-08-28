@@ -31,7 +31,7 @@ export default defineConfig({
           clientsClaim: true,
           globPatterns: [],
           navigateFallbackDenylist: [/^\/~oauth/, /^\/api\//],
-          additionalManifestEntries: [{ url: "/offline.html", revision: "2" }],
+          additionalManifestEntries: [{ url: "/offline.html", revision: "3" }],
           runtimeCaching: [
             {
               urlPattern: ({ request }) => request.mode === "navigate",
@@ -41,11 +41,10 @@ export default defineConfig({
                 networkTimeoutSeconds: 4,
                 plugins: [
                   {
-                    // Si no hay red y esta ruta nunca se cacheo, mostramos offline.html
-                    // en vez de dejar que el navegador falle con su pantalla nativa.
+                    // Buscamos en TODAS las caches (ahí vive offline.html, precacheado
+                    // por workbox en su propio bucket, no en "html-pages").
                     handlerDidError: async () => {
-                      const cache = await caches.open("html-pages");
-                      const fallback = await cache.match("/offline.html");
+                      const fallback = await self.caches.match("/offline.html");
                       return fallback || Response.error();
                     },
                   },
