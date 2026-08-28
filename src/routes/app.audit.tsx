@@ -48,6 +48,7 @@ type HistoryRow = {
 // Acción de administrador pendiente de confirmar con PIN
 type AdminAction =
   | { type: "reset"; category: string; branch: "A" | "B" }
+  | { type: "resetRealtime"; category: string; branch: "A" | "B" }
   | { type: "deleteRow"; row: HistoryRow }
   | { type: "editRow"; row: HistoryRow; newQty: number };
 
@@ -193,6 +194,18 @@ function AuditPage() {
           setCounts(new Map());
           clearCatState();
         }
+      } else if (adminAction.type === "resetRealtime") {
+        const barcodes = products.map((p) => p.barcode);
+        const { data, error } = await supabase.rpc("admin_reset_realtime_audits", {
+          p_admin_id: me.id,
+          p_admin_pin: adminPin,
+          p_branch: adminAction.branch,
+          p_barcodes: barcodes,
+          p_since: startOfTodayIso(),
+        });
+        if (error) throw error;
+        toast.success(`Conteos en vivo reiniciados — ${data ?? 0} registros eliminados en ${branchLabel(adminAction.branch)}.`);
+        qc.invalidateQueries({ queryKey: ["audits-realtime", adminAction.category] });
       } else if (adminAction.type === "deleteRow") {
         const { error } = await supabase.rpc("admin_delete_audit_history_row", {
           p_admin_id: me.id,
@@ -670,6 +683,21 @@ function AuditPage() {
               )}
             </div>
 
+            {me?.is_admin && (
+              <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-300 bg-amber-50/60 px-2 py-1.5 dark:bg-amber-950/10">
+                <span className="flex items-center gap-1 text-[11px] font-medium text-amber-800 dark:text-amber-300">
+                  <ShieldAlert className="h-3.5 w-3.5" /> Admin — reiniciar conteos de hoy:
+                </span>
+                {(["A", "B"] as const).map((b) => (
+                  <Button key={b} size="sm" variant="outline"
+                    className="h-7 border-amber-400 px-2 text-[11px] text-amber-700 hover:bg-amber-100 dark:text-amber-300"
+                    onClick={() => setAdminAction({ type: "resetRealtime", category, branch: b })}>
+                    <RotateCcw className="h-3.5 w-3.5" /> {branchLabel(b)}
+                  </Button>
+                ))}
+              </div>
+            )}
+
             <div className="divide-y rounded-md border">
               {products.map((p) => {
                 const entry = counts.get(p.barcode);
@@ -966,6 +994,7 @@ function AuditPage() {
             <DialogTitle className="flex items-center gap-1.5 text-amber-700 dark:text-amber-300">
               <ShieldAlert className="h-4 w-4" />
               {adminAction?.type === "reset" && "Reiniciar conteo"}
+              {adminAction?.type === "resetRealtime" && "Reiniciar conteos de hoy"}
               {adminAction?.type === "deleteRow" && "Eliminar registro"}
               {adminAction?.type === "editRow" && "Editar cantidad contada"}
             </DialogTitle>
@@ -977,6 +1006,13 @@ function AuditPage() {
                 Se eliminarán todos los conteos de <strong>"{adminAction.category}"</strong> en{" "}
                 <strong>{branchLabel(adminAction.branch)}</strong> registrados este mes, y la categoría
                 quedará habilitada para volver a contarse.
+              </p>
+            )}
+            {adminAction?.type === "resetRealtime" && (
+              <p className="text-muted-foreground">
+                Se eliminarán los conteos guardados hoy (guardado parcial, sin finalizar) de{" "}
+                <strong>"{adminAction.category}"</strong> en <strong>{branchLabel(adminAction.branch)}</strong>.
+                Cada colaborador podrá volver a escanear desde cero en esa sucursal.
               </p>
             )}
             {adminAction?.type === "deleteRow" && (
