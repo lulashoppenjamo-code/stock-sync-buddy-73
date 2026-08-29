@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { Loader2, ScanLine, Save, Search, CheckCircle2, Minus, Plus, Trash2, ClipboardList, Flag, History, WifiOff, ShieldAlert, RotateCcw, Pencil } from "lucide-react";
+import { Loader2, ScanLine, Save, Search, CheckCircle2, Minus, Plus, Trash2, ClipboardList, Flag, History, WifiOff, ShieldAlert, RotateCcw, Pencil, Lock, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
 import { getCollaborator, useCollaborator } from "@/lib/session";
 import { BarcodeScanner } from "@/components/BarcodeScanner";
@@ -45,33 +45,26 @@ type HistoryRow = {
   created_at: string;
 };
 
-// Acción de administrador pendiente de confirmar con PIN
 type AdminAction =
   | { type: "reset"; category: string; branch: "A" | "B" }
   | { type: "resetRealtime"; category: string; branch: "A" | "B" }
   | { type: "deleteRow"; row: HistoryRow }
   | { type: "editRow"; row: HistoryRow; newQty: number };
 
-// ── localStorage persistence ───────────────────────────────────────────
+// ── localStorage ───────────────────────────────────────────────────────
 const CAT_KEY = "inv.audit.category.v2";
-
 function loadCatState(): { category: string; branch: "A" | "B"; counts: [string, CountEntry][] } | null {
-  try { const r = localStorage.getItem(CAT_KEY); return r ? JSON.parse(r) : null; }
-  catch { return null; }
+  try { const r = localStorage.getItem(CAT_KEY); return r ? JSON.parse(r) : null; } catch { return null; }
 }
 function saveCatState(category: string, branch: "A" | "B", counts: Map<string, CountEntry>) {
-  try { localStorage.setItem(CAT_KEY, JSON.stringify({ category, branch, counts: Array.from(counts.entries()) })); }
-  catch { /* ignore */ }
+  try { localStorage.setItem(CAT_KEY, JSON.stringify({ category, branch, counts: Array.from(counts.entries()) })); } catch { }
 }
-function clearCatState() {
-  try { localStorage.removeItem(CAT_KEY); } catch { /* ignore */ }
-}
+function clearCatState() { try { localStorage.removeItem(CAT_KEY); } catch { } }
 
 function startOfTodayIso() {
   const d = new Date(); d.setHours(0, 0, 0, 0); return d.toISOString();
 }
 
-// ── Monthly cutoff helpers (día 1 al último día del mes) ────────────────
 function monthRange() {
   const now = new Date();
   const start = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
@@ -84,14 +77,12 @@ function monthLabel() {
   return `${fmt(start)} al ${fmt(end)}`;
 }
 
-// ── Stock color helper ─────────────────────────────────────────────────
 function stockColor(stock: number): string {
   if (stock < 0) return "text-red-600 dark:text-red-400";
   if (stock === 0) return "text-amber-500 dark:text-amber-400";
   return "";
 }
 
-// ── Main page ──────────────────────────────────────────────────────────
 function AuditPage() {
   const online = useOnline();
   const _saved = useMemo(() => loadCatState(), []);
@@ -110,12 +101,35 @@ function AuditPage() {
   const scanRef = useRef<HTMLInputElement>(null);
   const qc = useQueryClient();
 
-  // Persist on every counts change
+  // ── Nuevo: productos no escaneados ──
+  const [unscannedDialog, setUnscannedDialog] = useState(false);
+  const [unscannedProducts, setUnscannedProducts] = useState<Product[]>([]);
+
+  // ── Nuevo: cierre de conteo admin ──
+  const [closeDialog, setCloseDialog] = useState(false);
+  const [closing, setClosing] = useState(false);
+
+  // ── Highlight al escanear ──
+  const rowRefs = useRef<Map<string, HTMLDivElement | null>>(new Map());
+  const [highlightBarcode, setHighlightBarcode] = useState<string | null>(null);
+  const highlightTimer = useRef<ReturnType<typeof setTimeout>>();
+  function flashProduct(barcode: string) {
+    rowRefs.current.get(barcode)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    setHighlightBarcode(barcode);
+    if (highlightTimer.current) clearTimeout(highlightTimer.current);
+    highlightTimer.current = setTimeout(() => setHighlightBarcode(null), 2000);
+  }
+
   useEffect(() => {
     if (category) saveCatState(category, branch, counts);
   }, [counts, category, branch]);
 
-  // ── Categories (all, paginated) ──
+  const me = useCollaborator();
+  const [adminAction, setAdminAction] = useState<AdminAction | null>(null);
+  const [adminPin, setAdminPin] = useState("");
+  const [adminBusy, setAdminBusy] = useState(false);
+  const [reportCategory, setReportCategory] = useState<string | null>(null);
+
   const { data: categories = [] } = useQuery({
     queryKey: ["categories-all"],
     queryFn: async () => {
@@ -134,11 +148,9 @@ function AuditPage() {
       }
       return Array.from(all).sort((a, b) => a.localeCompare(b, "es"));
     },
-    // Use cached data when offline
     staleTime: online ? 30_000 : Infinity,
   });
 
-  // ── Historial del mes (todas las categorías) — para el corte mensual ──
   const { data: monthlyHistory = [] } = useQuery({
     queryKey: ["audit-history-month"],
     staleTime: online ? 30_000 : Infinity,
@@ -155,7 +167,6 @@ function AuditPage() {
     },
   });
 
-  // Estado por categoría: ¿ya se contó este mes en sucursal A / B?
   const categoryStatus = useMemo(() => {
     const map = new Map<string, { hasA: boolean; hasB: boolean }>();
     for (const row of monthlyHistory) {
@@ -167,91 +178,6 @@ function AuditPage() {
     return map;
   }, [monthlyHistory]);
 
-  const [reportCategory, setReportCategory] = useState<string | null>(null);
-
-  // ── Admin: reiniciar / editar / eliminar conteos (requiere PIN de admin) ──
-  const me = useCollaborator();
-  const [adminAction, setAdminAction] = useState<AdminAction | null>(null);
-  const [adminPin, setAdminPin] = useState("");
-  const [adminBusy, setAdminBusy] = useState(false);
-
-  async function confirmAdminAction() {
-    if (!me) return;
-    if (adminPin.length < 4) { toast.error("Ingresá tu PIN de administrador"); return; }
-    if (!adminAction) return;
-    setAdminBusy(true);
-    try {
-      if (adminAction.type === "reset") {
-        const { data, error } = await supabase.rpc("admin_reset_audit_category", {
-          p_admin_id: me.id,
-          p_admin_pin: adminPin,
-          p_category: adminAction.category,
-          p_branch: adminAction.branch,
-        });
-        if (error) throw error;
-        toast.success(`Conteo reiniciado — ${data ?? 0} registros eliminados. Ya se puede volver a contar.`);
-        if (category === adminAction.category && branch === adminAction.branch) {
-          setCounts(new Map());
-          clearCatState();
-        }
-      } else if (adminAction.type === "resetRealtime") {
-        const barcodes = products.map((p) => p.barcode);
-        const { data, error } = await supabase.rpc("admin_reset_realtime_audits", {
-          p_admin_id: me.id,
-          p_admin_pin: adminPin,
-          p_branch: adminAction.branch,
-          p_barcodes: barcodes,
-          p_since: startOfTodayIso(),
-        });
-        if (error) throw error;
-        toast.success(`Conteos en vivo reiniciados — ${data ?? 0} registros eliminados en ${branchLabel(adminAction.branch)}.`);
-        qc.invalidateQueries({ queryKey: ["audits-realtime", adminAction.category] });
-      } else if (adminAction.type === "deleteRow") {
-        const { error } = await supabase.rpc("admin_delete_audit_history_row", {
-          p_admin_id: me.id,
-          p_admin_pin: adminPin,
-          p_row_id: adminAction.row.id,
-        });
-        if (error) throw error;
-        toast.success("Registro eliminado");
-      } else if (adminAction.type === "editRow") {
-        const { error } = await supabase.rpc("admin_update_audit_history_row", {
-          p_admin_id: me.id,
-          p_admin_pin: adminPin,
-          p_row_id: adminAction.row.id,
-          p_counted_quantity: adminAction.newQty,
-        });
-        if (error) throw error;
-        toast.success("Cantidad actualizada");
-      }
-      setAdminAction(null);
-      setAdminPin("");
-      qc.invalidateQueries({ queryKey: ["audit-history-month"] });
-    } catch (e) {
-      toast.error((e as Error).message);
-    } finally {
-      setAdminBusy(false);
-    }
-  }
-
-  // Reporte combinado de una categoría (une el conteo de ambas sucursales del mes)
-  function buildCategoryReport(cat: string) {
-    const rows = monthlyHistory.filter((r) => r.category === cat);
-    const merged = new Map<string, { barcode: string; product_name: string; system_stock: number; counted: number }>();
-    for (const r of rows) {
-      const e = merged.get(r.barcode) ?? { barcode: r.barcode, product_name: r.product_name, system_stock: r.system_stock, counted: 0 };
-      e.counted += Number(r.counted_quantity);
-      merged.set(r.barcode, e);
-    }
-    return Array.from(merged.values());
-  }
-
-  // Esta categoría/sucursal ya se contó este mes → no se permite recontar
-  const alreadyCountedThisMonth = category
-    ? (branch === "A" ? categoryStatus.get(category)?.hasA : categoryStatus.get(category)?.hasB) ?? false
-    : false;
-
-  // ── Products of selected category ──
   const { data: products = [] } = useQuery({
     queryKey: ["cat-products", category],
     enabled: !!category,
@@ -267,7 +193,6 @@ function AuditPage() {
     },
   });
 
-  // ── Real-time audits of today ──
   const { data: realtimeAudits = [] } = useQuery({
     queryKey: ["audits-realtime", category],
     enabled: !!category && products.length > 0 && online,
@@ -277,16 +202,15 @@ function AuditPage() {
       if (!barcodes.length) return [];
       const { data, error } = await supabase
         .from("audits")
-        .select("barcode, physical_count, collaborator_name, created_at")
+        .select("barcode, physical_count, collaborator_name, branch, created_at")
         .in("barcode", barcodes)
         .gte("created_at", startOfTodayIso())
         .order("created_at", { ascending: true });
       if (error) throw error;
-      return data as Array<{ barcode: string; physical_count: number; collaborator_name: string | null; created_at: string }>;
+      return data as Array<{ barcode: string; physical_count: number; collaborator_name: string | null; branch: string; created_at: string }>;
     },
   });
 
-  // Sum realtime audits per barcode
   const realtimeSums = useMemo(() => {
     const map = new Map<string, { total: number; byUser: Map<string, number> }>();
     for (const a of realtimeAudits) {
@@ -299,7 +223,31 @@ function AuditPage() {
     return map;
   }, [realtimeAudits]);
 
-  // ── Product lookup ──
+  // ── Por sucursal para cierre ──
+  const realtimeMina = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const a of realtimeAudits) {
+      if (a.branch === "A") map.set(a.barcode, (map.get(a.barcode) ?? 0) + Number(a.physical_count));
+    }
+    return map;
+  }, [realtimeAudits]);
+
+  const realtimeMorelos = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const a of realtimeAudits) {
+      if (a.branch === "B") map.set(a.barcode, (map.get(a.barcode) ?? 0) + Number(a.physical_count));
+    }
+    return map;
+  }, [realtimeAudits]);
+
+  const minaDone = realtimeMina.size > 0;
+  const morelosDone = realtimeMorelos.size > 0;
+  const bothDone = minaDone && morelosDone;
+
+  const alreadyCountedThisMonth = category
+    ? (branch === "A" ? categoryStatus.get(category)?.hasA : categoryStatus.get(category)?.hasB) ?? false
+    : false;
+
   async function lookupProduct(barcode: string): Promise<Product | null> {
     const local = products.find((p) => p.barcode === barcode);
     if (local) return local;
@@ -311,7 +259,6 @@ function AuditPage() {
     return data as Product;
   }
 
-  // ── Add +1 to local count ──
   const addCount = useCallback(async (barcode: string) => {
     const code = barcode.trim();
     if (!code) return;
@@ -326,17 +273,13 @@ function AuditPage() {
     setCounts((prev) => {
       const existing = prev.get(code);
       const newMap = new Map(prev);
-      newMap.set(code, {
-        barcode: code,
-        product_name: prod.product_name,
-        count: (existing?.count ?? 0) + 1,
-        system_stock: sys,
-      });
+      newMap.set(code, { barcode: code, product_name: prod.product_name, count: (existing?.count ?? 0) + 1, system_stock: sys });
       return newMap;
     });
     toast.success(`+1 · ${prod.product_name}`);
     setScanInput("");
     scanRef.current?.focus();
+    flashProduct(code);
   }, [products, category, online]);
 
   function setCount(barcode: string, val: number) {
@@ -360,15 +303,34 @@ function AuditPage() {
     if (!newCat) clearCatState();
   }
 
-  // ── Save all counts (online → Supabase, offline → queue) ──
+  // ── Detectar no escaneados con stock ──
+  function getUnscanned(): Product[] {
+    return products.filter((p) => {
+      const sys = Number(p.stock_a) + Number(p.stock_b);
+      return sys > 0 && !counts.has(p.barcode) && !realtimeSums.has(p.barcode);
+    });
+  }
+
   async function saveCount() {
     if (counts.size === 0) return toast.error("No hay productos contados");
     const collab = getCollaborator();
     if (!collab) return toast.error("Sesión expirada");
+    const unscanned = getUnscanned();
+    if (unscanned.length > 0) {
+      setUnscannedProducts(unscanned);
+      setUnscannedDialog(true);
+      return;
+    }
+    await doSave(counts);
+  }
+
+  async function doSave(countsToSave: Map<string, CountEntry>) {
+    const collab = getCollaborator();
+    if (!collab) return;
     setSaving(true);
     try {
       const sessionId = crypto.randomUUID();
-      const rows = Array.from(counts.values()).map((c) => ({
+      const rows = Array.from(countsToSave.values()).map((c) => ({
         branch,
         barcode: c.barcode,
         product_name: c.product_name,
@@ -385,33 +347,35 @@ function AuditPage() {
         if (error) throw error;
         toast.success(`Conteo guardado — ${rows.length} productos`);
       } else {
-        // Queue each row for later sync
         for (const row of rows) {
-          await enqueue({
-            kind: "audit",
-            uid: row.client_uid,
-            createdAt: Date.now(),
-            payload: row,
-          });
+          await enqueue({ kind: "audit", uid: row.client_uid, createdAt: Date.now(), payload: row });
         }
-        toast.success(`Sin internet — ${rows.length} productos guardados localmente. Se sincronizarán automáticamente.`);
+        toast.success(`Sin internet — ${rows.length} productos guardados localmente.`);
       }
 
-      setSummaryData(Array.from(counts.values()));
+      setSummaryData(Array.from(countsToSave.values()));
       setCounts(new Map());
       clearCatState();
+      setUnscannedDialog(false);
       if (online) {
         qc.invalidateQueries({ queryKey: ["audits"] });
         qc.invalidateQueries({ queryKey: ["audits-realtime", category] });
       }
-    } catch (e) {
-      toast.error((e as Error).message);
-    } finally {
-      setSaving(false);
-    }
+    } catch (e) { toast.error((e as Error).message); }
+    finally { setSaving(false); }
   }
 
-  // ── Finalize count ──
+  async function saveWithZeros() {
+    const newCounts = new Map(counts);
+    for (const p of unscannedProducts) {
+      const sys = Number(p.stock_a) + Number(p.stock_b);
+      newCounts.set(p.barcode, { barcode: p.barcode, product_name: p.product_name, count: 0, system_stock: sys });
+    }
+    setCounts(newCounts);
+    setUnscannedDialog(false);
+    await doSave(newCounts);
+  }
+
   async function finalizeCount() {
     if (counts.size === 0) return toast.error("No hay productos contados");
     const collab = getCollaborator();
@@ -425,16 +389,11 @@ function AuditPage() {
       const sessionId = crypto.randomUUID();
       const snapshot = Array.from(counts.values());
       const rows = snapshot.map((c) => ({
-        session_id: sessionId,
-        category,
-        branch,
-        barcode: c.barcode,
-        product_name: c.product_name,
-        system_stock: c.system_stock,
-        counted_quantity: c.count,
+        session_id: sessionId, category, branch,
+        barcode: c.barcode, product_name: c.product_name,
+        system_stock: c.system_stock, counted_quantity: c.count,
         difference: c.count - c.system_stock,
-        collaborator_id: collab.id,
-        collaborator_name: collab.name,
+        collaborator_id: collab.id, collaborator_name: collab.name,
       }));
 
       if (online) {
@@ -442,10 +401,9 @@ function AuditPage() {
         if (error) throw error;
         toast.success("Conteo finalizado y guardado en historial");
       } else {
-        // Save snapshot to localStorage for later sync
         const pendingKey = `inv.pending.finalize.${sessionId}`;
         localStorage.setItem(pendingKey, JSON.stringify({ rows, savedAt: Date.now() }));
-        toast.success("Sin internet — conteo guardado localmente. Se subirá al historial cuando haya conexión.");
+        toast.success("Sin internet — conteo guardado localmente.");
       }
 
       setSummaryData(snapshot);
@@ -456,14 +414,104 @@ function AuditPage() {
         qc.invalidateQueries({ queryKey: ["audit_history"] });
         qc.invalidateQueries({ queryKey: ["audit-history-month"] });
       }
-    } catch (e) {
-      toast.error("No se pudo guardar: " + (e as Error).message);
-    } finally {
-      setFinalizing(false);
-    }
+    } catch (e) { toast.error("No se pudo guardar: " + (e as Error).message); }
+    finally { setFinalizing(false); }
   }
 
-  // Filtered product list for name search
+  // ── Admin: cierre de conteo ──
+  async function confirmClose() {
+    const collab = getCollaborator();
+    if (!collab) return;
+    setClosing(true);
+    try {
+      const sessionId = crypto.randomUUID();
+      const closedAt = new Date().toISOString();
+      const reportRows = products.map((p) => {
+        const sys = Number(p.stock_a) + Number(p.stock_b);
+        const minaCount = realtimeMina.get(p.barcode) ?? 0;
+        const morelosCount = realtimeMorelos.get(p.barcode) ?? 0;
+        return {
+          session_id: sessionId, category,
+          barcode: p.barcode, product_name: p.product_name,
+          system_stock: sys,
+          mina_count: minaCount, morelos_count: morelosCount,
+          total_counted: minaCount + morelosCount,
+          difference: (minaCount + morelosCount) - sys,
+          scanned_mina: realtimeMina.has(p.barcode),
+          scanned_morelos: realtimeMorelos.has(p.barcode),
+          closed_by: collab.name, closed_at: closedAt,
+        };
+      });
+
+      if (online) {
+        const { error } = await supabase.from("closed_counts").insert(reportRows);
+        if (error) throw error;
+      }
+
+      toast.success(`Conteo de "${category}" cerrado por ${collab.name}`);
+      setCloseDialog(false);
+      if (online) qc.invalidateQueries({ queryKey: ["closed_counts"] });
+    } catch (e) { toast.error("Error al cerrar: " + (e as Error).message); }
+    finally { setClosing(false); }
+  }
+
+  // ── Admin: confirmar acción con PIN ──
+  async function confirmAdminAction() {
+    if (!me) return;
+    if (adminPin.length < 4) { toast.error("Ingresá tu PIN de administrador"); return; }
+    if (!adminAction) return;
+    setAdminBusy(true);
+    try {
+      if (adminAction.type === "reset") {
+        const { data, error } = await supabase.rpc("admin_reset_audit_category", {
+          p_admin_id: me.id, p_admin_pin: adminPin,
+          p_category: adminAction.category, p_branch: adminAction.branch,
+        });
+        if (error) throw error;
+        toast.success(`Conteo reiniciado — ${data ?? 0} registros eliminados.`);
+        if (category === adminAction.category && branch === adminAction.branch) {
+          setCounts(new Map()); clearCatState();
+        }
+      } else if (adminAction.type === "resetRealtime") {
+        const barcodes = products.map((p) => p.barcode);
+        const { data, error } = await supabase.rpc("admin_reset_realtime_audits", {
+          p_admin_id: me.id, p_admin_pin: adminPin,
+          p_branch: adminAction.branch, p_barcodes: barcodes, p_since: startOfTodayIso(),
+        });
+        if (error) throw error;
+        toast.success(`Conteos en vivo reiniciados — ${data ?? 0} registros eliminados.`);
+        qc.invalidateQueries({ queryKey: ["audits-realtime", adminAction.category] });
+      } else if (adminAction.type === "deleteRow") {
+        const { error } = await supabase.rpc("admin_delete_audit_history_row", {
+          p_admin_id: me.id, p_admin_pin: adminPin, p_row_id: adminAction.row.id,
+        });
+        if (error) throw error;
+        toast.success("Registro eliminado");
+      } else if (adminAction.type === "editRow") {
+        const { error } = await supabase.rpc("admin_update_audit_history_row", {
+          p_admin_id: me.id, p_admin_pin: adminPin,
+          p_row_id: adminAction.row.id, p_counted_quantity: adminAction.newQty,
+        });
+        if (error) throw error;
+        toast.success("Cantidad actualizada");
+      }
+      setAdminAction(null); setAdminPin("");
+      qc.invalidateQueries({ queryKey: ["audit-history-month"] });
+    } catch (e) { toast.error((e as Error).message); }
+    finally { setAdminBusy(false); }
+  }
+
+  function buildCategoryReport(cat: string) {
+    const rows = monthlyHistory.filter((r) => r.category === cat);
+    const merged = new Map<string, { barcode: string; product_name: string; system_stock: number; counted: number }>();
+    for (const r of rows) {
+      const e = merged.get(r.barcode) ?? { barcode: r.barcode, product_name: r.product_name, system_stock: r.system_stock, counted: 0 };
+      e.counted += Number(r.counted_quantity);
+      merged.set(r.barcode, e);
+    }
+    return Array.from(merged.values());
+  }
+
   const filteredProducts = useMemo(() =>
     nameSearch.trim().length >= 2
       ? products.filter((p) => p.product_name.toLowerCase().includes(nameSearch.toLowerCase()))
@@ -472,8 +520,7 @@ function AuditPage() {
   );
 
   const totalCounted = useMemo(() =>
-    Array.from(counts.values()).reduce((s, c) => s + c.count, 0),
-    [counts]
+    Array.from(counts.values()).reduce((s, c) => s + c.count, 0), [counts]
   );
 
   return (
@@ -486,7 +533,6 @@ function AuditPage() {
             {counts.size} · {totalCounted}
           </span>
         )}
-        {/* Offline indicator */}
         {!online && (
           <span className="flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">
             <WifiOff className="h-3 w-3" /> Sin internet
@@ -497,7 +543,6 @@ function AuditPage() {
         </Link>
       </div>
 
-      {/* ── Offline banner ── */}
       {!online && (
         <div className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/30 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
           <WifiOff className="h-4 w-4 mt-0.5 shrink-0" />
@@ -508,7 +553,7 @@ function AuditPage() {
         </div>
       )}
 
-      {/* ── Corte mensual por categoría ── */}
+      {/* ── Corte mensual ── */}
       <Card>
         <CardContent className="p-3 space-y-2">
           <div className="flex items-center justify-between">
@@ -521,23 +566,17 @@ function AuditPage() {
               const done = !!st?.hasA && !!st?.hasB;
               const partial = !done && (!!st?.hasA || !!st?.hasB);
               return (
-                <button key={c} type="button"
-                  onClick={() => setReportCategory(c)}
-                  disabled={!st}
+                <button key={c} type="button" onClick={() => setReportCategory(c)} disabled={!st}
                   className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors ${
-                    done
-                      ? "border-emerald-500 bg-emerald-500 text-white"
-                      : partial
-                      ? "border-amber-300 bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-200"
-                      : "border-transparent bg-muted text-muted-foreground"
+                    done ? "border-emerald-500 bg-emerald-500 text-white"
+                    : partial ? "border-amber-300 bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-200"
+                    : "border-transparent bg-muted text-muted-foreground"
                   }`}>
                   {c}{done ? " ✓" : partial ? " ½" : ""}
                 </button>
               );
             })}
-            {categories.length === 0 && (
-              <span className="text-xs text-muted-foreground">Sin categorías aún</span>
-            )}
+            {categories.length === 0 && <span className="text-xs text-muted-foreground">Sin categorías aún</span>}
           </div>
         </CardContent>
       </Card>
@@ -548,11 +587,8 @@ function AuditPage() {
           <div className="flex flex-wrap gap-3">
             <div className="flex-1 min-w-0">
               <label className="text-xs font-medium text-muted-foreground">Categoría</label>
-              <select
-                value={category}
-                onChange={(e) => changeCategory(e.target.value)}
-                className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm"
-              >
+              <select value={category} onChange={(e) => changeCategory(e.target.value)}
+                className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm">
                 <option value="">Elegir categoría…</option>
                 {categories.map((c) => <option key={c} value={c}>{c}</option>)}
               </select>
@@ -570,7 +606,18 @@ function AuditPage() {
             </div>
           </div>
 
-          {/* Resume banner */}
+          {/* Estado sucursales del día */}
+          {category && (
+            <div className="flex gap-2">
+              <div className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${minaDone ? "bg-emerald-100 text-emerald-700" : "bg-muted text-muted-foreground"}`}>
+                {minaDone ? "✓" : "○"} Mina
+              </div>
+              <div className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${morelosDone ? "bg-emerald-100 text-emerald-700" : "bg-muted text-muted-foreground"}`}>
+                {morelosDone ? "✓" : "○"} Morelos
+              </div>
+            </div>
+          )}
+
           {counts.size > 0 && category && (
             <div className="flex items-center justify-between rounded-md bg-amber-50 dark:bg-amber-950/30 border border-amber-200 px-3 py-2 text-xs">
               <span className="text-amber-800 dark:text-amber-200 font-medium">
@@ -592,19 +639,14 @@ function AuditPage() {
             "{category}" ya se contó este mes en {branchLabel(branch)}
           </p>
           <p className="text-xs text-muted-foreground max-w-xs">
-            Solo se permite un conteo por categoría al mes ({monthLabel()}). Podés ver el reporte combinado desde el corte mensual de arriba.
+            Solo se permite un conteo por categoría al mes ({monthLabel()}).
           </p>
           <div className="flex gap-2">
-            <Button size="sm" variant="outline" onClick={() => setReportCategory(category)}>
-              Ver reporte
-            </Button>
+            <Button size="sm" variant="outline" onClick={() => setReportCategory(category)}>Ver reporte</Button>
             {me?.is_admin && (
-              <Button
-                size="sm"
-                variant="outline"
+              <Button size="sm" variant="outline"
                 className="border-amber-400 text-amber-700 hover:bg-amber-50 dark:text-amber-300"
-                onClick={() => setAdminAction({ type: "reset", category, branch })}
-              >
+                onClick={() => setAdminAction({ type: "reset", category, branch })}>
                 <RotateCcw className="h-4 w-4" /> Reiniciar (admin)
               </Button>
             )}
@@ -614,37 +656,22 @@ function AuditPage() {
 
       {category && !alreadyCountedThisMonth && (
         <>
-          {/* ── Scanner ── */}
           <Card>
             <CardContent className="p-3 space-y-2">
-              <label className="text-xs font-medium text-muted-foreground">
-                Pistolá un producto para sumar +1
-              </label>
+              <label className="text-xs font-medium text-muted-foreground">Pistolá un producto para sumar +1</label>
               <div className="flex gap-2">
-                <Input
-                  ref={scanRef}
-                  autoFocus
-                  value={scanInput}
+                <Input ref={scanRef} autoFocus value={scanInput}
                   onChange={(e) => setScanInput(e.target.value)}
                   onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addCount(scanInput); } }}
-                  placeholder="Código de barras…"
-                  className="font-mono"
-                  inputMode="numeric"
-                />
+                  placeholder="Código de barras…" className="font-mono" inputMode="numeric" />
                 <Button type="button" variant="outline" onClick={() => setScanning(true)}>
                   <ScanLine className="h-4 w-4" />
                 </Button>
               </div>
-
-              {/* Name search */}
               <div className="relative">
                 <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  value={nameSearch}
-                  onChange={(e) => setNameSearch(e.target.value)}
-                  placeholder="O buscar por nombre…"
-                  className="pl-9"
-                />
+                <Input value={nameSearch} onChange={(e) => setNameSearch(e.target.value)}
+                  placeholder="O buscar por nombre…" className="pl-9" />
               </div>
               {nameSearch.trim().length >= 2 && (
                 <div className="max-h-40 overflow-auto rounded-md border bg-card">
@@ -655,21 +682,16 @@ function AuditPage() {
                         onClick={() => { addCount(p.barcode); setNameSearch(""); }}
                         className="flex w-full items-center justify-between border-b px-3 py-2 text-left text-sm last:border-b-0 hover:bg-muted">
                         <span className="truncate font-medium">{p.product_name}</span>
-                        <span className={`ml-2 shrink-0 text-xs ${stockColor(sys)}`}>
-                          Sys: {sys}
-                        </span>
+                        <span className={`ml-2 shrink-0 text-xs ${stockColor(sys)}`}>Sys: {sys}</span>
                       </button>
                     );
                   })}
-                  {filteredProducts.length === 0 && (
-                    <div className="p-3 text-xs text-muted-foreground">Sin resultados</div>
-                  )}
+                  {filteredProducts.length === 0 && <div className="p-3 text-xs text-muted-foreground">Sin resultados</div>}
                 </div>
               )}
             </CardContent>
           </Card>
 
-          {/* ── Product list ── */}
           <div className="space-y-1">
             <div className="flex items-center justify-between px-1">
               <span className="text-xs font-medium text-muted-foreground">
@@ -682,6 +704,7 @@ function AuditPage() {
                 </Button>
               )}
             </div>
+            <p className="px-1 text-[11px] text-muted-foreground">Tocá el número para escribir la cantidad directamente.</p>
 
             {me?.is_admin && (
               <div className="flex flex-wrap items-center gap-2 rounded-md border border-amber-300 bg-amber-50/60 px-2 py-1.5 dark:bg-amber-950/10">
@@ -711,27 +734,20 @@ function AuditPage() {
 
                 return (
                   <div key={p.barcode}
-                    className={`px-3 py-2.5 text-xs transition-colors ${isCounted ? "bg-emerald-50 dark:bg-emerald-950/20" : ""}`}>
+                    ref={(el) => { rowRefs.current.set(p.barcode, el); }}
+                    className={`scroll-mt-24 px-3 py-2.5 text-xs transition-colors ${isCounted ? "bg-emerald-50 dark:bg-emerald-950/20" : ""} ${highlightBarcode === p.barcode ? "ring-2 ring-inset ring-blue-500 bg-blue-50 dark:bg-blue-950/30" : ""}`}>
                     <div className="flex items-start gap-2">
-                      {/* Check circle */}
                       <div className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 ${isCounted ? "border-emerald-500 bg-emerald-500 text-white" : "border-muted-foreground/40"}`}>
                         {isCounted && <CheckCircle2 className="h-3 w-3" />}
                       </div>
-
-                      {/* Product info */}
                       <div className="min-w-0 flex-1">
-                        <div className={`font-medium leading-snug ${isCounted ? "" : "text-muted-foreground"}`}>
-                          {p.product_name}
-                        </div>
-                        {/* Barcode + stock with color */}
+                        <div className={`font-medium leading-snug ${isCounted ? "" : "text-muted-foreground"}`}>{p.product_name}</div>
                         <div className="flex items-center gap-2 font-mono text-muted-foreground">
                           <span>{p.barcode}</span>
                           <span className={`font-semibold ${stockColor(sys)}`}>
                             {sys < 0 ? `⚠ ${sys}` : sys === 0 ? "● 0" : ""}
                           </span>
                         </div>
-
-                        {/* Real-time counters from other users */}
                         {rt && rt.byUser.size > 0 && (
                           <div className="mt-1 space-y-0.5">
                             {Array.from(rt.byUser.entries()).map(([user, qty]) => (
@@ -741,8 +757,6 @@ function AuditPage() {
                             ))}
                           </div>
                         )}
-
-                        {/* Live difference preview */}
                         {(myCount > 0 || savedToday > 0) && (
                           <div className="mt-1 flex items-center gap-2 text-[10px]">
                             <span className="text-muted-foreground">Sistema: {sys}</span>
@@ -754,21 +768,23 @@ function AuditPage() {
                           </div>
                         )}
                       </div>
-
-                      {/* +/- counter */}
                       <div className="flex items-center gap-1 shrink-0">
-                        <button type="button"
-                          onClick={() => setCount(p.barcode, myCount - 1)}
-                          disabled={myCount === 0}
-                          className="flex h-7 w-7 items-center justify-center rounded-full border font-bold text-base disabled:opacity-25 hover:bg-muted active:scale-95">
+                        <button type="button" onClick={() => setCount(p.barcode, myCount - 1)} disabled={myCount === 0}
+                          className="flex h-7 w-7 items-center justify-center rounded-full border font-bold disabled:opacity-25 hover:bg-muted active:scale-95">
                           <Minus className="h-3 w-3" />
                         </button>
-                        <span className={`w-7 text-center tabular-nums font-bold text-sm ${isCounted ? "text-emerald-700" : "text-muted-foreground"}`}>
-                          {myCount || "—"}
-                        </span>
-                        <button type="button"
-                          onClick={() => addCount(p.barcode)}
-                          className="flex h-7 w-7 items-center justify-center rounded-full border font-bold text-base hover:bg-muted active:scale-95">
+                        <input type="number" inputMode="numeric" min={0}
+                          value={myCount === 0 ? "" : myCount} placeholder="0"
+                          onFocus={(e) => e.target.select()}
+                          onChange={(e) => {
+                            const raw = e.target.value;
+                            const n = raw === "" ? 0 : Math.max(0, parseInt(raw, 10) || 0);
+                            setCount(p.barcode, n);
+                          }}
+                          className={`w-9 rounded border border-input bg-transparent text-center text-sm tabular-nums font-bold focus:outline-none focus:ring-2 focus:ring-primary ${isCounted ? "text-emerald-700" : "text-muted-foreground"}`}
+                        />
+                        <button type="button" onClick={() => addCount(p.barcode)}
+                          className="flex h-7 w-7 items-center justify-center rounded-full border font-bold hover:bg-muted active:scale-95">
                           <Plus className="h-3 w-3" />
                         </button>
                       </div>
@@ -776,19 +792,14 @@ function AuditPage() {
                   </div>
                 );
               })}
-
               {products.length === 0 && (
                 <div className="py-8 text-center text-xs text-muted-foreground">
-                  {online ? (
-                    <><Loader2 className="mx-auto mb-2 h-4 w-4 animate-spin" />Cargando productos…</>
-                  ) : (
-                    <><WifiOff className="mx-auto mb-2 h-4 w-4" />Sin conexión — los productos se cargan desde caché</>
-                  )}
+                  {online ? <><Loader2 className="mx-auto mb-2 h-4 w-4 animate-spin" />Cargando productos…</>
+                  : <><WifiOff className="mx-auto mb-2 h-4 w-4" />Sin conexión — productos desde caché</>}
                 </div>
               )}
             </div>
 
-            {/* Save + Finalize buttons */}
             {counts.size > 0 && (
               <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
                 <Button onClick={saveCount} disabled={saving || finalizing} variant="outline" className="w-full">
@@ -799,6 +810,28 @@ function AuditPage() {
                   {finalizing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Flag className="h-4 w-4" />}
                   Finalizar conteo
                 </Button>
+              </div>
+            )}
+
+            {/* ── Botón cierre admin ── */}
+            {me?.is_admin && category && bothDone && (
+              <div className="mt-3 rounded-md border border-primary/30 bg-primary/5 p-3">
+                <div className="mb-2 flex items-center gap-2 text-xs font-medium text-primary">
+                  <Lock className="h-3.5 w-3.5" /> Cierre de conteo — Solo administrador
+                </div>
+                <p className="mb-3 text-xs text-muted-foreground">
+                  Mina ✓ y Morelos ✓ tienen conteos de hoy. Podés cerrar "{category}" para generar el reporte final.
+                </p>
+                <Button onClick={() => setCloseDialog(true)} className="w-full">
+                  <Lock className="h-4 w-4" /> Cerrar conteo de "{category}"
+                </Button>
+              </div>
+            )}
+            {me?.is_admin && category && !bothDone && (
+              <div className="mt-2 rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
+                <Lock className="mb-1 h-3.5 w-3.5" />
+                Cierre disponible cuando Mina y Morelos tengan conteos del día.
+                {!minaDone && " Falta: Mina."}{!morelosDone && " Falta: Morelos."}
               </div>
             )}
           </div>
@@ -812,6 +845,117 @@ function AuditPage() {
         </div>
       )}
 
+      {/* ── Dialog: productos no escaneados ── */}
+      <Dialog open={unscannedDialog} onOpenChange={setUnscannedDialog}>
+        <DialogContent className="max-h-[90vh] max-w-md overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-amber-500" />
+              {unscannedProducts.length} productos con stock no escaneados
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 text-sm">
+            <p className="text-xs text-muted-foreground">
+              Estos productos tienen existencias en sistema pero no fueron escaneados. ¿Los incluís como <strong>conteo = 0 (FALTA)</strong> o ignorás?
+            </p>
+            <div className="max-h-48 divide-y overflow-auto rounded-md border">
+              {unscannedProducts.map((p) => {
+                const sys = Number(p.stock_a) + Number(p.stock_b);
+                return (
+                  <div key={p.barcode} className="flex items-center justify-between px-3 py-2 text-xs">
+                    <div>
+                      <div className="font-medium">{p.product_name}</div>
+                      <div className="font-mono text-muted-foreground">{p.barcode}</div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-muted-foreground">Sistema: {sys}</div>
+                      <div className="font-bold text-red-600">-{sys} FALTA</div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+          <DialogFooter className="flex-col gap-2 sm:flex-row">
+            <Button variant="outline" onClick={() => doSave(counts)} disabled={saving} className="w-full sm:w-auto">
+              Ignorar — guardar solo lo escaneado
+            </Button>
+            <Button onClick={saveWithZeros} disabled={saving} className="w-full sm:w-auto">
+              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              Incluir como 0 (FALTA)
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Dialog: cierre de conteo admin ── */}
+      <Dialog open={closeDialog} onOpenChange={(o) => { if (!o && !closing) setCloseDialog(false); }}>
+        <DialogContent className="max-h-[90vh] max-w-lg overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Lock className="h-5 w-5 text-primary" /> Cierre de conteo — {category}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 text-sm">
+            <div className="grid grid-cols-2 gap-2">
+              <div className="rounded-md border p-2 text-center">
+                <div className="text-xs font-medium text-muted-foreground mb-1">✓ Mina</div>
+                <div className="text-lg font-bold text-emerald-700">{realtimeMina.size} escaneados</div>
+              </div>
+              <div className="rounded-md border p-2 text-center">
+                <div className="text-xs font-medium text-muted-foreground mb-1">✓ Morelos</div>
+                <div className="text-lg font-bold text-emerald-700">{realtimeMorelos.size} escaneados</div>
+              </div>
+            </div>
+            <div>
+              <p className="text-xs font-medium mb-1">Diferencias detectadas:</p>
+              <div className="max-h-48 divide-y overflow-auto rounded-md border">
+                {products.filter((p) => {
+                  const sys = Number(p.stock_a) + Number(p.stock_b);
+                  const total = (realtimeMina.get(p.barcode) ?? 0) + (realtimeMorelos.get(p.barcode) ?? 0);
+                  return total !== sys;
+                }).map((p) => {
+                  const sys = Number(p.stock_a) + Number(p.stock_b);
+                  const minaC = realtimeMina.get(p.barcode) ?? 0;
+                  const morelosC = realtimeMorelos.get(p.barcode) ?? 0;
+                  const total = minaC + morelosC;
+                  const diff = total - sys;
+                  return (
+                    <div key={p.barcode} className={`px-3 py-2 text-xs ${diff < 0 ? "bg-red-50" : "bg-amber-50"}`}>
+                      <div className="flex items-center justify-between">
+                        <span className="font-medium truncate flex-1">{p.product_name}</span>
+                        <span className={`font-bold ml-2 ${diff < 0 ? "text-red-600" : "text-amber-600"}`}>
+                          {diff > 0 ? `+${diff}` : diff}
+                        </span>
+                      </div>
+                      <div className="text-muted-foreground">
+                        Sistema: {sys} · Mina: {minaC} · Morelos: {morelosC}
+                      </div>
+                    </div>
+                  );
+                })}
+                {products.every((p) => {
+                  const sys = Number(p.stock_a) + Number(p.stock_b);
+                  return (realtimeMina.get(p.barcode) ?? 0) + (realtimeMorelos.get(p.barcode) ?? 0) === sys;
+                }) && (
+                  <div className="px-3 py-4 text-center text-xs text-emerald-600 font-medium">✓ Sin diferencias</div>
+                )}
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Al confirmar se guardará el reporte completo de "{category}" con ambas sucursales. No se puede deshacer.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCloseDialog(false)} disabled={closing}>Cancelar</Button>
+            <Button onClick={confirmClose} disabled={closing}>
+              {closing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Lock className="h-4 w-4" />}
+              Confirmar cierre
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* ── Summary dialog ── */}
       <Dialog open={!!summaryData} onOpenChange={(o) => { if (!o) { setSummaryData(null); setSummaryFinal(false); } }}>
         <DialogContent className="max-h-[90vh] max-w-md overflow-y-auto">
@@ -823,50 +967,40 @@ function AuditPage() {
               <div className="grid grid-cols-3 gap-2">
                 <div className="rounded-md bg-emerald-50 dark:bg-emerald-950/20 p-2 text-center">
                   <div className="text-[10px] text-muted-foreground">Sin diferencia</div>
-                  <div className="text-lg font-bold text-emerald-700">
-                    {summaryData.filter((r) => r.count === r.system_stock).length}
-                  </div>
+                  <div className="text-lg font-bold text-emerald-700">{summaryData.filter((r) => r.count === r.system_stock).length}</div>
                 </div>
                 <div className="rounded-md bg-red-50 dark:bg-red-950/20 p-2 text-center">
                   <div className="text-[10px] text-muted-foreground">Faltantes</div>
-                  <div className="text-lg font-bold text-red-600">
-                    {summaryData.filter((r) => r.count < r.system_stock).length}
-                  </div>
+                  <div className="text-lg font-bold text-red-600">{summaryData.filter((r) => r.count < r.system_stock).length}</div>
                 </div>
                 <div className="rounded-md bg-amber-50 dark:bg-amber-950/20 p-2 text-center">
                   <div className="text-[10px] text-muted-foreground">Sobrantes</div>
-                  <div className="text-lg font-bold text-amber-600">
-                    {summaryData.filter((r) => r.count > r.system_stock).length}
-                  </div>
+                  <div className="text-lg font-bold text-amber-600">{summaryData.filter((r) => r.count > r.system_stock).length}</div>
                 </div>
               </div>
-
               <p className="text-xs text-muted-foreground">
                 Sucursal: {branchLabel(branch)} · {summaryData.length} productos
                 {!online && " · Guardado localmente (pendiente de sincronizar)"}
               </p>
-
               <div className="divide-y rounded-md border">
-                {summaryData
-                  .sort((a, b) => (a.count - a.system_stock) - (b.count - b.system_stock))
-                  .map((r) => {
-                    const diff = r.count - r.system_stock;
-                    return (
-                      <div key={r.barcode}
-                        className={`flex items-center gap-2 px-3 py-2.5 text-xs ${diff === 0 ? "bg-emerald-50 dark:bg-emerald-950/20" : diff < 0 ? "bg-red-50 dark:bg-red-950/20" : "bg-amber-50 dark:bg-amber-950/20"}`}>
-                        <div className="min-w-0 flex-1">
-                          <div className="font-medium truncate">{r.product_name}</div>
-                          <div className="font-mono text-muted-foreground">{r.barcode}</div>
-                        </div>
-                        <div className="shrink-0 text-right space-y-0.5">
-                          <div className="text-muted-foreground">Sys: {r.system_stock} · Conteo: {r.count}</div>
-                          <div className={`font-bold ${diff === 0 ? "text-emerald-600" : diff < 0 ? "text-red-600" : "text-amber-600"}`}>
-                            {diff === 0 ? "✓ Correcto" : diff > 0 ? `+${diff} SOBRA` : `${diff} FALTA`}
-                          </div>
+                {summaryData.sort((a, b) => (a.count - a.system_stock) - (b.count - b.system_stock)).map((r) => {
+                  const diff = r.count - r.system_stock;
+                  return (
+                    <div key={r.barcode}
+                      className={`flex items-center gap-2 px-3 py-2.5 text-xs ${diff === 0 ? "bg-emerald-50 dark:bg-emerald-950/20" : diff < 0 ? "bg-red-50 dark:bg-red-950/20" : "bg-amber-50 dark:bg-amber-950/20"}`}>
+                      <div className="min-w-0 flex-1">
+                        <div className="font-medium truncate">{r.product_name}</div>
+                        <div className="font-mono text-muted-foreground">{r.barcode}</div>
+                      </div>
+                      <div className="shrink-0 text-right space-y-0.5">
+                        <div className="text-muted-foreground">Sys: {r.system_stock} · Conteo: {r.count}</div>
+                        <div className={`font-bold ${diff === 0 ? "text-emerald-600" : diff < 0 ? "text-red-600" : "text-amber-600"}`}>
+                          {diff === 0 ? "✓ Correcto" : diff > 0 ? `+${diff} SOBRA` : `${diff} FALTA`}
                         </div>
                       </div>
-                    );
-                  })}
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}
@@ -890,68 +1024,53 @@ function AuditPage() {
           {reportCategory && (() => {
             const rows = buildCategoryReport(reportCategory);
             const st = categoryStatus.get(reportCategory);
-            const bothDone = !!st?.hasA && !!st?.hasB;
+            const bothDoneReport = !!st?.hasA && !!st?.hasB;
             return (
               <div className="space-y-3 text-sm">
                 <div className="grid grid-cols-3 gap-2">
                   <div className="rounded-md bg-emerald-50 dark:bg-emerald-950/20 p-2 text-center">
                     <div className="text-[10px] text-muted-foreground">Sin diferencia</div>
-                    <div className="text-lg font-bold text-emerald-700">
-                      {rows.filter((r) => r.counted === r.system_stock).length}
-                    </div>
+                    <div className="text-lg font-bold text-emerald-700">{rows.filter((r) => r.counted === r.system_stock).length}</div>
                   </div>
                   <div className="rounded-md bg-red-50 dark:bg-red-950/20 p-2 text-center">
                     <div className="text-[10px] text-muted-foreground">Faltantes</div>
-                    <div className="text-lg font-bold text-red-600">
-                      {rows.filter((r) => r.counted < r.system_stock).length}
-                    </div>
+                    <div className="text-lg font-bold text-red-600">{rows.filter((r) => r.counted < r.system_stock).length}</div>
                   </div>
                   <div className="rounded-md bg-amber-50 dark:bg-amber-950/20 p-2 text-center">
                     <div className="text-[10px] text-muted-foreground">Sobrantes</div>
-                    <div className="text-lg font-bold text-amber-600">
-                      {rows.filter((r) => r.counted > r.system_stock).length}
-                    </div>
+                    <div className="text-lg font-bold text-amber-600">{rows.filter((r) => r.counted > r.system_stock).length}</div>
                   </div>
                 </div>
-
                 <p className="text-xs text-muted-foreground">
                   {monthLabel()} · {rows.length} productos
-                  {!bothDone && " · Falta contar en alguna sucursal — reporte parcial"}
+                  {!bothDoneReport && " · Falta contar en alguna sucursal — reporte parcial"}
                 </p>
-
                 <div className="divide-y rounded-md border">
-                  {rows
-                    .sort((a, b) => (a.counted - a.system_stock) - (b.counted - b.system_stock))
-                    .map((r) => {
-                      const diff = r.counted - r.system_stock;
-                      return (
-                        <div key={r.barcode}
-                          className={`flex items-center gap-2 px-3 py-2.5 text-xs ${diff === 0 ? "bg-emerald-50 dark:bg-emerald-950/20" : diff < 0 ? "bg-red-50 dark:bg-red-950/20" : "bg-amber-50 dark:bg-amber-950/20"}`}>
-                          <div className="min-w-0 flex-1">
-                            <div className="font-medium truncate">{r.product_name}</div>
-                            <div className="font-mono text-muted-foreground">{r.barcode}</div>
-                          </div>
-                          <div className="shrink-0 text-right space-y-0.5">
-                            <div className="text-muted-foreground">Sys: {r.system_stock} · Contado: {r.counted}</div>
-                            <div className={`font-bold ${diff === 0 ? "text-emerald-600" : diff < 0 ? "text-red-600" : "text-amber-600"}`}>
-                              {diff === 0 ? "✓ Correcto" : diff > 0 ? `+${diff} SOBRA` : `${diff} FALTA`}
-                            </div>
+                  {rows.sort((a, b) => (a.counted - a.system_stock) - (b.counted - b.system_stock)).map((r) => {
+                    const diff = r.counted - r.system_stock;
+                    return (
+                      <div key={r.barcode}
+                        className={`flex items-center gap-2 px-3 py-2.5 text-xs ${diff === 0 ? "bg-emerald-50 dark:bg-emerald-950/20" : diff < 0 ? "bg-red-50 dark:bg-red-950/20" : "bg-amber-50 dark:bg-amber-950/20"}`}>
+                        <div className="min-w-0 flex-1">
+                          <div className="font-medium truncate">{r.product_name}</div>
+                          <div className="font-mono text-muted-foreground">{r.barcode}</div>
+                        </div>
+                        <div className="shrink-0 text-right space-y-0.5">
+                          <div className="text-muted-foreground">Sys: {r.system_stock} · Contado: {r.counted}</div>
+                          <div className={`font-bold ${diff === 0 ? "text-emerald-600" : diff < 0 ? "text-red-600" : "text-amber-600"}`}>
+                            {diff === 0 ? "✓ Correcto" : diff > 0 ? `+${diff} SOBRA` : `${diff} FALTA`}
                           </div>
                         </div>
-                      );
-                    })}
-                  {rows.length === 0 && (
-                    <div className="p-3 text-xs text-muted-foreground">Sin conteos registrados este mes.</div>
-                  )}
+                      </div>
+                    );
+                  })}
+                  {rows.length === 0 && <div className="p-3 text-xs text-muted-foreground">Sin conteos registrados este mes.</div>}
                 </div>
-
-                {/* ── Panel de administrador ── */}
                 {me?.is_admin && (
                   <div className="space-y-3 rounded-md border border-amber-300 bg-amber-50/60 p-3 dark:bg-amber-950/10">
                     <div className="flex items-center gap-1.5 text-xs font-semibold text-amber-800 dark:text-amber-300">
                       <ShieldAlert className="h-3.5 w-3.5" /> Panel de administrador
                     </div>
-
                     <div className="flex flex-wrap gap-2">
                       {(["A", "B"] as const).map((b) => (
                         <Button key={b} size="sm" variant="outline"
@@ -962,9 +1081,8 @@ function AuditPage() {
                         </Button>
                       ))}
                     </div>
-
                     <div className="space-y-1.5">
-                      <p className="text-[11px] font-medium text-muted-foreground">Registros individuales (editar/eliminar)</p>
+                      <p className="text-[11px] font-medium text-muted-foreground">Registros individuales</p>
                       <div className="max-h-56 divide-y overflow-y-auto rounded-md border bg-background">
                         {monthlyHistory.filter((h) => h.category === reportCategory).map((h) => (
                           <AdminHistoryRow key={h.id} row={h}
@@ -987,7 +1105,7 @@ function AuditPage() {
         </DialogContent>
       </Dialog>
 
-      {/* ── Confirmación de admin (PIN) ── */}
+      {/* ── Admin PIN dialog ── */}
       <Dialog open={!!adminAction} onOpenChange={(o) => { if (!o) { setAdminAction(null); setAdminPin(""); } }}>
         <DialogContent className="max-w-sm">
           <DialogHeader>
@@ -999,55 +1117,39 @@ function AuditPage() {
               {adminAction?.type === "editRow" && "Editar cantidad contada"}
             </DialogTitle>
           </DialogHeader>
-
           <div className="space-y-3 text-sm">
             {adminAction?.type === "reset" && (
               <p className="text-muted-foreground">
                 Se eliminarán todos los conteos de <strong>"{adminAction.category}"</strong> en{" "}
-                <strong>{branchLabel(adminAction.branch)}</strong> registrados este mes, y la categoría
-                quedará habilitada para volver a contarse.
+                <strong>{branchLabel(adminAction.branch)}</strong> registrados este mes.
               </p>
             )}
             {adminAction?.type === "resetRealtime" && (
               <p className="text-muted-foreground">
-                Se eliminarán los conteos guardados hoy (guardado parcial, sin finalizar) de{" "}
-                <strong>"{adminAction.category}"</strong> en <strong>{branchLabel(adminAction.branch)}</strong>.
-                Cada colaborador podrá volver a escanear desde cero en esa sucursal.
+                Se eliminarán los conteos guardados hoy de <strong>"{adminAction.category}"</strong> en <strong>{branchLabel(adminAction.branch)}</strong>.
               </p>
             )}
             {adminAction?.type === "deleteRow" && (
               <p className="text-muted-foreground">
-                Se eliminará el registro de <strong>{adminAction.row.product_name}</strong> ({adminAction.row.counted_quantity} unid., {branchLabel(adminAction.row.branch)}).
+                Se eliminará el registro de <strong>{adminAction.row.product_name}</strong> ({adminAction.row.counted_quantity} unid.).
               </p>
             )}
             {adminAction?.type === "editRow" && (
               <div className="space-y-2">
                 <p className="text-muted-foreground">{adminAction.row.product_name}</p>
-                <Input
-                  type="number"
-                  min={0}
-                  value={adminAction.newQty}
+                <Input type="number" min={0} value={adminAction.newQty}
                   onChange={(e) => setAdminAction((prev) =>
                     prev && prev.type === "editRow" ? { ...prev, newQty: Number(e.target.value) } : prev
-                  )}
-                />
+                  )} />
               </div>
             )}
-
             <div>
               <label className="text-xs font-medium text-muted-foreground">Tu PIN de administrador</label>
-              <Input
-                type="password"
-                inputMode="numeric"
-                autoFocus
-                value={adminPin}
+              <Input type="password" inputMode="numeric" autoFocus value={adminPin}
                 onChange={(e) => setAdminPin(e.target.value.replace(/\D/g, ""))}
-                placeholder="PIN"
-                className="mt-1"
-              />
+                placeholder="PIN" className="mt-1" />
             </div>
           </div>
-
           <DialogFooter>
             <Button variant="outline" onClick={() => { setAdminAction(null); setAdminPin(""); }}>Cancelar</Button>
             <Button variant="destructive" disabled={adminBusy} onClick={confirmAdminAction}>
@@ -1057,9 +1159,7 @@ function AuditPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Camera scanner */}
-      <BarcodeScanner open={scanning} onClose={() => setScanning(false)}
-        continuous onDetected={(c) => addCount(c)} />
+      <BarcodeScanner open={scanning} onClose={() => setScanning(false)} continuous onDetected={(c) => addCount(c)} />
     </div>
   );
 }
@@ -1077,10 +1177,10 @@ function AdminHistoryRow({ row, onEdit, onDelete }: { row: HistoryRow; onEdit: (
           </span>
         </div>
       </div>
-      <button type="button" onClick={onEdit} className="shrink-0 rounded p-1 hover:bg-muted" aria-label="Editar">
+      <button type="button" onClick={onEdit} className="shrink-0 rounded p-1 hover:bg-muted">
         <Pencil className="h-3.5 w-3.5" />
       </button>
-      <button type="button" onClick={onDelete} className="shrink-0 rounded p-1 text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30" aria-label="Eliminar">
+      <button type="button" onClick={onDelete} className="shrink-0 rounded p-1 text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30">
         <Trash2 className="h-3.5 w-3.5" />
       </button>
     </div>
