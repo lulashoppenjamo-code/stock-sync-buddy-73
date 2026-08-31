@@ -99,7 +99,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <CloudUpload className="h-3.5 w-3.5" /> {pending} pendiente{pending === 1 ? "" : "s"}
               </span>
             )}
-            <span className="hidden sm:inline text-muted-foreground">
+            {/* Nombre visible en móvil y desktop */}
+            <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2.5 py-1 font-medium text-primary">
               {collab?.name}
               {collab?.is_admin ? " · admin" : ""}
             </span>
