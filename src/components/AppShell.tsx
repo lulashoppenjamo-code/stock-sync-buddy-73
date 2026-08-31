@@ -51,7 +51,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <div className="grid h-7 w-7 place-items-center rounded-md bg-primary text-primary-foreground">
               <Boxes className="h-4 w-4" />
             </div>
-            <span>Inventario</span>
+            <div className="flex flex-col leading-none">
+              <span>Inventario</span>
+              {collab && (
+                <span className="text-[11px] font-normal text-muted-foreground">
+                  {collab.name}{collab.is_admin ? " · admin" : ""}
+                </span>
+              )}
+            </div>
           </div>
           <nav className="ml-4 hidden gap-1 md:flex">
             {navItems.map((item) => {
@@ -99,11 +106,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <CloudUpload className="h-3.5 w-3.5" /> {pending} pendiente{pending === 1 ? "" : "s"}
               </span>
             )}
-            {/* Nombre visible en móvil y desktop */}
-            <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2.5 py-1 font-medium text-primary">
-              {collab?.name}
-              {collab?.is_admin ? " · admin" : ""}
-            </span>
+
             <Button variant="ghost" size="sm" onClick={signOut} aria-label="Salir">
               <LogOut className="h-4 w-4" />
             </Button>
