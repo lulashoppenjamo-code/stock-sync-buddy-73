@@ -86,8 +86,38 @@ function stockColor(stock: number): string {
 function AuditPage() {
   const online = useOnline();
   const _saved = useMemo(() => loadCatState(), []);
+  const me = useCollaborator();
+
+  // ── Sucursal asignada al colaborador ──────────────────────────────────
+  // Admin puede cambiarla; colaboradoras normales tienen la suya fija
+  const [collabBranch, setCollabBranch] = useState<"A" | "B" | null>(null);
+
+  const { data: collabData } = useQuery({
+    queryKey: ["collab-branch", me?.id],
+    enabled: !!me?.id,
+    staleTime: 60_000,
+    queryFn: async () => {
+      const { data } = await supabase
+        .from("collaborators")
+        .select("branch")
+        .eq("id", me!.id)
+        .maybeSingle();
+      return data as { branch: string } | null;
+    },
+  });
+
+  // Determinar la sucursal del colaborador logueado
+  const myBranch = useMemo((): "A" | "B" => {
+    if (me?.is_admin) return collabBranch ?? "A"; // Admin puede elegir
+    const b = collabData?.branch;
+    if (b === "B") return "B";
+    return "A"; // Default Mina
+  }, [me, collabData, collabBranch]);
+
   const [category, setCategory] = useState(_saved?.category ?? "");
-  const [branch, setBranch] = useState<"A" | "B">(_saved?.branch ?? "A");
+  // branch siempre refleja la sucursal del colaborador (no editable para no-admin)
+  const branch: "A" | "B" = myBranch;
+
   const [counts, setCounts] = useState<Map<string, CountEntry>>(
     _saved?.counts ? new Map(_saved.counts) : new Map()
   );
@@ -101,15 +131,11 @@ function AuditPage() {
   const scanRef = useRef<HTMLInputElement>(null);
   const qc = useQueryClient();
 
-  // ── Nuevo: productos no escaneados ──
   const [unscannedDialog, setUnscannedDialog] = useState(false);
   const [unscannedProducts, setUnscannedProducts] = useState<Product[]>([]);
-
-  // ── Nuevo: cierre de conteo admin ──
   const [closeDialog, setCloseDialog] = useState(false);
   const [closing, setClosing] = useState(false);
 
-  // ── Highlight al escanear ──
   const rowRefs = useRef<Map<string, HTMLDivElement | null>>(new Map());
   const [highlightBarcode, setHighlightBarcode] = useState<string | null>(null);
   const highlightTimer = useRef<ReturnType<typeof setTimeout>>();
@@ -124,7 +150,6 @@ function AuditPage() {
     if (category) saveCatState(category, branch, counts);
   }, [counts, category, branch]);
 
-  const me = useCollaborator();
   const [adminAction, setAdminAction] = useState<AdminAction | null>(null);
   const [adminPin, setAdminPin] = useState("");
   const [adminBusy, setAdminBusy] = useState(false);
@@ -223,7 +248,6 @@ function AuditPage() {
     return map;
   }, [realtimeAudits]);
 
-  // ── Por sucursal para cierre ──
   const realtimeMina = useMemo(() => {
     const map = new Map<string, number>();
     for (const a of realtimeAudits) {
@@ -303,7 +327,6 @@ function AuditPage() {
     if (!newCat) clearCatState();
   }
 
-  // ── Detectar no escaneados con stock ──
   function getUnscanned(): Product[] {
     return products.filter((p) => {
       const sys = Number(p.stock_a) + Number(p.stock_b);
@@ -331,7 +354,7 @@ function AuditPage() {
     try {
       const sessionId = crypto.randomUUID();
       const rows = Array.from(countsToSave.values()).map((c) => ({
-        branch,
+        branch, // siempre la sucursal del colaborador
         barcode: c.barcode,
         product_name: c.product_name,
         system_stock: c.system_stock,
@@ -418,7 +441,6 @@ function AuditPage() {
     finally { setFinalizing(false); }
   }
 
-  // ── Admin: cierre de conteo ──
   async function confirmClose() {
     const collab = getCollaborator();
     if (!collab) return;
@@ -455,7 +477,6 @@ function AuditPage() {
     finally { setClosing(false); }
   }
 
-  // ── Admin: confirmar acción con PIN ──
   async function confirmAdminAction() {
     if (!me) return;
     if (adminPin.length < 4) { toast.error("Ingresá tu PIN de administrador"); return; }
@@ -595,16 +616,34 @@ function AuditPage() {
             </div>
             <div className="shrink-0">
               <label className="text-xs font-medium text-muted-foreground">Sucursal</label>
-              <div className="mt-1 inline-flex overflow-hidden rounded-md border">
-                {(["A", "B"] as const).map((b) => (
-                  <button key={b} type="button" onClick={() => setBranch(b)}
-                    className={`px-4 py-1.5 text-sm font-medium transition-colors ${branch === b ? "bg-primary text-primary-foreground" : "bg-background hover:bg-muted"}`}>
-                    {b === "A" ? "Mina" : "Morelos"}
-                  </button>
-                ))}
-              </div>
+              {me?.is_admin ? (
+                // Admin puede cambiar sucursal
+                <div className="mt-1 inline-flex overflow-hidden rounded-md border">
+                  {(["A", "B"] as const).map((b) => (
+                    <button key={b} type="button" onClick={() => setCollabBranch(b)}
+                      className={`px-4 py-1.5 text-sm font-medium transition-colors ${branch === b ? "bg-primary text-primary-foreground" : "bg-background hover:bg-muted"}`}>
+                      {b === "A" ? "Mina" : "Morelos"}
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                // Colaboradora normal: sucursal fija, solo visual
+                <div className="mt-1 inline-flex overflow-hidden rounded-md border">
+                  <div className="bg-primary text-primary-foreground px-4 py-1.5 text-sm font-medium">
+                    {branch === "A" ? "Mina" : "Morelos"}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
+
+          {/* Indicador de sucursal asignada para colaboradoras */}
+          {!me?.is_admin && (
+            <p className="text-[11px] text-muted-foreground">
+              Estás contando para <strong>{branch === "A" ? "Sucursal Mina" : "Sucursal Morelos"}</strong>.
+              Solo podés guardar conteos de tu sucursal.
+            </p>
+          )}
 
           {/* Estado sucursales del día */}
           {category && (
@@ -615,6 +654,9 @@ function AuditPage() {
               <div className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${morelosDone ? "bg-emerald-100 text-emerald-700" : "bg-muted text-muted-foreground"}`}>
                 {morelosDone ? "✓" : "○"} Morelos
               </div>
+              {me?.is_admin && bothDone && (
+                <span className="ml-auto text-xs text-emerald-600 font-medium">¡Listas para cerrar!</span>
+              )}
             </div>
           )}
 
@@ -813,7 +855,7 @@ function AuditPage() {
               </div>
             )}
 
-            {/* ── Botón cierre admin ── */}
+            {/* ── Botón cierre admin — solo visible para admin cuando ambas sucursales tienen conteos ── */}
             {me?.is_admin && category && bothDone && (
               <div className="mt-3 rounded-md border border-primary/30 bg-primary/5 p-3">
                 <div className="mb-2 flex items-center gap-2 text-xs font-medium text-primary">
