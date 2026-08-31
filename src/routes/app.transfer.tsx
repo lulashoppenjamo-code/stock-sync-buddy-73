@@ -108,9 +108,40 @@ function TransferPage() {
   const [barcode, setBarcode] = useState("");
   const [nameSearch, setNameSearch] = useState("");
   const debouncedNameSearch = useDebounce(nameSearch, 300);
-  const [origin, setOrigin] = useState<Branch>("A");
-  const [destination, setDestination] = useState<Branch>("B");
   const me = useCollaborator();
+
+  // Fetch branch assigned to this collaborator
+  const { data: collabData } = useQuery({
+    queryKey: ["collab-branch-transfer", me?.id],
+    enabled: !!me?.id,
+    staleTime: 60_000,
+    queryFn: async () => {
+      const { data } = await supabase
+        .from("collaborators")
+        .select("branch")
+        .eq("id", me!.id)
+        .maybeSingle();
+      return data as { branch: string } | null;
+    },
+  });
+
+  // Origin = sucursal asignada al colaborador (fija)
+  const myBranch: Branch = collabData?.branch === "B" ? "B" : "A";
+  const [destination, setDestination] = useState<Branch>("B");
+
+  // Auto-set destination to the other branch when origin is known
+  useEffect(() => {
+    setDestination(myBranch === "A" ? "B" : "A");
+  }, [myBranch]);
+
+  // Admin y Ana pueden cambiar origen; las demás tienen origen fijo
+  const canChangeOrigin = me?.is_admin || me?.name?.toLowerCase().includes("ana");
+  const [origin, setOrigin] = useState<Branch>("A");
+  // Sync origin with myBranch when it loads
+  useEffect(() => {
+    setOrigin(myBranch);
+  }, [myBranch]);
+
   const [sender, setSender] = useState(me?.name ?? "");
   const [receiver, setReceiver] = useState("");
   useEffect(() => { if (me?.name && !sender) setSender(me.name); }, [me?.name, sender]);
@@ -352,10 +383,22 @@ function TransferPage() {
           <div className="grid grid-cols-2 gap-3">
             <div>
               <Label>Origen</Label>
-              <ToggleGroup type="single" value={origin} onValueChange={(v) => v && setOrigin(v as Branch)} className="justify-start">
-                <ToggleGroupItem value="A">{BRANCH_LABELS.A}</ToggleGroupItem>
-                <ToggleGroupItem value="B">{BRANCH_LABELS.B}</ToggleGroupItem>
-              </ToggleGroup>
+              {/* Admin y Ana pueden cambiar origen; las demás lo tienen fijo */}
+              {(me?.is_admin || me?.name?.toLowerCase().includes("ana")) ? (
+                <ToggleGroup type="single" value={origin} onValueChange={(v) => v && setOrigin(v as Branch)} className="justify-start">
+                  <ToggleGroupItem value="A">{BRANCH_LABELS.A}</ToggleGroupItem>
+                  <ToggleGroupItem value="B">{BRANCH_LABELS.B}</ToggleGroupItem>
+                </ToggleGroup>
+              ) : (
+                <>
+                  <div className="mt-1 inline-flex overflow-hidden rounded-md border">
+                    <div className="bg-primary text-primary-foreground px-4 py-1.5 text-sm font-medium">
+                      {BRANCH_LABELS[origin]}
+                    </div>
+                  </div>
+                  <p className="mt-1 text-[11px] text-muted-foreground">Tu sucursal asignada</p>
+                </>
+              )}
             </div>
             <div>
               <Label>Destino</Label>
