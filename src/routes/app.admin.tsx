@@ -207,7 +207,18 @@ function RowEditor({
   onUpdate: (patch: { is_admin?: boolean; active?: boolean; pin?: string; branch?: string }) => void;
 }) {
   const [newPin, setNewPin] = useState("");
-  const currentBranch = row.branch === "B" ? "B" : "A";
+  // localBranch reflects the actual saved branch — syncs when row prop updates
+  const [localBranch, setLocalBranch] = useState<"A" | "B">(row.branch === "B" ? "B" : "A");
+
+  // Keep in sync when parent refreshes data
+  useEffect(() => {
+    setLocalBranch(row.branch === "B" ? "B" : "A");
+  }, [row.branch]);
+
+  function handleBranchChange(b: "A" | "B") {
+    setLocalBranch(b); // update UI immediately
+    onUpdate({ branch: b }); // persist to DB
+  }
 
   return (
     <TableRow>
@@ -219,9 +230,9 @@ function RowEditor({
           {(["A", "B"] as const).map((b) => (
             <button key={b} type="button"
               disabled={disabled}
-              onClick={() => onUpdate({ branch: b })}
+              onClick={() => handleBranchChange(b)}
               className={`px-3 py-1 font-medium transition-colors disabled:opacity-50 ${
-                currentBranch === b
+                localBranch === b
                   ? "bg-primary text-primary-foreground"
                   : "bg-background hover:bg-muted"
               }`}>
