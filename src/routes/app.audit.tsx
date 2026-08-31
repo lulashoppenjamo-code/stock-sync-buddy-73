@@ -465,15 +465,50 @@ function AuditPage() {
         };
       });
 
+      // Insertar en audit_history para Mina (A) y Morelos (B)
+      // Esto marca la categoría en verde en el corte mensual
+      const historyRowsMina = products.map((p) => ({
+        session_id: sessionId,
+        category,
+        branch: "A" as const,
+        barcode: p.barcode,
+        product_name: p.product_name,
+        system_stock: Number(p.stock_a) + Number(p.stock_b),
+        counted_quantity: realtimeMina.get(p.barcode) ?? 0,
+        difference: (realtimeMina.get(p.barcode) ?? 0) - (Number(p.stock_a) + Number(p.stock_b)),
+        collaborator_id: collab.id,
+        collaborator_name: collab.name,
+      }));
+      const historyRowsMorelos = products.map((p) => ({
+        session_id: sessionId,
+        category,
+        branch: "B" as const,
+        barcode: p.barcode,
+        product_name: p.product_name,
+        system_stock: Number(p.stock_a) + Number(p.stock_b),
+        counted_quantity: realtimeMorelos.get(p.barcode) ?? 0,
+        difference: (realtimeMorelos.get(p.barcode) ?? 0) - (Number(p.stock_a) + Number(p.stock_b)),
+        collaborator_id: collab.id,
+        collaborator_name: collab.name,
+      }));
+
       if (online) {
-        const { error } = await supabase.from("closed_counts").insert(reportRows);
-        if (error) throw error;
+        // Save closed_counts report
+        const { error: e1 } = await supabase.from("closed_counts").insert(reportRows);
+        if (e1) throw e1;
+        // Save audit_history for both branches → marks category green in monthly view
+        const { error: e2 } = await supabase.from("audit_history").insert([...historyRowsMina, ...historyRowsMorelos]);
+        if (e2) throw e2;
       }
 
-      toast.success(`Conteo de "${category}" cerrado por ${collab.name}`);
+      toast.success(`Categoría "${category}" finalizada ✓ — ya aparece en verde en el corte mensual`);
       setCloseDialog(false);
-      if (online) qc.invalidateQueries({ queryKey: ["closed_counts"] });
-    } catch (e) { toast.error("Error al cerrar: " + (e as Error).message); }
+      if (online) {
+        qc.invalidateQueries({ queryKey: ["closed_counts"] });
+        qc.invalidateQueries({ queryKey: ["audit-history-month"] });
+        qc.invalidateQueries({ queryKey: ["audits-realtime", category] });
+      }
+    } catch (e) { toast.error("Error al finalizar: " + (e as Error).message); }
     finally { setClosing(false); }
   }
 
@@ -866,24 +901,24 @@ function AuditPage() {
               </div>
             )}
 
-            {/* ── Botón cierre admin — solo visible para admin cuando ambas sucursales tienen conteos ── */}
+            {/* ── Finalizar conteo — solo admin, solo cuando ambas sucursales tienen conteos ── */}
             {me?.is_admin && category && bothDone && (
-              <div className="mt-3 rounded-md border border-primary/30 bg-primary/5 p-3">
-                <div className="mb-2 flex items-center gap-2 text-xs font-medium text-primary">
-                  <Lock className="h-3.5 w-3.5" /> Cierre de conteo — Solo administrador
+              <div className="mt-3 rounded-md border border-emerald-300 bg-emerald-50 dark:bg-emerald-950/20 p-3">
+                <div className="mb-2 flex items-center gap-2 text-xs font-medium text-emerald-700 dark:text-emerald-300">
+                  <Flag className="h-3.5 w-3.5" /> Finalizar conteo — Solo administrador
                 </div>
                 <p className="mb-3 text-xs text-muted-foreground">
-                  Mina ✓ y Morelos ✓ tienen conteos de hoy. Podés cerrar "{category}" para generar el reporte final.
+                  Mina ✓ y Morelos ✓ tienen conteos de hoy. Al finalizar, "{category}" quedará marcada como contada este mes.
                 </p>
-                <Button onClick={() => setCloseDialog(true)} className="w-full">
-                  <Lock className="h-4 w-4" /> Cerrar conteo de "{category}"
+                <Button onClick={() => setCloseDialog(true)} className="w-full bg-emerald-600 hover:bg-emerald-700">
+                  <Flag className="h-4 w-4" /> Finalizar conteo de "{category}"
                 </Button>
               </div>
             )}
             {me?.is_admin && category && !bothDone && (
               <div className="mt-2 rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
-                <Lock className="mb-1 h-3.5 w-3.5" />
-                Cierre disponible cuando Mina y Morelos tengan conteos del día.
+                <Flag className="mb-1 h-3.5 w-3.5 inline mr-1" />
+                Finalizar disponible cuando Mina y Morelos tengan conteos del día.
                 {!minaDone && " Falta: Mina."}{!morelosDone && " Falta: Morelos."}
               </div>
             )}
@@ -946,7 +981,7 @@ function AuditPage() {
         <DialogContent className="max-h-[90vh] max-w-lg overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <Lock className="h-5 w-5 text-primary" /> Cierre de conteo — {category}
+              <Flag className="h-5 w-5 text-emerald-600" /> Finalizar conteo — {category}
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-4 text-sm">
@@ -1001,9 +1036,9 @@ function AuditPage() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setCloseDialog(false)} disabled={closing}>Cancelar</Button>
-            <Button onClick={confirmClose} disabled={closing}>
-              {closing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Lock className="h-4 w-4" />}
-              Confirmar cierre
+            <Button onClick={confirmClose} disabled={closing} className="bg-emerald-600 hover:bg-emerald-700">
+              {closing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Flag className="h-4 w-4" />}
+              Confirmar finalización
             </Button>
           </DialogFooter>
         </DialogContent>
