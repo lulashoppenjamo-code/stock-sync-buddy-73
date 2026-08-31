@@ -843,15 +843,26 @@ function AuditPage() {
             </div>
 
             {counts.size > 0 && (
-              <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <div className="mt-2 grid grid-cols-1 gap-2">
+                {/* Guardar parcial — visible para todos */}
                 <Button onClick={saveCount} disabled={saving || finalizing} variant="outline" className="w-full">
                   {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
                   {online ? `Guardar parcial (${counts.size})` : `Guardar offline (${counts.size})`}
                 </Button>
-                <Button onClick={finalizeCount} disabled={saving || finalizing} className="w-full">
-                  {finalizing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Flag className="h-4 w-4" />}
-                  Finalizar conteo
-                </Button>
+                {/* Finalizar conteo — solo admin, solo cuando ambas sucursales tienen conteos */}
+                {me?.is_admin && bothDone && (
+                  <Button onClick={finalizeCount} disabled={saving || finalizing} className="w-full">
+                    {finalizing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Flag className="h-4 w-4" />}
+                    Finalizar conteo (Mina + Morelos)
+                  </Button>
+                )}
+                {me?.is_admin && !bothDone && (
+                  <div className="rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground text-center">
+                    <Flag className="inline h-3.5 w-3.5 mr-1" />
+                    Finalizar disponible cuando Mina y Morelos tengan conteos del día.
+                    {!minaDone && " Falta: Mina."}{!morelosDone && " Falta: Morelos."}
+                  </div>
+                )}
               </div>
             )}
 
