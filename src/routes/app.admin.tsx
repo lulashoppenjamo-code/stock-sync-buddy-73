@@ -70,26 +70,29 @@ function AdminPage() {
     }
   }
 
+  async function updateBranch(target: Row, newBranch: string) {
+    setBusy(true);
+    try {
+      const { error } = await supabase
+        .from("collaborators")
+        .update({ branch: newBranch })
+        .eq("id", target.id);
+      if (error) throw error;
+      toast.success(`Sucursal de ${target.name} → ${newBranch === "A" ? "Mina" : "Morelos"} ✓`);
+      refresh();
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function update(target: Row, patch: { is_admin?: boolean; active?: boolean; pin?: string; branch?: string }) {
     if (!me) return;
     if (adminPin.length < 4) return toast.error("Ingresá tu PIN de admin arriba");
 
-    // Si solo cambia la sucursal, no necesita pasar por el RPC de admin
     if (patch.branch && Object.keys(patch).length === 1) {
-      setBusy(true);
-      try {
-        const { error } = await supabase
-          .from("collaborators")
-          .update({ branch: patch.branch })
-          .eq("id", target.id);
-        if (error) throw error;
-        toast.success(`Sucursal de ${target.name} actualizada`);
-        refresh();
-      } catch (e) {
-        toast.error((e as Error).message);
-      } finally {
-        setBusy(false);
-      }
+      await updateBranch(target, patch.branch);
       return;
     }
 
@@ -187,7 +190,22 @@ function AdminPage() {
             </TableHeader>
             <TableBody>
               {rows.map((r) => (
-                <RowEditor key={r.id} row={r} disabled={busy} onUpdate={(p) => update(r, p)} />
+                <RowEditor key={r.id} row={r} disabled={busy}
+                  onUpdate={(p) => update(r, p)}
+                  onSaveBranch={async (branch) => {
+                    setBusy(true);
+                    try {
+                      const { error } = await supabase
+                        .from("collaborators")
+                        .update({ branch })
+                        .eq("id", r.id);
+                      if (error) throw error;
+                      toast.success(`Sucursal de ${r.name} → ${branch === "A" ? "Mina" : "Morelos"}`);
+                      refresh();
+                    } catch (e) { toast.error((e as Error).message); }
+                    finally { setBusy(false); }
+                  }}
+                />
               ))}
             </TableBody>
           </Table>
@@ -201,44 +219,52 @@ function RowEditor({
   row,
   disabled,
   onUpdate,
+  onSaveBranch,
 }: {
   row: Row;
   disabled: boolean;
-  onUpdate: (patch: { is_admin?: boolean; active?: boolean; pin?: string; branch?: string }) => void;
+  onUpdate: (patch: { is_admin?: boolean; active?: boolean; pin?: string }) => void;
+  onSaveBranch: (branch: "A" | "B") => void;
 }) {
   const [newPin, setNewPin] = useState("");
-  // localBranch reflects the actual saved branch — syncs when row prop updates
   const [localBranch, setLocalBranch] = useState<"A" | "B">(row.branch === "B" ? "B" : "A");
+  const [branchChanged, setBranchChanged] = useState(false);
 
-  // Keep in sync when parent refreshes data
   useEffect(() => {
     setLocalBranch(row.branch === "B" ? "B" : "A");
+    setBranchChanged(false);
   }, [row.branch]);
 
   function handleBranchChange(b: "A" | "B") {
-    setLocalBranch(b); // update UI immediately
-    onUpdate({ branch: b }); // persist to DB
+    setLocalBranch(b);
+    setBranchChanged(b !== (row.branch === "B" ? "B" : "A"));
   }
 
   return (
     <TableRow>
-      <TableCell className="font-medium">{row.name}</TableCell>
+      <TableCell className="font-medium text-sm">{row.name}</TableCell>
 
-      {/* Sucursal — selector directo */}
+      {/* Sucursal con botón Guardar */}
       <TableCell>
-        <div className="inline-flex overflow-hidden rounded-md border text-xs">
-          {(["A", "B"] as const).map((b) => (
-            <button key={b} type="button"
+        <div className="flex flex-col gap-1">
+          <div className="inline-flex overflow-hidden rounded-md border text-xs">
+            {(["A", "B"] as const).map((b) => (
+              <button key={b} type="button" disabled={disabled}
+                onClick={() => handleBranchChange(b)}
+                className={`px-3 py-1.5 font-medium transition-colors disabled:opacity-50 ${
+                  localBranch === b ? "bg-primary text-primary-foreground" : "bg-background hover:bg-muted"
+                }`}>
+                {b === "A" ? "Mina" : "Morelos"}
+              </button>
+            ))}
+          </div>
+          {branchChanged && (
+            <Button size="sm" className="h-7 text-xs px-2 bg-emerald-600 hover:bg-emerald-700"
               disabled={disabled}
-              onClick={() => handleBranchChange(b)}
-              className={`px-3 py-1 font-medium transition-colors disabled:opacity-50 ${
-                localBranch === b
-                  ? "bg-primary text-primary-foreground"
-                  : "bg-background hover:bg-muted"
-              }`}>
-              {b === "A" ? "Mina" : "Morelos"}
-            </button>
-          ))}
+              onClick={() => { onSaveBranch(localBranch); setBranchChanged(false); }}>
+              Guardar sucursal
+            </Button>
+          )}
         </div>
       </TableCell>
 
@@ -249,19 +275,13 @@ function RowEditor({
         <Switch checked={row.active} disabled={disabled} onCheckedChange={(v) => onUpdate({ active: v })} />
       </TableCell>
       <TableCell>
-        <div className="flex gap-2">
-          <Input
-            type="password"
-            inputMode="numeric"
-            value={newPin}
+        <div className="flex gap-1">
+          <Input type="password" inputMode="numeric" value={newPin}
             onChange={(e) => setNewPin(e.target.value.replace(/\D/g, ""))}
-            placeholder="Nuevo PIN"
-            className="w-28"
-          />
-          <Button size="sm" variant="outline"
-            disabled={disabled || newPin.length < 4}
+            placeholder="Nuevo PIN" className="w-24" />
+          <Button size="sm" variant="outline" disabled={disabled || newPin.length < 4}
             onClick={() => { onUpdate({ pin: newPin }); setNewPin(""); }}>
-            Cambiar
+            OK
           </Button>
         </div>
       </TableCell>
