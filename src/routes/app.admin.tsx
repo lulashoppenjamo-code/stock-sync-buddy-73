@@ -15,7 +15,7 @@ export const Route = createFileRoute("/app/admin")({
   component: AdminPage,
 });
 
-type Row = { id: string; name: string; is_admin: boolean; active: boolean };
+type Row = { id: string; name: string; is_admin: boolean; active: boolean; branch: string };
 
 function AdminPage() {
   const me = useCollaborator();
@@ -25,6 +25,7 @@ function AdminPage() {
   const [name, setName] = useState("");
   const [pin, setPin] = useState("");
   const [isAdmin, setIsAdmin] = useState(false);
+  const [newBranch, setNewBranch] = useState<"A" | "B">("A");
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -33,14 +34,12 @@ function AdminPage() {
 
   async function refresh() {
     const { data } = await supabase
-      .from("collaborator_directory")
-      .select("id, name, is_admin, active")
+      .from("collaborators")
+      .select("id, name, is_admin, active, branch")
       .order("name");
     setRows((data ?? []) as Row[]);
   }
-  useEffect(() => {
-    refresh();
-  }, []);
+  useEffect(() => { refresh(); }, []);
 
   async function create(e: React.FormEvent) {
     e.preventDefault();
@@ -59,10 +58,10 @@ function AdminPage() {
         p_is_admin: isAdmin,
       });
       if (error) throw error;
+      // Asignar sucursal al nuevo colaborador
+      await supabase.from("collaborators").update({ branch: newBranch }).eq("name", name.trim());
       toast.success("Colaborador creado");
-      setName("");
-      setPin("");
-      setIsAdmin(false);
+      setName(""); setPin(""); setIsAdmin(false); setNewBranch("A");
       refresh();
     } catch (e) {
       toast.error((e as Error).message);
@@ -71,9 +70,29 @@ function AdminPage() {
     }
   }
 
-  async function update(target: Row, patch: { is_admin?: boolean; active?: boolean; pin?: string; name?: string }) {
+  async function update(target: Row, patch: { is_admin?: boolean; active?: boolean; pin?: string; branch?: string }) {
     if (!me) return;
     if (adminPin.length < 4) return toast.error("Ingresá tu PIN de admin arriba");
+
+    // Si solo cambia la sucursal, no necesita pasar por el RPC de admin
+    if (patch.branch && Object.keys(patch).length === 1) {
+      setBusy(true);
+      try {
+        const { error } = await supabase
+          .from("collaborators")
+          .update({ branch: patch.branch })
+          .eq("id", target.id);
+        if (error) throw error;
+        toast.success(`Sucursal de ${target.name} actualizada`);
+        refresh();
+      } catch (e) {
+        toast.error((e as Error).message);
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+
     setBusy(true);
     try {
       const { error } = await supabase.rpc("admin_update_collaborator", {
@@ -135,6 +154,18 @@ function AdminPage() {
               <Switch checked={isAdmin} onCheckedChange={setIsAdmin} id="adm" />
               <Label htmlFor="adm">Admin</Label>
             </div>
+            {/* Sucursal al crear */}
+            <div className="sm:col-span-4">
+              <Label>Sucursal asignada</Label>
+              <div className="mt-1 inline-flex overflow-hidden rounded-md border">
+                {(["A", "B"] as const).map((b) => (
+                  <button key={b} type="button" onClick={() => setNewBranch(b)}
+                    className={`px-4 py-1.5 text-sm font-medium transition-colors ${newBranch === b ? "bg-primary text-primary-foreground" : "bg-background hover:bg-muted"}`}>
+                    {b === "A" ? "Mina" : "Morelos"}
+                  </button>
+                ))}
+              </div>
+            </div>
             <Button type="submit" disabled={busy} className="sm:col-span-4">
               {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserPlus className="h-4 w-4" />} Crear colaborador
             </Button>
@@ -148,6 +179,7 @@ function AdminPage() {
             <TableHeader>
               <TableRow>
                 <TableHead>Nombre</TableHead>
+                <TableHead>Sucursal</TableHead>
                 <TableHead>Admin</TableHead>
                 <TableHead>Activo</TableHead>
                 <TableHead>Reset PIN</TableHead>
@@ -172,12 +204,33 @@ function RowEditor({
 }: {
   row: Row;
   disabled: boolean;
-  onUpdate: (patch: { is_admin?: boolean; active?: boolean; pin?: string }) => void;
+  onUpdate: (patch: { is_admin?: boolean; active?: boolean; pin?: string; branch?: string }) => void;
 }) {
   const [newPin, setNewPin] = useState("");
+  const currentBranch = row.branch === "B" ? "B" : "A";
+
   return (
     <TableRow>
       <TableCell className="font-medium">{row.name}</TableCell>
+
+      {/* Sucursal — selector directo */}
+      <TableCell>
+        <div className="inline-flex overflow-hidden rounded-md border text-xs">
+          {(["A", "B"] as const).map((b) => (
+            <button key={b} type="button"
+              disabled={disabled}
+              onClick={() => onUpdate({ branch: b })}
+              className={`px-3 py-1 font-medium transition-colors disabled:opacity-50 ${
+                currentBranch === b
+                  ? "bg-primary text-primary-foreground"
+                  : "bg-background hover:bg-muted"
+              }`}>
+              {b === "A" ? "Mina" : "Morelos"}
+            </button>
+          ))}
+        </div>
+      </TableCell>
+
       <TableCell>
         <Switch checked={row.is_admin} disabled={disabled} onCheckedChange={(v) => onUpdate({ is_admin: v })} />
       </TableCell>
@@ -192,17 +245,11 @@ function RowEditor({
             value={newPin}
             onChange={(e) => setNewPin(e.target.value.replace(/\D/g, ""))}
             placeholder="Nuevo PIN"
-            className="w-32"
+            className="w-28"
           />
-          <Button
-            size="sm"
-            variant="outline"
+          <Button size="sm" variant="outline"
             disabled={disabled || newPin.length < 4}
-            onClick={() => {
-              onUpdate({ pin: newPin });
-              setNewPin("");
-            }}
-          >
+            onClick={() => { onUpdate({ pin: newPin }); setNewPin(""); }}>
             Cambiar
           </Button>
         </div>
