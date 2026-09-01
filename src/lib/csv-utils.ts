@@ -63,9 +63,8 @@ export function parseCsv(file: File): Promise<ParsedRow[]> {
           const variant = pick(r, ["VARIANT_NAME", "VariantName", "Variant", "Variante", "variant_name"]);
           const product_name = variant ? `${base_name} ${variant}`.trim() : base_name;
           if (!barcode) {
-            missingIdx++;
-            // Synthetic code so products without barcode are still imported.
-            barcode = `SIN-${stamp}-${String(missingIdx).padStart(4, "0")}`;
+            // No barcode — leave empty. buildDiff will match by product_name instead.
+            barcode = "";
           }
           const uom = pick(r, ["UoM", "Uom", "Unidad", "Unit", "ITEM_TYPE"]) || null;
           const category = pick(r, ["Category", "Categoria", "Categoría", "category", "CATEGORY"]) || null;
@@ -83,11 +82,17 @@ export function parseCsv(file: File): Promise<ParsedRow[]> {
 }
 
 export async function buildDiff(rows: ParsedRow[]): Promise<ImportDiff> {
-  const barcodes = rows.map((r) => r.barcode);
+  // Separate rows with barcode from those without
+  const rowsWithBarcode = rows.filter((r) => r.barcode !== "");
+  const rowsWithoutBarcode = rows.filter((r) => r.barcode === "");
+
   const existing = new Map<
     string,
-    { product_name: string; uom: string | null; category: string | null; stock_a: number; stock_b: number }
+    { id?: string; barcode: string; product_name: string; uom: string | null; category: string | null; stock_a: number; stock_b: number }
   >();
+
+  // Match rows WITH barcode by barcode
+  const barcodes = rowsWithBarcode.map((r) => r.barcode);
   for (let i = 0; i < barcodes.length; i += 500) {
     const chunk = barcodes.slice(i, i + 500);
     const { data, error } = await supabase
@@ -97,6 +102,7 @@ export async function buildDiff(rows: ParsedRow[]): Promise<ImportDiff> {
     if (error) throw error;
     for (const p of data ?? [])
       existing.set(p.barcode, {
+        barcode: p.barcode,
         product_name: p.product_name,
         uom: p.uom,
         category: p.category,
@@ -104,8 +110,35 @@ export async function buildDiff(rows: ParsedRow[]): Promise<ImportDiff> {
         stock_b: Number(p.stock_b),
       });
   }
+
+  // Match rows WITHOUT barcode by product_name
+  const noBarNames = rowsWithoutBarcode.map((r) => r.product_name);
+  const existingByName = new Map<
+    string,
+    { barcode: string; product_name: string; uom: string | null; category: string | null; stock_a: number; stock_b: number }
+  >();
+  for (let i = 0; i < noBarNames.length; i += 500) {
+    const chunk = noBarNames.slice(i, i + 500);
+    const { data, error } = await supabase
+      .from("products")
+      .select("barcode, product_name, uom, category, stock_a, stock_b")
+      .in("product_name", chunk);
+    if (error) throw error;
+    for (const p of data ?? [])
+      existingByName.set(p.product_name, {
+        barcode: p.barcode,
+        product_name: p.product_name,
+        uom: p.uom,
+        category: p.category,
+        stock_a: Number(p.stock_a),
+        stock_b: Number(p.stock_b),
+      });
+  }
+
   const diff: ImportDiff = { newItems: [], changedItems: [], identical: 0, invalid: 0 };
-  for (const r of rows) {
+
+  // Process rows WITH barcode normally
+  for (const r of rowsWithBarcode) {
     const cur = existing.get(r.barcode);
     if (!cur) {
       diff.newItems.push(r);
@@ -116,21 +149,34 @@ export async function buildDiff(rows: ParsedRow[]): Promise<ImportDiff> {
       const stockAChanged = r.stock_a != null && Number(cur.stock_a) !== r.stock_a;
       const stockBChanged = r.stock_b != null && Number(cur.stock_b) !== r.stock_b;
       if (nameChanged || uomChanged || categoryChanged || stockAChanged || stockBChanged) {
-        diff.changedItems.push({
-          barcode: r.barcode,
-          current: cur,
-          next: r,
-          nameChanged,
-          uomChanged,
-          categoryChanged,
-          stockAChanged,
-          stockBChanged,
-        });
+        diff.changedItems.push({ barcode: r.barcode, current: cur, next: r, nameChanged, uomChanged, categoryChanged, stockAChanged, stockBChanged });
       } else {
         diff.identical++;
       }
     }
   }
+
+  // Process rows WITHOUT barcode — match by name
+  for (const r of rowsWithoutBarcode) {
+    const cur = existingByName.get(r.product_name);
+    if (!cur) {
+      // Truly new product — create with empty barcode
+      diff.newItems.push(r);
+    } else {
+      // Exists by name — use its real barcode to update
+      const rWithBarcode = { ...r, barcode: cur.barcode };
+      const uomChanged = (cur.uom ?? "") !== (r.uom ?? "");
+      const categoryChanged = (cur.category ?? "") !== (r.category ?? "");
+      const stockAChanged = r.stock_a != null && Number(cur.stock_a) !== r.stock_a;
+      const stockBChanged = r.stock_b != null && Number(cur.stock_b) !== r.stock_b;
+      if (uomChanged || categoryChanged || stockAChanged || stockBChanged) {
+        diff.changedItems.push({ barcode: cur.barcode, current: cur, next: rWithBarcode, nameChanged: false, uomChanged, categoryChanged, stockAChanged, stockBChanged });
+      } else {
+        diff.identical++;
+      }
+    }
+  }
+
   return diff;
 }
 
