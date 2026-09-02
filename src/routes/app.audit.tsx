@@ -467,30 +467,42 @@ function AuditPage() {
 
       // Insertar en audit_history para Mina (A) y Morelos (B)
       // Esto marca la categoría en verde en el corte mensual
-      const historyRowsMina = products.map((p) => ({
-        session_id: sessionId,
-        category,
-        branch: "A" as const,
-        barcode: p.barcode,
-        product_name: p.product_name,
-        system_stock: Number(p.stock_a) + Number(p.stock_b),
-        counted_quantity: realtimeMina.get(p.barcode) ?? 0,
-        difference: (realtimeMina.get(p.barcode) ?? 0) - (Number(p.stock_a) + Number(p.stock_b)),
-        collaborator_id: collab.id,
-        collaborator_name: collab.name,
-      }));
-      const historyRowsMorelos = products.map((p) => ({
-        session_id: sessionId,
-        category,
-        branch: "B" as const,
-        barcode: p.barcode,
-        product_name: p.product_name,
-        system_stock: Number(p.stock_a) + Number(p.stock_b),
-        counted_quantity: realtimeMorelos.get(p.barcode) ?? 0,
-        difference: (realtimeMorelos.get(p.barcode) ?? 0) - (Number(p.stock_a) + Number(p.stock_b)),
-        collaborator_id: collab.id,
-        collaborator_name: collab.name,
-      }));
+      // El stock del sistema es consolidado (total), así que la diferencia real
+      // solo tiene sentido contra la suma de ambas sucursales. Para no reportar
+      // falsos faltantes por sucursal, cada renglón guarda su conteo y la
+      // diferencia total del producto (Mina + Morelos vs sistema).
+      const historyRowsMina = products.map((p) => {
+        const sys = Number(p.stock_a) + Number(p.stock_b);
+        const total = (realtimeMina.get(p.barcode) ?? 0) + (realtimeMorelos.get(p.barcode) ?? 0);
+        return {
+          session_id: sessionId,
+          category,
+          branch: "A" as const,
+          barcode: p.barcode,
+          product_name: p.product_name,
+          system_stock: sys,
+          counted_quantity: realtimeMina.get(p.barcode) ?? 0,
+          difference: total - sys,
+          collaborator_id: collab.id,
+          collaborator_name: collab.name,
+        };
+      });
+      const historyRowsMorelos = products.map((p) => {
+        const sys = Number(p.stock_a) + Number(p.stock_b);
+        const total = (realtimeMina.get(p.barcode) ?? 0) + (realtimeMorelos.get(p.barcode) ?? 0);
+        return {
+          session_id: sessionId,
+          category,
+          branch: "B" as const,
+          barcode: p.barcode,
+          product_name: p.product_name,
+          system_stock: sys,
+          counted_quantity: realtimeMorelos.get(p.barcode) ?? 0,
+          difference: total - sys,
+          collaborator_id: collab.id,
+          collaborator_name: collab.name,
+        };
+      });
 
       if (online) {
         // Save closed_counts report
