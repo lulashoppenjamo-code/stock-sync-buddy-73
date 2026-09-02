@@ -87,7 +87,7 @@ function AdminPage() {
     }
   }
 
-  async function update(target: Row, patch: { is_admin?: boolean; active?: boolean; pin?: string; branch?: string }) {
+  async function update(target: Row, patch: { name?: string; is_admin?: boolean; active?: boolean; pin?: string; branch?: string }) {
     if (!me) return;
     if (adminPin.length < 4) return toast.error("Ingresá tu PIN de admin arriba");
 
