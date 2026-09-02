@@ -134,9 +134,64 @@ export type Database = {
         }
         Relationships: []
       }
+      closed_counts: {
+        Row: {
+          barcode: string
+          category: string
+          closed_at: string
+          closed_by: string | null
+          created_at: string
+          difference: number
+          id: string
+          mina_count: number
+          morelos_count: number
+          product_name: string
+          scanned_mina: boolean
+          scanned_morelos: boolean
+          session_id: string
+          system_stock: number
+          total_counted: number
+        }
+        Insert: {
+          barcode: string
+          category: string
+          closed_at?: string
+          closed_by?: string | null
+          created_at?: string
+          difference?: number
+          id?: string
+          mina_count?: number
+          morelos_count?: number
+          product_name: string
+          scanned_mina?: boolean
+          scanned_morelos?: boolean
+          session_id: string
+          system_stock?: number
+          total_counted?: number
+        }
+        Update: {
+          barcode?: string
+          category?: string
+          closed_at?: string
+          closed_by?: string | null
+          created_at?: string
+          difference?: number
+          id?: string
+          mina_count?: number
+          morelos_count?: number
+          product_name?: string
+          scanned_mina?: boolean
+          scanned_morelos?: boolean
+          session_id?: string
+          system_stock?: number
+          total_counted?: number
+        }
+        Relationships: []
+      }
       collaborators: {
         Row: {
           active: boolean
+          branch: string | null
           created_at: string
           id: string
           is_admin: boolean
@@ -145,6 +200,7 @@ export type Database = {
         }
         Insert: {
           active?: boolean
+          branch?: string | null
           created_at?: string
           id?: string
           is_admin?: boolean
@@ -153,6 +209,7 @@ export type Database = {
         }
         Update: {
           active?: boolean
+          branch?: string | null
           created_at?: string
           id?: string
           is_admin?: boolean
@@ -368,6 +425,38 @@ export type Database = {
         }
         Returns: string
       }
+      admin_delete_audit_history_row: {
+        Args: { p_admin_id: string; p_admin_pin: string; p_row_id: string }
+        Returns: undefined
+      }
+      admin_reset_audit_category: {
+        Args: {
+          p_admin_id: string
+          p_admin_pin: string
+          p_branch: string
+          p_category: string
+        }
+        Returns: number
+      }
+      admin_reset_realtime_audits: {
+        Args: {
+          p_admin_id: string
+          p_admin_pin: string
+          p_barcodes: string[]
+          p_branch: string
+          p_since: string
+        }
+        Returns: number
+      }
+      admin_update_audit_history_row: {
+        Args: {
+          p_admin_id: string
+          p_admin_pin: string
+          p_counted_quantity: number
+          p_row_id: string
+        }
+        Returns: undefined
+      }
       admin_update_collaborator: {
         Args: {
           p_active: boolean
@@ -421,12 +510,12 @@ export type Tables<
   DefaultSchemaTableNameOrOptions extends
     | keyof (DefaultSchema["Tables"] & DefaultSchema["Views"])
     | { schema: keyof DatabaseWithoutInternals },
-  TableName extends DefaultSchemaTableNameOrOptions extends {
+  TableName extends (DefaultSchemaTableNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof (DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"] &
         DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Views"])
-    : never = never,
+    : never) = never,
 > = DefaultSchemaTableNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -450,11 +539,11 @@ export type TablesInsert<
   DefaultSchemaTableNameOrOptions extends
     | keyof DefaultSchema["Tables"]
     | { schema: keyof DatabaseWithoutInternals },
-  TableName extends DefaultSchemaTableNameOrOptions extends {
+  TableName extends (DefaultSchemaTableNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
-    : never = never,
+    : never) = never,
 > = DefaultSchemaTableNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -475,11 +564,11 @@ export type TablesUpdate<
   DefaultSchemaTableNameOrOptions extends
     | keyof DefaultSchema["Tables"]
     | { schema: keyof DatabaseWithoutInternals },
-  TableName extends DefaultSchemaTableNameOrOptions extends {
+  TableName extends (DefaultSchemaTableNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
-    : never = never,
+    : never) = never,
 > = DefaultSchemaTableNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -500,11 +589,11 @@ export type Enums<
   DefaultSchemaEnumNameOrOptions extends
     | keyof DefaultSchema["Enums"]
     | { schema: keyof DatabaseWithoutInternals },
-  EnumName extends DefaultSchemaEnumNameOrOptions extends {
+  EnumName extends (DefaultSchemaEnumNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"]
-    : never = never,
+    : never) = never,
 > = DefaultSchemaEnumNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -517,11 +606,11 @@ export type CompositeTypes<
   PublicCompositeTypeNameOrOptions extends
     | keyof DefaultSchema["CompositeTypes"]
     | { schema: keyof DatabaseWithoutInternals },
-  CompositeTypeName extends PublicCompositeTypeNameOrOptions extends {
+  CompositeTypeName extends (PublicCompositeTypeNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"]
-    : never = never,
+    : never) = never,
 > = PublicCompositeTypeNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
