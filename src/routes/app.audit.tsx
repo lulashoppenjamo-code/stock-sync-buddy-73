@@ -138,7 +138,7 @@ function AuditPage() {
 
   const rowRefs = useRef<Map<string, HTMLDivElement | null>>(new Map());
   const [highlightBarcode, setHighlightBarcode] = useState<string | null>(null);
-  const highlightTimer = useRef<ReturnType<typeof setTimeout>>();
+  const highlightTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   function flashProduct(barcode: string) {
     rowRefs.current.get(barcode)?.scrollIntoView({ behavior: "smooth", block: "center" });
     setHighlightBarcode(barcode);
