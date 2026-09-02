@@ -142,6 +142,7 @@ export type Database = {
           closed_by: string | null
           created_at: string
           difference: number
+          difference_value: number
           id: string
           mina_count: number
           morelos_count: number
@@ -151,6 +152,7 @@ export type Database = {
           session_id: string
           system_stock: number
           total_counted: number
+          unit_price: number
         }
         Insert: {
           barcode: string
@@ -159,6 +161,7 @@ export type Database = {
           closed_by?: string | null
           created_at?: string
           difference?: number
+          difference_value?: number
           id?: string
           mina_count?: number
           morelos_count?: number
@@ -168,6 +171,7 @@ export type Database = {
           session_id: string
           system_stock?: number
           total_counted?: number
+          unit_price?: number
         }
         Update: {
           barcode?: string
@@ -176,6 +180,7 @@ export type Database = {
           closed_by?: string | null
           created_at?: string
           difference?: number
+          difference_value?: number
           id?: string
           mina_count?: number
           morelos_count?: number
@@ -185,6 +190,7 @@ export type Database = {
           session_id?: string
           system_stock?: number
           total_counted?: number
+          unit_price?: number
         }
         Relationships: []
       }
@@ -271,6 +277,7 @@ export type Database = {
           barcode: string
           category: string | null
           created_at: string
+          price: number
           product_name: string
           stock_a: number
           stock_b: number
@@ -281,6 +288,7 @@ export type Database = {
           barcode: string
           category?: string | null
           created_at?: string
+          price?: number
           product_name: string
           stock_a?: number
           stock_b?: number
@@ -291,6 +299,7 @@ export type Database = {
           barcode?: string
           category?: string | null
           created_at?: string
+          price?: number
           product_name?: string
           stock_a?: number
           stock_b?: number
