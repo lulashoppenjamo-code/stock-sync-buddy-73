@@ -21,6 +21,7 @@ export type ImportDiff = {
       category: string | null;
       stock_a: number;
       stock_b: number;
+      price: number;
     };
     next: ParsedRow;
     nameChanged: boolean;
@@ -28,6 +29,7 @@ export type ImportDiff = {
     categoryChanged: boolean;
     stockAChanged: boolean;
     stockBChanged: boolean;
+    priceChanged: boolean;
   }>;
   identical: number;
   invalid: number;
@@ -90,7 +92,7 @@ export async function buildDiff(rows: ParsedRow[]): Promise<ImportDiff> {
 
   const existing = new Map<
     string,
-    { id?: string; barcode: string; product_name: string; uom: string | null; category: string | null; stock_a: number; stock_b: number }
+    { id?: string; barcode: string; product_name: string; uom: string | null; category: string | null; stock_a: number; stock_b: number; price: number }
   >();
 
   // Match rows WITH barcode by barcode
@@ -99,7 +101,7 @@ export async function buildDiff(rows: ParsedRow[]): Promise<ImportDiff> {
     const chunk = barcodes.slice(i, i + 500);
     const { data, error } = await supabase
       .from("products")
-      .select("barcode, product_name, uom, category, stock_a, stock_b")
+      .select("barcode, product_name, uom, category, stock_a, stock_b, price")
       .in("barcode", chunk);
     if (error) throw error;
     for (const p of data ?? [])
@@ -110,6 +112,7 @@ export async function buildDiff(rows: ParsedRow[]): Promise<ImportDiff> {
         category: p.category,
         stock_a: Number(p.stock_a),
         stock_b: Number(p.stock_b),
+        price: Number((p as { price?: number }).price ?? 0),
       });
   }
 
