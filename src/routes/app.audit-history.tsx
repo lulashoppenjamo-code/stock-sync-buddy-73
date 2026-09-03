@@ -21,6 +21,8 @@ type ClosedRow = {
   morelos_count: number;
   total_counted: number;
   difference: number;
+  unit_price: number | null;
+  difference_value: number | null;
   scanned_mina: boolean;
   scanned_morelos: boolean;
   closed_by: string | null;
@@ -40,6 +42,16 @@ function monthName(key: string) {
 function pct(missing: number, sys: number) {
   if (sys <= 0) return 0;
   return (missing / sys) * 100;
+}
+function money(n: number) {
+  return n.toLocaleString("es-MX", { style: "currency", currency: "MXN", maximumFractionDigits: 2 });
+}
+// Valor en pesos de la diferencia; para cortes antiguos sin difference_value
+// se calcula como diferencia × precio unitario guardado.
+function rowValue(r: ClosedRow) {
+  const v = Number(r.difference_value ?? 0);
+  if (v !== 0) return v;
+  return Number(r.difference) * Number(r.unit_price ?? 0);
 }
 
 function AuditHistoryPage() {
@@ -65,6 +77,7 @@ function AuditHistoryPage() {
     const map = new Map<string, {
       session_id: string; category: string; closed_at: string; closed_by: string | null;
       count: number; sys: number; mina: number; morelos: number; total: number; diff: number;
+      faltanteVal: number; sobranteVal: number;
     }>();
     for (const r of rows) {
       if (filterCat && r.category !== filterCat) continue;
@@ -72,6 +85,7 @@ function AuditHistoryPage() {
       const e = map.get(r.session_id) ?? {
         session_id: r.session_id, category: r.category, closed_at: r.closed_at,
         closed_by: r.closed_by, count: 0, sys: 0, mina: 0, morelos: 0, total: 0, diff: 0,
+        faltanteVal: 0, sobranteVal: 0,
       };
       e.count++;
       e.sys += Number(r.system_stock);
@@ -79,6 +93,8 @@ function AuditHistoryPage() {
       e.morelos += Number(r.morelos_count);
       e.total += Number(r.total_counted);
       e.diff += Number(r.difference);
+      const v = rowValue(r);
+      if (v < 0) e.faltanteVal += -v; else e.sobranteVal += v;
       map.set(r.session_id, e);
     }
     return Array.from(map.values()).sort((a, b) => b.closed_at.localeCompare(a.closed_at));
@@ -93,12 +109,14 @@ function AuditHistoryPage() {
   const monthly = useMemo(() => {
     const map = new Map<string, {
       key: string; sys: number; mina: number; morelos: number; total: number;
-      faltante: number; sobrante: number; categories: Set<string>; sessions: Set<string>;
+      faltante: number; sobrante: number; faltanteVal: number; sobranteVal: number;
+      categories: Set<string>; sessions: Set<string>;
     }>();
     for (const r of rows) {
       const k = monthKey(r.closed_at);
       const e = map.get(k) ?? {
         key: k, sys: 0, mina: 0, morelos: 0, total: 0, faltante: 0, sobrante: 0,
+        faltanteVal: 0, sobranteVal: 0,
         categories: new Set<string>(), sessions: new Set<string>(),
       };
       e.sys += Number(r.system_stock);
@@ -108,6 +126,8 @@ function AuditHistoryPage() {
       const d = Number(r.difference);
       if (d < 0) e.faltante += -d;
       else e.sobrante += d;
+      const v = rowValue(r);
+      if (v < 0) e.faltanteVal += -v; else e.sobranteVal += v;
       e.categories.add(r.category);
       e.sessions.add(r.session_id);
       map.set(k, e);
@@ -126,8 +146,10 @@ function AuditHistoryPage() {
       acc.total += Number(r.total_counted);
       const d = Number(r.difference);
       if (d === 0) acc.ok++; else if (d < 0) { acc.faltan++; acc.faltante += -d; } else { acc.sobran++; acc.sobrante += d; }
+      const v = rowValue(r);
+      if (v < 0) acc.faltanteVal += -v; else acc.sobranteVal += v;
       return acc;
-    }, { sys: 0, mina: 0, morelos: 0, total: 0, ok: 0, faltan: 0, sobran: 0, faltante: 0, sobrante: 0 });
+    }, { sys: 0, mina: 0, morelos: 0, total: 0, ok: 0, faltan: 0, sobran: 0, faltante: 0, sobrante: 0, faltanteVal: 0, sobranteVal: 0 });
 
     return (
       <div className="space-y-4">
@@ -178,14 +200,17 @@ function AuditHistoryPage() {
               <div className="rounded bg-red-50 dark:bg-red-950/20 p-2">
                 <div className="text-[10px] text-muted-foreground">Faltantes</div>
                 <div className="text-base font-bold text-red-600">{t.faltan} · {t.faltante} pz</div>
+                <div className="text-[11px] font-semibold text-red-600">{money(t.faltanteVal)}</div>
               </div>
               <div className="rounded bg-amber-50 dark:bg-amber-950/20 p-2">
                 <div className="text-[10px] text-muted-foreground">Sobrantes</div>
                 <div className="text-base font-bold text-amber-600">{t.sobran} · {t.sobrante} pz</div>
+                <div className="text-[11px] font-semibold text-amber-600">{money(t.sobranteVal)}</div>
               </div>
             </div>
             <div className="text-xs text-muted-foreground">
               % de faltante: <span className="font-semibold">{pct(t.faltante, t.sys).toFixed(2)}%</span>
+              {t.faltanteVal > 0 && <> · Faltante: <span className="font-semibold text-red-600">{money(t.faltanteVal)}</span></>}
             </div>
           </CardContent>
         </Card>
@@ -197,23 +222,25 @@ function AuditHistoryPage() {
             <div className="w-10 shrink-0 text-center">{MORELOS.slice(0, 4)}</div>
             <div className="w-10 shrink-0 text-center">Tot</div>
             <div className="w-10 shrink-0 text-center">Sys</div>
-            <div className="w-12 shrink-0 text-center">Δ</div>
+            <div className="w-16 shrink-0 text-center">Δ</div>
           </div>
           {[...detail].sort((a, b) => Number(a.difference) - Number(b.difference)).map((r) => {
             const d = Number(r.difference);
+            const v = rowValue(r);
             return (
               <div key={r.id}
                 className={`flex items-center gap-2 px-3 py-2 text-xs ${d === 0 ? "" : d < 0 ? "bg-red-50 dark:bg-red-950/20" : "bg-amber-50 dark:bg-amber-950/20"}`}>
                 <div className="min-w-0 flex-1">
-                  <div className="font-medium truncate">{r.product_name}</div>
+                  <div className="font-medium break-words leading-snug">{r.product_name}</div>
                   <div className="font-mono text-[10px] text-muted-foreground">{r.barcode}</div>
                 </div>
                 <div className="w-10 shrink-0 text-center font-semibold">{r.mina_count}</div>
                 <div className="w-10 shrink-0 text-center font-semibold">{r.morelos_count}</div>
                 <div className="w-10 shrink-0 text-center font-semibold">{r.total_counted}</div>
                 <div className="w-10 shrink-0 text-center text-muted-foreground">{r.system_stock}</div>
-                <div className={`w-12 shrink-0 text-center font-bold ${d === 0 ? "text-emerald-600" : d < 0 ? "text-red-600" : "text-amber-600"}`}>
-                  {d === 0 ? "✓" : d > 0 ? `+${d}` : d}
+                <div className={`w-16 shrink-0 text-center font-bold ${d === 0 ? "text-emerald-600" : d < 0 ? "text-red-600" : "text-amber-600"}`}>
+                  <div>{d === 0 ? "✓" : d > 0 ? `+${d}` : d}</div>
+                  {v !== 0 && <div className="text-[10px] font-semibold">{money(v)}</div>}
                 </div>
               </div>
             );
@@ -288,6 +315,7 @@ function AuditHistoryPage() {
                   <div className={`font-bold ${s.diff === 0 ? "text-emerald-600" : s.diff < 0 ? "text-red-600" : "text-amber-600"}`}>
                     {s.diff === 0 ? "✓ exacto" : s.diff > 0 ? `+${s.diff}` : s.diff}
                   </div>
+                  {s.faltanteVal > 0 && <div className="text-[11px] font-semibold text-red-600">−{money(s.faltanteVal)}</div>}
                 </div>
               </button>
             ))}
@@ -325,8 +353,8 @@ function AuditHistoryPage() {
                     <div>Contado: <b className="text-foreground">{m.total}</b></div>
                     <div>{MINA}: <b className="text-foreground">{m.mina}</b></div>
                     <div>{MORELOS}: <b className="text-foreground">{m.morelos}</b></div>
-                    <div>Faltante: <b className="text-red-600">{m.faltante} pz</b></div>
-                    <div>Sobrante: <b className="text-amber-600">{m.sobrante} pz</b></div>
+                    <div>Faltante: <b className="text-red-600">{m.faltante} pz</b> <b className="text-red-600">· {money(m.faltanteVal)}</b></div>
+                    <div>Sobrante: <b className="text-amber-600">{m.sobrante} pz</b> <b className="text-amber-600">· {money(m.sobranteVal)}</b></div>
                     <div>Categorías: <b className="text-foreground">{m.categories.size}</b></div>
                     <div>Cortes: <b className="text-foreground">{m.sessions.size}</b></div>
                   </div>

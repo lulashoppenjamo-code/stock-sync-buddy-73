@@ -8,6 +8,7 @@ export type ParsedRow = {
   category: string | null;
   stock_a: number | null;
   stock_b: number | null;
+  price: number | null;
 };
 
 export type ImportDiff = {
@@ -20,6 +21,7 @@ export type ImportDiff = {
       category: string | null;
       stock_a: number;
       stock_b: number;
+      price: number;
     };
     next: ParsedRow;
     nameChanged: boolean;
@@ -27,6 +29,7 @@ export type ImportDiff = {
     categoryChanged: boolean;
     stockAChanged: boolean;
     stockBChanged: boolean;
+    priceChanged: boolean;
   }>;
   identical: number;
   invalid: number;
@@ -70,7 +73,8 @@ export function parseCsv(file: File): Promise<ParsedRow[]> {
           const category = pick(r, ["Category", "Categoria", "Categoría", "category", "CATEGORY"]) || null;
           const stock_a = parseNum(pick(r, ["StockA", "Stock_A", "Stock A", "Mina", "StockMina", "Stock Mina", "STOCK"]));
           const stock_b = parseNum(pick(r, ["StockB", "Stock_B", "Stock B", "Morelos", "StockMorelos", "Stock Morelos"]));
-          rows.push({ barcode, product_name, uom, category, stock_a, stock_b });
+          const price = parseNum(pick(r, ["Price", "Precio", "price", "PRICE", "PrecioUnitario", "UnitPrice", "Precio_Unitario"]));
+          rows.push({ barcode, product_name, uom, category, stock_a, stock_b, price });
         }
         const map = new Map<string, ParsedRow>();
         for (const r of rows) map.set(r.barcode, r);
@@ -88,7 +92,7 @@ export async function buildDiff(rows: ParsedRow[]): Promise<ImportDiff> {
 
   const existing = new Map<
     string,
-    { id?: string; barcode: string; product_name: string; uom: string | null; category: string | null; stock_a: number; stock_b: number }
+    { id?: string; barcode: string; product_name: string; uom: string | null; category: string | null; stock_a: number; stock_b: number; price: number }
   >();
 
   // Match rows WITH barcode by barcode
@@ -97,7 +101,7 @@ export async function buildDiff(rows: ParsedRow[]): Promise<ImportDiff> {
     const chunk = barcodes.slice(i, i + 500);
     const { data, error } = await supabase
       .from("products")
-      .select("barcode, product_name, uom, category, stock_a, stock_b")
+      .select("barcode, product_name, uom, category, stock_a, stock_b, price")
       .in("barcode", chunk);
     if (error) throw error;
     for (const p of data ?? [])
@@ -108,6 +112,7 @@ export async function buildDiff(rows: ParsedRow[]): Promise<ImportDiff> {
         category: p.category,
         stock_a: Number(p.stock_a),
         stock_b: Number(p.stock_b),
+        price: Number((p as { price?: number }).price ?? 0),
       });
   }
 
@@ -115,13 +120,13 @@ export async function buildDiff(rows: ParsedRow[]): Promise<ImportDiff> {
   const noBarNames = rowsWithoutBarcode.map((r) => r.product_name);
   const existingByName = new Map<
     string,
-    { barcode: string; product_name: string; uom: string | null; category: string | null; stock_a: number; stock_b: number }
+    { barcode: string; product_name: string; uom: string | null; category: string | null; stock_a: number; stock_b: number; price: number }
   >();
   for (let i = 0; i < noBarNames.length; i += 500) {
     const chunk = noBarNames.slice(i, i + 500);
     const { data, error } = await supabase
       .from("products")
-      .select("barcode, product_name, uom, category, stock_a, stock_b")
+      .select("barcode, product_name, uom, category, stock_a, stock_b, price")
       .in("product_name", chunk);
     if (error) throw error;
     for (const p of data ?? [])
@@ -132,6 +137,7 @@ export async function buildDiff(rows: ParsedRow[]): Promise<ImportDiff> {
         category: p.category,
         stock_a: Number(p.stock_a),
         stock_b: Number(p.stock_b),
+        price: Number((p as { price?: number }).price ?? 0),
       });
   }
 
@@ -148,8 +154,9 @@ export async function buildDiff(rows: ParsedRow[]): Promise<ImportDiff> {
       const categoryChanged = (cur.category ?? "") !== (r.category ?? "");
       const stockAChanged = r.stock_a != null && Number(cur.stock_a) !== r.stock_a;
       const stockBChanged = r.stock_b != null && Number(cur.stock_b) !== r.stock_b;
-      if (nameChanged || uomChanged || categoryChanged || stockAChanged || stockBChanged) {
-        diff.changedItems.push({ barcode: r.barcode, current: cur, next: r, nameChanged, uomChanged, categoryChanged, stockAChanged, stockBChanged });
+      const priceChanged = r.price != null && Number(cur.price) !== r.price;
+      if (nameChanged || uomChanged || categoryChanged || stockAChanged || stockBChanged || priceChanged) {
+        diff.changedItems.push({ barcode: r.barcode, current: cur, next: r, nameChanged, uomChanged, categoryChanged, stockAChanged, stockBChanged, priceChanged });
       } else {
         diff.identical++;
       }
@@ -169,8 +176,9 @@ export async function buildDiff(rows: ParsedRow[]): Promise<ImportDiff> {
       const categoryChanged = (cur.category ?? "") !== (r.category ?? "");
       const stockAChanged = r.stock_a != null && Number(cur.stock_a) !== r.stock_a;
       const stockBChanged = r.stock_b != null && Number(cur.stock_b) !== r.stock_b;
-      if (uomChanged || categoryChanged || stockAChanged || stockBChanged) {
-        diff.changedItems.push({ barcode: cur.barcode, current: cur, next: rWithBarcode, nameChanged: false, uomChanged, categoryChanged, stockAChanged, stockBChanged });
+      const priceChanged = r.price != null && Number(cur.price) !== r.price;
+      if (uomChanged || categoryChanged || stockAChanged || stockBChanged || priceChanged) {
+        diff.changedItems.push({ barcode: cur.barcode, current: cur, next: rWithBarcode, nameChanged: false, uomChanged, categoryChanged, stockAChanged, stockBChanged, priceChanged });
       } else {
         diff.identical++;
       }
@@ -241,6 +249,7 @@ type ProductRow = {
   category: string | null;
   stock_a: number;
   stock_b: number;
+  price: number;
 };
 
 function sanitize(r: ProductRow): ProductRow {
@@ -257,6 +266,7 @@ function sanitize(r: ProductRow): ProductRow {
     category: clean(r.category, 120),
     stock_a: num(Number(r.stock_a)),
     stock_b: num(Number(r.stock_b)),
+    price: num(Number(r.price)),
   };
 }
 
@@ -323,6 +333,7 @@ export async function applyImport(
         category: r.category,
         stock_a: r.stock_a ?? 0,
         stock_b: r.stock_b ?? 0,
+        price: r.price ?? 0,
       }),
     )
     .filter((r) => r.barcode !== "");
@@ -336,6 +347,7 @@ export async function applyImport(
     if (opts.updateCategory && c.categoryChanged) patch.category = c.next.category;
     if (opts.updateStockA && c.stockAChanged && c.next.stock_a != null) patch.stock_a = c.next.stock_a;
     if (opts.updateStockB && c.stockBChanged && c.next.stock_b != null) patch.stock_b = c.next.stock_b;
+    if (c.priceChanged && c.next.price != null) patch.price = c.next.price;
     if (Object.keys(patch).length === 0) continue;
     const row = sanitize({
       barcode: c.barcode,
@@ -344,6 +356,7 @@ export async function applyImport(
       category: c.current.category,
       stock_a: c.current.stock_a,
       stock_b: c.current.stock_b,
+      price: c.current.price,
       ...patch,
     });
     if (row.barcode === "") continue;

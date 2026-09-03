@@ -24,6 +24,7 @@ type Product = {
   category: string | null;
   stock_a: number;
   stock_b: number;
+  price: number;
 };
 
 type CountEntry = {
@@ -210,7 +211,7 @@ function AuditPage() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("products")
-        .select("barcode, product_name, category, stock_a, stock_b")
+        .select("barcode, product_name, category, stock_a, stock_b, price")
         .eq("category", category)
         .order("product_name");
       if (error) throw error;
@@ -277,7 +278,7 @@ function AuditPage() {
     if (local) return local;
     if (!online) { toast.error(`Producto no encontrado localmente: ${barcode}`); return null; }
     const { data, error } = await supabase
-      .from("products").select("barcode, product_name, category, stock_a, stock_b")
+      .from("products").select("barcode, product_name, category, stock_a, stock_b, price")
       .eq("barcode", barcode).maybeSingle();
     if (error || !data) { toast.error(`Producto no encontrado: ${barcode}`); return null; }
     return data as Product;
@@ -452,13 +453,17 @@ function AuditPage() {
         const sys = Number(p.stock_a) + Number(p.stock_b);
         const minaCount = realtimeMina.get(p.barcode) ?? 0;
         const morelosCount = realtimeMorelos.get(p.barcode) ?? 0;
+        const price = Number(p.price) || 0;
+        const diff = (minaCount + morelosCount) - sys;
         return {
           session_id: sessionId, category,
           barcode: p.barcode, product_name: p.product_name,
           system_stock: sys,
           mina_count: minaCount, morelos_count: morelosCount,
           total_counted: minaCount + morelosCount,
-          difference: (minaCount + morelosCount) - sys,
+          difference: diff,
+          unit_price: price,
+          difference_value: diff * price,
           scanned_mina: realtimeMina.has(p.barcode),
           scanned_morelos: realtimeMorelos.has(p.barcode),
           closed_by: collab.name, closed_at: closedAt,
