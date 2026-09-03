@@ -226,19 +226,21 @@ function AuditHistoryPage() {
           </div>
           {[...detail].sort((a, b) => Number(a.difference) - Number(b.difference)).map((r) => {
             const d = Number(r.difference);
+            const v = rowValue(r);
             return (
               <div key={r.id}
                 className={`flex items-center gap-2 px-3 py-2 text-xs ${d === 0 ? "" : d < 0 ? "bg-red-50 dark:bg-red-950/20" : "bg-amber-50 dark:bg-amber-950/20"}`}>
                 <div className="min-w-0 flex-1">
-                  <div className="font-medium truncate">{r.product_name}</div>
+                  <div className="font-medium break-words leading-snug">{r.product_name}</div>
                   <div className="font-mono text-[10px] text-muted-foreground">{r.barcode}</div>
                 </div>
                 <div className="w-10 shrink-0 text-center font-semibold">{r.mina_count}</div>
                 <div className="w-10 shrink-0 text-center font-semibold">{r.morelos_count}</div>
                 <div className="w-10 shrink-0 text-center font-semibold">{r.total_counted}</div>
                 <div className="w-10 shrink-0 text-center text-muted-foreground">{r.system_stock}</div>
-                <div className={`w-12 shrink-0 text-center font-bold ${d === 0 ? "text-emerald-600" : d < 0 ? "text-red-600" : "text-amber-600"}`}>
-                  {d === 0 ? "✓" : d > 0 ? `+${d}` : d}
+                <div className={`w-16 shrink-0 text-center font-bold ${d === 0 ? "text-emerald-600" : d < 0 ? "text-red-600" : "text-amber-600"}`}>
+                  <div>{d === 0 ? "✓" : d > 0 ? `+${d}` : d}</div>
+                  {v !== 0 && <div className="text-[10px] font-semibold">{money(v)}</div>}
                 </div>
               </div>
             );
