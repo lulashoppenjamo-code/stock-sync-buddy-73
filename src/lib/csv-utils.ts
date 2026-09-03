@@ -249,6 +249,7 @@ type ProductRow = {
   category: string | null;
   stock_a: number;
   stock_b: number;
+  price: number;
 };
 
 function sanitize(r: ProductRow): ProductRow {
