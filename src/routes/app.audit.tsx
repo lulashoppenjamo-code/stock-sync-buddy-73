@@ -24,6 +24,7 @@ type Product = {
   category: string | null;
   stock_a: number;
   stock_b: number;
+  price: number;
 };
 
 type CountEntry = {
@@ -452,13 +453,17 @@ function AuditPage() {
         const sys = Number(p.stock_a) + Number(p.stock_b);
         const minaCount = realtimeMina.get(p.barcode) ?? 0;
         const morelosCount = realtimeMorelos.get(p.barcode) ?? 0;
+        const price = Number(p.price) || 0;
+        const diff = (minaCount + morelosCount) - sys;
         return {
           session_id: sessionId, category,
           barcode: p.barcode, product_name: p.product_name,
           system_stock: sys,
           mina_count: minaCount, morelos_count: morelosCount,
           total_counted: minaCount + morelosCount,
-          difference: (minaCount + morelosCount) - sys,
+          difference: diff,
+          unit_price: price,
+          difference_value: diff * price,
           scanned_mina: realtimeMina.has(p.barcode),
           scanned_morelos: realtimeMorelos.has(p.barcode),
           closed_by: collab.name, closed_at: closedAt,
