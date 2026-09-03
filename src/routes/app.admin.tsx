@@ -15,7 +15,7 @@ export const Route = createFileRoute("/app/admin")({
   component: AdminPage,
 });
 
-type Row = { id: string; name: string; is_admin: boolean; active: boolean; branch: string };
+type Row = { id: string; name: string; is_admin: boolean; active: boolean; branch: string | null };
 
 function AdminPage() {
   const me = useCollaborator();
@@ -25,7 +25,7 @@ function AdminPage() {
   const [name, setName] = useState("");
   const [pin, setPin] = useState("");
   const [isAdmin, setIsAdmin] = useState(false);
-  const [newBranch, setNewBranch] = useState<"A" | "B">("A");
+  const [newBranch, setNewBranch] = useState<"A" | "B" | null>("A");
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -58,7 +58,7 @@ function AdminPage() {
         p_is_admin: isAdmin,
       });
       if (error) throw error;
-      // Asignar sucursal al nuevo colaborador
+      // Asignar sucursal al nuevo colaborador (o dejarlo sin sucursal si es admin)
       await supabase.from("collaborators").update({ branch: newBranch }).eq("name", name.trim());
       toast.success("Colaborador creado");
       setName(""); setPin(""); setIsAdmin(false); setNewBranch("A");
@@ -70,7 +70,7 @@ function AdminPage() {
     }
   }
 
-  async function updateBranch(target: Row, newBranch: string) {
+  async function updateBranch(target: Row, newBranch: string | null) {
     setBusy(true);
     try {
       const { error } = await supabase
@@ -78,7 +78,7 @@ function AdminPage() {
         .update({ branch: newBranch })
         .eq("id", target.id);
       if (error) throw error;
-      toast.success(`Sucursal de ${target.name} → ${newBranch === "A" ? "Mina" : "Morelos"} ✓`);
+      toast.success(`Sucursal de ${target.name} → ${newBranch === "A" ? "Mina" : newBranch === "B" ? "Morelos" : "Sin sucursal"} ✓`);
       refresh();
     } catch (e) {
       toast.error((e as Error).message);
@@ -87,11 +87,11 @@ function AdminPage() {
     }
   }
 
-  async function update(target: Row, patch: { name?: string; is_admin?: boolean; active?: boolean; pin?: string; branch?: string }) {
+  async function update(target: Row, patch: { name?: string; is_admin?: boolean; active?: boolean; pin?: string; branch?: string | null }) {
     if (!me) return;
     if (adminPin.length < 4) return toast.error("Ingresá tu PIN de admin arriba");
 
-    if (patch.branch && Object.keys(patch).length === 1) {
+    if (patch.branch !== undefined && Object.keys(patch).length === 1) {
       await updateBranch(target, patch.branch);
       return;
     }
@@ -154,7 +154,7 @@ function AdminPage() {
               />
             </div>
             <div className="flex items-center gap-2">
-              <Switch checked={isAdmin} onCheckedChange={setIsAdmin} id="adm" />
+              <Switch checked={isAdmin} onCheckedChange={(v) => { setIsAdmin(v); if (!v && newBranch === null) setNewBranch("A"); }} id="adm" />
               <Label htmlFor="adm">Admin</Label>
             </div>
             {/* Sucursal al crear */}
@@ -167,7 +167,19 @@ function AdminPage() {
                     {b === "A" ? "Mina" : "Morelos"}
                   </button>
                 ))}
+                {/* Un administrador puede quedar sin sucursal fija y elegir cuál usar cada vez */}
+                {isAdmin && (
+                  <button type="button" onClick={() => setNewBranch(null)}
+                    className={`px-4 py-1.5 text-sm font-medium transition-colors ${newBranch === null ? "bg-primary text-primary-foreground" : "bg-background hover:bg-muted"}`}>
+                    Sin sucursal
+                  </button>
+                )}
               </div>
+              {isAdmin && (
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  Los administradores pueden quedar "Sin sucursal" y elegir Mina o Morelos cada vez que auditen.
+                </p>
+              )}
             </div>
             <Button type="submit" disabled={busy} className="sm:col-span-4">
               {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserPlus className="h-4 w-4" />} Crear colaborador
@@ -200,7 +212,7 @@ function AdminPage() {
                         .update({ branch })
                         .eq("id", r.id);
                       if (error) throw error;
-                      toast.success(`Sucursal de ${r.name} → ${branch === "A" ? "Mina" : "Morelos"}`);
+                      toast.success(`Sucursal de ${r.name} → ${branch === "A" ? "Mina" : branch === "B" ? "Morelos" : "Sin sucursal"}`);
                       refresh();
                     } catch (e) { toast.error((e as Error).message); }
                     finally { setBusy(false); }
@@ -224,20 +236,21 @@ function RowEditor({
   row: Row;
   disabled: boolean;
   onUpdate: (patch: { is_admin?: boolean; active?: boolean; pin?: string }) => void;
-  onSaveBranch: (branch: "A" | "B") => void;
+  onSaveBranch: (branch: "A" | "B" | null) => void;
 }) {
   const [newPin, setNewPin] = useState("");
-  const [localBranch, setLocalBranch] = useState<"A" | "B">(row.branch === "B" ? "B" : "A");
+  const normalize = (b: string | null): "A" | "B" | null => (b === "A" || b === "B" ? b : row.is_admin ? null : "A");
+  const [localBranch, setLocalBranch] = useState<"A" | "B" | null>(normalize(row.branch));
   const [branchChanged, setBranchChanged] = useState(false);
 
   useEffect(() => {
-    setLocalBranch(row.branch === "B" ? "B" : "A");
+    setLocalBranch(normalize(row.branch));
     setBranchChanged(false);
-  }, [row.branch]);
+  }, [row.branch, row.is_admin]);
 
-  function handleBranchChange(b: "A" | "B") {
+  function handleBranchChange(b: "A" | "B" | null) {
     setLocalBranch(b);
-    setBranchChanged(b !== (row.branch === "B" ? "B" : "A"));
+    setBranchChanged(b !== normalize(row.branch));
   }
 
   return (
@@ -257,6 +270,16 @@ function RowEditor({
                 {b === "A" ? "Mina" : "Morelos"}
               </button>
             ))}
+            {/* "Sin sucursal" solo tiene sentido para administradores */}
+            {row.is_admin && (
+              <button type="button" disabled={disabled}
+                onClick={() => handleBranchChange(null)}
+                className={`px-3 py-1.5 font-medium transition-colors disabled:opacity-50 ${
+                  localBranch === null ? "bg-primary text-primary-foreground" : "bg-background hover:bg-muted"
+                }`}>
+                Sin sucursal
+              </button>
+            )}
           </div>
           {branchChanged && (
             <Button size="sm" className="h-7 text-xs px-2 bg-emerald-600 hover:bg-emerald-700"
