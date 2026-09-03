@@ -77,6 +77,7 @@ function AuditHistoryPage() {
     const map = new Map<string, {
       session_id: string; category: string; closed_at: string; closed_by: string | null;
       count: number; sys: number; mina: number; morelos: number; total: number; diff: number;
+      faltanteVal: number; sobranteVal: number;
     }>();
     for (const r of rows) {
       if (filterCat && r.category !== filterCat) continue;
@@ -84,6 +85,7 @@ function AuditHistoryPage() {
       const e = map.get(r.session_id) ?? {
         session_id: r.session_id, category: r.category, closed_at: r.closed_at,
         closed_by: r.closed_by, count: 0, sys: 0, mina: 0, morelos: 0, total: 0, diff: 0,
+        faltanteVal: 0, sobranteVal: 0,
       };
       e.count++;
       e.sys += Number(r.system_stock);
@@ -91,6 +93,8 @@ function AuditHistoryPage() {
       e.morelos += Number(r.morelos_count);
       e.total += Number(r.total_counted);
       e.diff += Number(r.difference);
+      const v = rowValue(r);
+      if (v < 0) e.faltanteVal += -v; else e.sobranteVal += v;
       map.set(r.session_id, e);
     }
     return Array.from(map.values()).sort((a, b) => b.closed_at.localeCompare(a.closed_at));
