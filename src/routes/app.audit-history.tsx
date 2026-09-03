@@ -222,7 +222,7 @@ function AuditHistoryPage() {
             <div className="w-10 shrink-0 text-center">{MORELOS.slice(0, 4)}</div>
             <div className="w-10 shrink-0 text-center">Tot</div>
             <div className="w-10 shrink-0 text-center">Sys</div>
-            <div className="w-12 shrink-0 text-center">Δ</div>
+            <div className="w-16 shrink-0 text-center">Δ</div>
           </div>
           {[...detail].sort((a, b) => Number(a.difference) - Number(b.difference)).map((r) => {
             const d = Number(r.difference);
