@@ -177,6 +177,32 @@ function AuditPage() {
     staleTime: online ? 30_000 : Infinity,
   });
 
+  // Total de artículos (SKUs) por categoría — para mostrar debajo de cada categoría
+  const { data: categoryCounts = new Map<string, number>() } = useQuery({
+    queryKey: ["category-counts"],
+    queryFn: async () => {
+      const counts = new Map<string, number>();
+      const pageSize = 1000;
+      let from = 0;
+      while (true) {
+        const { data, error } = await supabase
+          .from("products").select("category")
+          .not("category", "is", null).not("category", "eq", "")
+          .range(from, from + pageSize - 1);
+        if (error) throw error;
+        for (const r of data ?? []) {
+          if (!r.category) continue;
+          const key = r.category.trim();
+          counts.set(key, (counts.get(key) ?? 0) + 1);
+        }
+        if ((data ?? []).length < pageSize) break;
+        from += pageSize;
+      }
+      return counts;
+    },
+    staleTime: online ? 30_000 : Infinity,
+  });
+
   const { data: monthlyHistory = [] } = useQuery({
     queryKey: ["audit-history-month"],
     staleTime: online ? 30_000 : Infinity,
@@ -449,12 +475,28 @@ function AuditPage() {
     try {
       const sessionId = crypto.randomUUID();
       const closedAt = new Date().toISOString();
+
+      // Detalle de quién contó y cuándo, por producto (de los escaneos en vivo de hoy)
+      const detailsByBarcode = new Map<string, { name: string; branch: string; qty: number; at: string }[]>();
+      for (const a of realtimeAudits) {
+        const list = detailsByBarcode.get(a.barcode) ?? [];
+        list.push({
+          name: a.collaborator_name ?? "Anónimo",
+          branch: branchLabel(a.branch),
+          qty: Number(a.physical_count),
+          at: a.created_at,
+        });
+        detailsByBarcode.set(a.barcode, list);
+      }
+
       const reportRows = products.map((p) => {
         const sys = Number(p.stock_a) + Number(p.stock_b);
         const minaCount = realtimeMina.get(p.barcode) ?? 0;
         const morelosCount = realtimeMorelos.get(p.barcode) ?? 0;
         const price = Number(p.price) || 0;
         const diff = (minaCount + morelosCount) - sys;
+        const details = (detailsByBarcode.get(p.barcode) ?? []).sort((a, b) => a.at.localeCompare(b.at));
+        const last = details[details.length - 1];
         return {
           session_id: sessionId, category,
           barcode: p.barcode, product_name: p.product_name,
@@ -467,6 +509,9 @@ function AuditPage() {
           scanned_mina: realtimeMina.has(p.barcode),
           scanned_morelos: realtimeMorelos.has(p.barcode),
           closed_by: collab.name, closed_at: closedAt,
+          count_details: details,
+          last_counted_by: last?.name ?? null,
+          last_counted_at: last?.at ?? null,
         };
       });
 
@@ -638,14 +683,18 @@ function AuditPage() {
               const st = categoryStatus.get(c);
               const done = !!st?.hasA && !!st?.hasB;
               const partial = !done && (!!st?.hasA || !!st?.hasB);
+              const total = categoryCounts.get(c) ?? 0;
               return (
                 <button key={c} type="button" onClick={() => setReportCategory(c)} disabled={!st}
-                  className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                  className={`flex flex-col items-center rounded-md border px-2.5 py-1 text-[11px] font-medium leading-tight transition-colors ${
                     done ? "border-emerald-500 bg-emerald-500 text-white"
                     : partial ? "border-amber-300 bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-200"
                     : "border-transparent bg-muted text-muted-foreground"
                   }`}>
-                  {c}{done ? " ✓" : partial ? " ½" : ""}
+                  <span>{c}{done ? " ✓" : partial ? " ½" : ""}</span>
+                  <span className={`text-[9px] font-normal ${done ? "text-emerald-50" : "opacity-70"}`}>
+                    {total} artículo{total === 1 ? "" : "s"}
+                  </span>
                 </button>
               );
             })}
@@ -1280,6 +1329,9 @@ function AdminHistoryRow({ row, onEdit, onDelete }: { row: HistoryRow; onEdit: (
           <span className={diff === 0 ? "text-emerald-600" : diff < 0 ? "text-red-600" : "text-amber-600"}>
             ({diff === 0 ? "✓" : diff > 0 ? `+${diff}` : diff})
           </span>
+        </div>
+        <div className="text-[10px] text-blue-600 dark:text-blue-400">
+          {row.collaborator_name ?? "—"} · {new Date(row.created_at).toLocaleString("es-MX", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
         </div>
       </div>
       <button type="button" onClick={onEdit} className="shrink-0 rounded p-1 hover:bg-muted">
