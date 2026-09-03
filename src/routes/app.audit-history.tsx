@@ -109,12 +109,14 @@ function AuditHistoryPage() {
   const monthly = useMemo(() => {
     const map = new Map<string, {
       key: string; sys: number; mina: number; morelos: number; total: number;
-      faltante: number; sobrante: number; categories: Set<string>; sessions: Set<string>;
+      faltante: number; sobrante: number; faltanteVal: number; sobranteVal: number;
+      categories: Set<string>; sessions: Set<string>;
     }>();
     for (const r of rows) {
       const k = monthKey(r.closed_at);
       const e = map.get(k) ?? {
         key: k, sys: 0, mina: 0, morelos: 0, total: 0, faltante: 0, sobrante: 0,
+        faltanteVal: 0, sobranteVal: 0,
         categories: new Set<string>(), sessions: new Set<string>(),
       };
       e.sys += Number(r.system_stock);
@@ -124,6 +126,8 @@ function AuditHistoryPage() {
       const d = Number(r.difference);
       if (d < 0) e.faltante += -d;
       else e.sobrante += d;
+      const v = rowValue(r);
+      if (v < 0) e.faltanteVal += -v; else e.sobranteVal += v;
       e.categories.add(r.category);
       e.sessions.add(r.session_id);
       map.set(k, e);
