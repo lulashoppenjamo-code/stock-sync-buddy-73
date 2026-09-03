@@ -333,6 +333,7 @@ export async function applyImport(
         category: r.category,
         stock_a: r.stock_a ?? 0,
         stock_b: r.stock_b ?? 0,
+        price: r.price ?? 0,
       }),
     )
     .filter((r) => r.barcode !== "");
@@ -346,6 +347,7 @@ export async function applyImport(
     if (opts.updateCategory && c.categoryChanged) patch.category = c.next.category;
     if (opts.updateStockA && c.stockAChanged && c.next.stock_a != null) patch.stock_a = c.next.stock_a;
     if (opts.updateStockB && c.stockBChanged && c.next.stock_b != null) patch.stock_b = c.next.stock_b;
+    if (c.priceChanged && c.next.price != null) patch.price = c.next.price;
     if (Object.keys(patch).length === 0) continue;
     const row = sanitize({
       barcode: c.barcode,
@@ -354,6 +356,7 @@ export async function applyImport(
       category: c.current.category,
       stock_a: c.current.stock_a,
       stock_b: c.current.stock_b,
+      price: c.current.price,
       ...patch,
     });
     if (row.barcode === "") continue;
