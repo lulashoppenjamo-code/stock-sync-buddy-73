@@ -21,6 +21,8 @@ type ClosedRow = {
   morelos_count: number;
   total_counted: number;
   difference: number;
+  unit_price: number | null;
+  difference_value: number | null;
   scanned_mina: boolean;
   scanned_morelos: boolean;
   closed_by: string | null;
@@ -40,6 +42,16 @@ function monthName(key: string) {
 function pct(missing: number, sys: number) {
   if (sys <= 0) return 0;
   return (missing / sys) * 100;
+}
+function money(n: number) {
+  return n.toLocaleString("es-MX", { style: "currency", currency: "MXN", maximumFractionDigits: 2 });
+}
+// Valor en pesos de la diferencia; para cortes antiguos sin difference_value
+// se calcula como diferencia × precio unitario guardado.
+function rowValue(r: ClosedRow) {
+  const v = Number(r.difference_value ?? 0);
+  if (v !== 0) return v;
+  return Number(r.difference) * Number(r.unit_price ?? 0);
 }
 
 function AuditHistoryPage() {
