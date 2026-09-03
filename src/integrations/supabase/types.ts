@@ -140,10 +140,13 @@ export type Database = {
           category: string
           closed_at: string
           closed_by: string | null
+          count_details: Json
           created_at: string
           difference: number
           difference_value: number
           id: string
+          last_counted_at: string | null
+          last_counted_by: string | null
           mina_count: number
           morelos_count: number
           product_name: string
@@ -159,10 +162,13 @@ export type Database = {
           category: string
           closed_at?: string
           closed_by?: string | null
+          count_details?: Json
           created_at?: string
           difference?: number
           difference_value?: number
           id?: string
+          last_counted_at?: string | null
+          last_counted_by?: string | null
           mina_count?: number
           morelos_count?: number
           product_name: string
@@ -178,10 +184,13 @@ export type Database = {
           category?: string
           closed_at?: string
           closed_by?: string | null
+          count_details?: Json
           created_at?: string
           difference?: number
           difference_value?: number
           id?: string
+          last_counted_at?: string | null
+          last_counted_by?: string | null
           mina_count?: number
           morelos_count?: number
           product_name?: string
@@ -395,6 +404,36 @@ export type Database = {
           },
         ]
       }
+      zobaze_corrections: {
+        Row: {
+          category: string
+          corrected: boolean
+          corrected_at: string
+          corrected_by: string | null
+          created_at: string
+          id: string
+          session_id: string
+        }
+        Insert: {
+          category: string
+          corrected?: boolean
+          corrected_at?: string
+          corrected_by?: string | null
+          created_at?: string
+          id?: string
+          session_id: string
+        }
+        Update: {
+          category?: string
+          corrected?: boolean
+          corrected_at?: string
+          corrected_by?: string | null
+          created_at?: string
+          id?: string
+          session_id?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       collaborator_directory: {
@@ -457,11 +496,31 @@ export type Database = {
         }
         Returns: number
       }
+      admin_set_zobaze_correction: {
+        Args: {
+          p_admin_id: string
+          p_admin_pin: string
+          p_category: string
+          p_corrected: boolean
+          p_session_id: string
+        }
+        Returns: undefined
+      }
       admin_update_audit_history_row: {
         Args: {
           p_admin_id: string
           p_admin_pin: string
           p_counted_quantity: number
+          p_row_id: string
+        }
+        Returns: undefined
+      }
+      admin_update_closed_count_row: {
+        Args: {
+          p_admin_id: string
+          p_admin_pin: string
+          p_mina_count: number
+          p_morelos_count: number
           p_row_id: string
         }
         Returns: undefined
