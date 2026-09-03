@@ -200,14 +200,17 @@ function AuditHistoryPage() {
               <div className="rounded bg-red-50 dark:bg-red-950/20 p-2">
                 <div className="text-[10px] text-muted-foreground">Faltantes</div>
                 <div className="text-base font-bold text-red-600">{t.faltan} · {t.faltante} pz</div>
+                <div className="text-[11px] font-semibold text-red-600">{money(t.faltanteVal)}</div>
               </div>
               <div className="rounded bg-amber-50 dark:bg-amber-950/20 p-2">
                 <div className="text-[10px] text-muted-foreground">Sobrantes</div>
                 <div className="text-base font-bold text-amber-600">{t.sobran} · {t.sobrante} pz</div>
+                <div className="text-[11px] font-semibold text-amber-600">{money(t.sobranteVal)}</div>
               </div>
             </div>
             <div className="text-xs text-muted-foreground">
               % de faltante: <span className="font-semibold">{pct(t.faltante, t.sys).toFixed(2)}%</span>
+              {t.faltanteVal > 0 && <> · Faltante: <span className="font-semibold text-red-600">{money(t.faltanteVal)}</span></>}
             </div>
           </CardContent>
         </Card>
