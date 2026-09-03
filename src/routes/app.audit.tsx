@@ -211,7 +211,7 @@ function AuditPage() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from("products")
-        .select("barcode, product_name, category, stock_a, stock_b")
+        .select("barcode, product_name, category, stock_a, stock_b, price")
         .eq("category", category)
         .order("product_name");
       if (error) throw error;
@@ -278,7 +278,7 @@ function AuditPage() {
     if (local) return local;
     if (!online) { toast.error(`Producto no encontrado localmente: ${barcode}`); return null; }
     const { data, error } = await supabase
-      .from("products").select("barcode, product_name, category, stock_a, stock_b")
+      .from("products").select("barcode, product_name, category, stock_a, stock_b, price")
       .eq("barcode", barcode).maybeSingle();
     if (error || !data) { toast.error(`Producto no encontrado: ${barcode}`); return null; }
     return data as Product;
