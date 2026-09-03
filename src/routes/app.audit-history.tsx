@@ -1,14 +1,21 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Card, CardContent } from "@/components/ui/card";
-import { Loader2, ArrowLeft, History, BarChart3 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Loader2, ArrowLeft, History, BarChart3, ShieldAlert, Pencil, CheckCircle2, PackageCheck } from "lucide-react";
+import { toast } from "sonner";
 import { BRANCH_LABELS } from "@/lib/branches";
+import { useCollaborator } from "@/lib/session";
 
 export const Route = createFileRoute("/app/audit-history")({
   component: AuditHistoryPage,
 });
+
+type CountDetail = { name: string; branch: string; qty: number; at: string };
 
 type ClosedRow = {
   id: string;
@@ -27,10 +34,35 @@ type ClosedRow = {
   scanned_morelos: boolean;
   closed_by: string | null;
   closed_at: string;
+  count_details: CountDetail[] | null;
+  last_counted_by: string | null;
+  last_counted_at: string | null;
+};
+
+type ZobazeCorrection = {
+  session_id: string;
+  corrected: boolean;
+  corrected_by: string | null;
+  corrected_at: string;
 };
 
 const MINA = BRANCH_LABELS.A;
 const MORELOS = BRANCH_LABELS.B;
+
+// Paleta de colores para diferenciar visualmente cada mes en "Cortes por categoría"
+const MONTH_COLORS = [
+  { bar: "bg-violet-500", badge: "bg-violet-100 text-violet-800 dark:bg-violet-900/30 dark:text-violet-200", ring: "border-l-violet-500" },
+  { bar: "bg-sky-500", badge: "bg-sky-100 text-sky-800 dark:bg-sky-900/30 dark:text-sky-200", ring: "border-l-sky-500" },
+  { bar: "bg-emerald-500", badge: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-200", ring: "border-l-emerald-500" },
+  { bar: "bg-amber-500", badge: "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-200", ring: "border-l-amber-500" },
+  { bar: "bg-rose-500", badge: "bg-rose-100 text-rose-800 dark:bg-rose-900/30 dark:text-rose-200", ring: "border-l-rose-500" },
+  { bar: "bg-cyan-500", badge: "bg-cyan-100 text-cyan-800 dark:bg-cyan-900/30 dark:text-cyan-200", ring: "border-l-cyan-500" },
+];
+function monthColor(key: string) {
+  let hash = 0;
+  for (let i = 0; i < key.length; i++) hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
+  return MONTH_COLORS[hash % MONTH_COLORS.length];
+}
 
 function monthKey(iso: string) {
   return iso.slice(0, 7);
@@ -55,10 +87,18 @@ function rowValue(r: ClosedRow) {
 }
 
 function AuditHistoryPage() {
+  const me = useCollaborator();
+  const qc = useQueryClient();
   const [tab, setTab] = useState<"cortes" | "general">("cortes");
   const [selected, setSelected] = useState<string | null>(null);
   const [filterCat, setFilterCat] = useState("");
   const [filterDate, setFilterDate] = useState("");
+  const [adminPin, setAdminPin] = useState("");
+  const [editRow, setEditRow] = useState<ClosedRow | null>(null);
+  const [editMina, setEditMina] = useState(0);
+  const [editMorelos, setEditMorelos] = useState(0);
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [savingZobaze, setSavingZobaze] = useState(false);
 
   const { data: rows = [], isLoading } = useQuery({
     queryKey: ["closed_counts"],
@@ -69,9 +109,62 @@ function AuditHistoryPage() {
         .order("closed_at", { ascending: false })
         .limit(10000);
       if (error) throw error;
-      return data as ClosedRow[];
+      return data as unknown as ClosedRow[];
     },
   });
+
+  const { data: corrections = [] } = useQuery({
+    queryKey: ["zobaze_corrections"],
+    queryFn: async () => {
+      const { data, error } = await supabase.from("zobaze_corrections").select("*");
+      if (error) throw error;
+      return data as ZobazeCorrection[];
+    },
+  });
+  const correctionsMap = useMemo(() => {
+    const map = new Map<string, ZobazeCorrection>();
+    for (const c of corrections) if (c.corrected) map.set(c.session_id, c);
+    return map;
+  }, [corrections]);
+
+  function openEdit(r: ClosedRow) {
+    setEditRow(r);
+    setEditMina(r.mina_count);
+    setEditMorelos(r.morelos_count);
+  }
+
+  async function saveEdit() {
+    if (!editRow || !me) return;
+    if (adminPin.length < 4) { toast.error("Ingresá tu PIN de administrador"); return; }
+    setSavingEdit(true);
+    try {
+      const { error } = await supabase.rpc("admin_update_closed_count_row", {
+        p_admin_id: me.id, p_admin_pin: adminPin, p_row_id: editRow.id,
+        p_mina_count: editMina, p_morelos_count: editMorelos,
+      });
+      if (error) throw error;
+      toast.success("Conteo corregido");
+      setEditRow(null);
+      qc.invalidateQueries({ queryKey: ["closed_counts"] });
+    } catch (e) { toast.error((e as Error).message); }
+    finally { setSavingEdit(false); }
+  }
+
+  async function toggleZobaze(sessionId: string, category: string, corrected: boolean) {
+    if (!me) return;
+    if (adminPin.length < 4) { toast.error("Ingresá tu PIN de administrador arriba para marcar Zobaze"); return; }
+    setSavingZobaze(true);
+    try {
+      const { error } = await supabase.rpc("admin_set_zobaze_correction", {
+        p_admin_id: me.id, p_admin_pin: adminPin, p_session_id: sessionId,
+        p_category: category, p_corrected: corrected,
+      });
+      if (error) throw error;
+      toast.success(corrected ? "Marcado como corregido en Zobaze ✓" : "Marca de Zobaze quitada");
+      qc.invalidateQueries({ queryKey: ["zobaze_corrections"] });
+    } catch (e) { toast.error((e as Error).message); }
+    finally { setSavingZobaze(false); }
+  }
 
   const sessions = useMemo(() => {
     const map = new Map<string, {
@@ -151,18 +244,54 @@ function AuditHistoryPage() {
       return acc;
     }, { sys: 0, mina: 0, morelos: 0, total: 0, ok: 0, faltan: 0, sobran: 0, faltante: 0, sobrante: 0, faltanteVal: 0, sobranteVal: 0 });
 
+    const correction = correctionsMap.get(selected);
+
     return (
       <div className="space-y-4">
         <button onClick={() => setSelected(null)} className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
           <ArrowLeft className="h-4 w-4" /> Volver
         </button>
 
+        {me?.is_admin && (
+          <Card>
+            <CardContent className="p-3 space-y-2">
+              <label className="text-xs font-medium text-muted-foreground">Tu PIN de administrador</label>
+              <Input type="password" inputMode="numeric" value={adminPin}
+                onChange={(e) => setAdminPin(e.target.value.replace(/\D/g, ""))}
+                placeholder="Necesario para corregir o marcar Zobaze" className="max-w-xs" />
+            </CardContent>
+          </Card>
+        )}
+
         <Card>
           <CardContent className="p-3 space-y-2">
-            <div className="text-sm font-semibold">{s?.category ?? detail[0]?.category}</div>
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-sm font-semibold">{s?.category ?? detail[0]?.category}</div>
+              {correction && (
+                <span className="flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200">
+                  <PackageCheck className="h-3 w-3" /> Corregido en Zobaze
+                </span>
+              )}
+            </div>
             <div className="text-xs text-muted-foreground">
               {detail[0] && new Date(detail[0].closed_at).toLocaleString("es-MX")} · Cerrado por {detail[0]?.closed_by ?? "—"}
             </div>
+            {correction && (
+              <div className="text-[11px] text-emerald-700 dark:text-emerald-300">
+                Corregido por {correction.corrected_by ?? "—"} · {new Date(correction.corrected_at).toLocaleString("es-MX")}
+              </div>
+            )}
+            {me?.is_admin && (
+              <Button size="sm" variant="outline" disabled={savingZobaze}
+                className={correction ? "border-red-300 text-red-700 hover:bg-red-50" : "border-emerald-400 text-emerald-700 hover:bg-emerald-50"}
+                onClick={() => toggleZobaze(selected, s?.category ?? detail[0]?.category ?? "", !correction)}>
+                {savingZobaze ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <PackageCheck className="h-3.5 w-3.5" />}
+                {correction ? "Quitar marca de Zobaze" : "Marcar como corregido en Zobaze"}
+              </Button>
+            )}
+            <p className="text-[11px] text-muted-foreground">
+              El conteo se conserva tal cual para llevar el registro; esta marca solo indica que ya ajustaste las existencias en Zobaze según este corte.
+            </p>
 
             <div className="grid grid-cols-2 gap-2 pt-2 text-center">
               <div className="rounded bg-muted p-2">
@@ -227,26 +356,93 @@ function AuditHistoryPage() {
           {[...detail].sort((a, b) => Number(a.difference) - Number(b.difference)).map((r) => {
             const d = Number(r.difference);
             const v = rowValue(r);
+            const contributors = (r.count_details ?? []) as CountDetail[];
             return (
               <div key={r.id}
-                className={`flex items-center gap-2 px-3 py-2 text-xs ${d === 0 ? "" : d < 0 ? "bg-red-50 dark:bg-red-950/20" : "bg-amber-50 dark:bg-amber-950/20"}`}>
-                <div className="min-w-0 flex-1">
-                  <div className="font-medium break-words leading-snug">{r.product_name}</div>
-                  <div className="font-mono text-[10px] text-muted-foreground">{r.barcode}</div>
+                className={`px-3 py-2 text-xs ${d === 0 ? "" : d < 0 ? "bg-red-50 dark:bg-red-950/20" : "bg-amber-50 dark:bg-amber-950/20"}`}>
+                <div className="flex items-center gap-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="font-medium break-words leading-snug">{r.product_name}</div>
+                    <div className="font-mono text-[10px] text-muted-foreground">{r.barcode}</div>
+                  </div>
+                  <div className="w-10 shrink-0 text-center font-semibold">{r.mina_count}</div>
+                  <div className="w-10 shrink-0 text-center font-semibold">{r.morelos_count}</div>
+                  <div className="w-10 shrink-0 text-center font-semibold">{r.total_counted}</div>
+                  <div className="w-10 shrink-0 text-center text-muted-foreground">{r.system_stock}</div>
+                  <div className={`w-16 shrink-0 text-center font-bold ${d === 0 ? "text-emerald-600" : d < 0 ? "text-red-600" : "text-amber-600"}`}>
+                    <div>{d === 0 ? "✓" : d > 0 ? `+${d}` : d}</div>
+                    {v !== 0 && <div className="text-[10px] font-semibold">{money(v)}</div>}
+                  </div>
+                  {me?.is_admin && (
+                    <button type="button" onClick={() => openEdit(r)}
+                      className="shrink-0 rounded p-1 hover:bg-muted" title="Corregir conteo">
+                      <Pencil className="h-3.5 w-3.5" />
+                    </button>
+                  )}
                 </div>
-                <div className="w-10 shrink-0 text-center font-semibold">{r.mina_count}</div>
-                <div className="w-10 shrink-0 text-center font-semibold">{r.morelos_count}</div>
-                <div className="w-10 shrink-0 text-center font-semibold">{r.total_counted}</div>
-                <div className="w-10 shrink-0 text-center text-muted-foreground">{r.system_stock}</div>
-                <div className={`w-16 shrink-0 text-center font-bold ${d === 0 ? "text-emerald-600" : d < 0 ? "text-red-600" : "text-amber-600"}`}>
-                  <div>{d === 0 ? "✓" : d > 0 ? `+${d}` : d}</div>
-                  {v !== 0 && <div className="text-[10px] font-semibold">{money(v)}</div>}
-                </div>
+                {(contributors.length > 0 || r.last_counted_by) && (
+                  <div className="mt-1 text-[10px] text-blue-600 dark:text-blue-400">
+                    {contributors.length > 0
+                      ? contributors.map((c, i) => (
+                          <span key={i}>
+                            {i > 0 && " · "}
+                            {c.name} ({c.branch}, {c.qty}) {new Date(c.at).toLocaleString("es-MX", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+                          </span>
+                        ))
+                      : <span>Últ. contado por {r.last_counted_by}{r.last_counted_at && ` · ${new Date(r.last_counted_at).toLocaleString("es-MX", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}`}</span>}
+                  </div>
+                )}
               </div>
             );
           })}
         </div>
-      </div>
+
+      {/* ── Dialog: corregir conteo (admin) ── */}
+      <Dialog open={!!editRow} onOpenChange={(o) => { if (!o) setEditRow(null); }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-1.5 text-amber-700 dark:text-amber-300">
+              <ShieldAlert className="h-4 w-4" /> Corregir conteo
+            </DialogTitle>
+          </DialogHeader>
+          {editRow && (
+            <div className="space-y-3 text-sm">
+              <p className="text-muted-foreground">{editRow.product_name}</p>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground">{MINA}</label>
+                  <Input type="number" min={0} value={editMina}
+                    onChange={(e) => setEditMina(Math.max(0, parseInt(e.target.value, 10) || 0))} />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground">{MORELOS}</label>
+                  <Input type="number" min={0} value={editMorelos}
+                    onChange={(e) => setEditMorelos(Math.max(0, parseInt(e.target.value, 10) || 0))} />
+                </div>
+              </div>
+              <p className="text-[11px] text-muted-foreground">
+                Sistema: {editRow.system_stock} · Nueva diferencia: {(editMina + editMorelos) - editRow.system_stock}
+              </p>
+              {!me?.is_admin || adminPin.length < 4 ? (
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground">Tu PIN de administrador</label>
+                  <Input type="password" inputMode="numeric" autoFocus value={adminPin}
+                    onChange={(e) => setAdminPin(e.target.value.replace(/\D/g, ""))}
+                    placeholder="PIN" className="mt-1" />
+                </div>
+              ) : null}
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditRow(null)}>Cancelar</Button>
+            <Button disabled={savingEdit} onClick={saveEdit}>
+              {savingEdit ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+              Guardar corrección
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
     );
   }
 
@@ -297,30 +493,64 @@ function AuditHistoryPage() {
             </CardContent>
           </Card>
 
-          <div className="divide-y rounded-md border">
-            {sessions.map((s) => (
-              <button key={s.session_id} onClick={() => setSelected(s.session_id)}
-                className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm hover:bg-muted">
-                <div className="min-w-0 flex-1">
-                  <div className="font-medium truncate">{s.category}</div>
-                  <div className="text-xs text-muted-foreground">
-                    {new Date(s.closed_at).toLocaleString("es-MX")} · {s.closed_by ?? "—"}
+          <div className="space-y-4">
+            {(() => {
+              const groups = new Map<string, typeof sessions>();
+              for (const s of sessions) {
+                const k = monthKey(s.closed_at);
+                const arr = groups.get(k) ?? [];
+                arr.push(s);
+                groups.set(k, arr);
+              }
+              const orderedKeys = Array.from(groups.keys()).sort((a, b) => b.localeCompare(a));
+              return orderedKeys.map((k) => {
+                const color = monthColor(k);
+                const group = groups.get(k)!;
+                return (
+                  <div key={k} className="space-y-1.5">
+                    <div className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold capitalize ${color.badge}`}>
+                      <span className={`h-2 w-2 rounded-full ${color.bar}`} />
+                      {monthName(k)}
+                    </div>
+                    <div className="divide-y rounded-md border overflow-hidden">
+                      {group.map((s) => {
+                        const corrected = correctionsMap.has(s.session_id);
+                        return (
+                          <button key={s.session_id} onClick={() => setSelected(s.session_id)}
+                            className={`flex w-full items-center gap-2 border-l-4 ${color.ring} px-3 py-2.5 text-left text-sm hover:bg-muted`}>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-1.5">
+                                <span className="font-medium truncate">{s.category}</span>
+                                {corrected && (
+                                  <span className="flex items-center gap-0.5 shrink-0 rounded-full bg-emerald-100 px-1.5 py-0.5 text-[9px] font-medium text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200">
+                                    <PackageCheck className="h-2.5 w-2.5" /> Zobaze
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-xs text-muted-foreground">
+                                {new Date(s.closed_at).toLocaleString("es-MX")} · {s.closed_by ?? "—"}
+                              </div>
+                              <div className="text-[11px] text-muted-foreground">
+                                {MINA}: <b>{s.mina}</b> · {MORELOS}: <b>{s.morelos}</b> · Sistema: {s.sys}
+                              </div>
+                            </div>
+                            <div className="shrink-0 text-right text-xs">
+                              <div className="text-muted-foreground">{s.count} prod.</div>
+                              <div className={`font-bold ${s.diff === 0 ? "text-emerald-600" : s.diff < 0 ? "text-red-600" : "text-amber-600"}`}>
+                                {s.diff === 0 ? "✓ exacto" : s.diff > 0 ? `+${s.diff}` : s.diff}
+                              </div>
+                              {s.faltanteVal > 0 && <div className="text-[11px] font-semibold text-red-600">−{money(s.faltanteVal)}</div>}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
                   </div>
-                  <div className="text-[11px] text-muted-foreground">
-                    {MINA}: <b>{s.mina}</b> · {MORELOS}: <b>{s.morelos}</b> · Sistema: {s.sys}
-                  </div>
-                </div>
-                <div className="shrink-0 text-right text-xs">
-                  <div className="text-muted-foreground">{s.count} prod.</div>
-                  <div className={`font-bold ${s.diff === 0 ? "text-emerald-600" : s.diff < 0 ? "text-red-600" : "text-amber-600"}`}>
-                    {s.diff === 0 ? "✓ exacto" : s.diff > 0 ? `+${s.diff}` : s.diff}
-                  </div>
-                  {s.faltanteVal > 0 && <div className="text-[11px] font-semibold text-red-600">−{money(s.faltanteVal)}</div>}
-                </div>
-              </button>
-            ))}
+                );
+              });
+            })()}
             {!isLoading && sessions.length === 0 && (
-              <div className="py-8 text-center text-xs text-muted-foreground">Sin cortes cerrados</div>
+              <div className="py-8 text-center text-xs text-muted-foreground rounded-md border">Sin cortes cerrados</div>
             )}
           </div>
         </>
