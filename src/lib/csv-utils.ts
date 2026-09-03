@@ -176,8 +176,9 @@ export async function buildDiff(rows: ParsedRow[]): Promise<ImportDiff> {
       const categoryChanged = (cur.category ?? "") !== (r.category ?? "");
       const stockAChanged = r.stock_a != null && Number(cur.stock_a) !== r.stock_a;
       const stockBChanged = r.stock_b != null && Number(cur.stock_b) !== r.stock_b;
-      if (uomChanged || categoryChanged || stockAChanged || stockBChanged) {
-        diff.changedItems.push({ barcode: cur.barcode, current: cur, next: rWithBarcode, nameChanged: false, uomChanged, categoryChanged, stockAChanged, stockBChanged });
+      const priceChanged = r.price != null && Number(cur.price) !== r.price;
+      if (uomChanged || categoryChanged || stockAChanged || stockBChanged || priceChanged) {
+        diff.changedItems.push({ barcode: cur.barcode, current: cur, next: rWithBarcode, nameChanged: false, uomChanged, categoryChanged, stockAChanged, stockBChanged, priceChanged });
       } else {
         diff.identical++;
       }
