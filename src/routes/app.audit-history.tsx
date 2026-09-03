@@ -146,8 +146,10 @@ function AuditHistoryPage() {
       acc.total += Number(r.total_counted);
       const d = Number(r.difference);
       if (d === 0) acc.ok++; else if (d < 0) { acc.faltan++; acc.faltante += -d; } else { acc.sobran++; acc.sobrante += d; }
+      const v = rowValue(r);
+      if (v < 0) acc.faltanteVal += -v; else acc.sobranteVal += v;
       return acc;
-    }, { sys: 0, mina: 0, morelos: 0, total: 0, ok: 0, faltan: 0, sobran: 0, faltante: 0, sobrante: 0 });
+    }, { sys: 0, mina: 0, morelos: 0, total: 0, ok: 0, faltan: 0, sobran: 0, faltante: 0, sobrante: 0, faltanteVal: 0, sobranteVal: 0 });
 
     return (
       <div className="space-y-4">
