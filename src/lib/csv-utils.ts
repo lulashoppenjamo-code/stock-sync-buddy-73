@@ -8,6 +8,7 @@ export type ParsedRow = {
   category: string | null;
   stock_a: number | null;
   stock_b: number | null;
+  price: number | null;
 };
 
 export type ImportDiff = {
@@ -70,7 +71,8 @@ export function parseCsv(file: File): Promise<ParsedRow[]> {
           const category = pick(r, ["Category", "Categoria", "Categoría", "category", "CATEGORY"]) || null;
           const stock_a = parseNum(pick(r, ["StockA", "Stock_A", "Stock A", "Mina", "StockMina", "Stock Mina", "STOCK"]));
           const stock_b = parseNum(pick(r, ["StockB", "Stock_B", "Stock B", "Morelos", "StockMorelos", "Stock Morelos"]));
-          rows.push({ barcode, product_name, uom, category, stock_a, stock_b });
+          const price = parseNum(pick(r, ["Price", "Precio", "price", "PRICE", "PrecioUnitario", "UnitPrice", "Precio_Unitario"]));
+          rows.push({ barcode, product_name, uom, category, stock_a, stock_b, price });
         }
         const map = new Map<string, ParsedRow>();
         for (const r of rows) map.set(r.barcode, r);
