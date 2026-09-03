@@ -266,6 +266,7 @@ function sanitize(r: ProductRow): ProductRow {
     category: clean(r.category, 120),
     stock_a: num(Number(r.stock_a)),
     stock_b: num(Number(r.stock_b)),
+    price: num(Number(r.price)),
   };
 }
 
