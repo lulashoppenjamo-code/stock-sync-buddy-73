@@ -315,6 +315,7 @@ function AuditHistoryPage() {
                   <div className={`font-bold ${s.diff === 0 ? "text-emerald-600" : s.diff < 0 ? "text-red-600" : "text-amber-600"}`}>
                     {s.diff === 0 ? "✓ exacto" : s.diff > 0 ? `+${s.diff}` : s.diff}
                   </div>
+                  {s.faltanteVal > 0 && <div className="text-[11px] font-semibold text-red-600">−{money(s.faltanteVal)}</div>}
                 </div>
               </button>
             ))}
@@ -352,8 +353,8 @@ function AuditHistoryPage() {
                     <div>Contado: <b className="text-foreground">{m.total}</b></div>
                     <div>{MINA}: <b className="text-foreground">{m.mina}</b></div>
                     <div>{MORELOS}: <b className="text-foreground">{m.morelos}</b></div>
-                    <div>Faltante: <b className="text-red-600">{m.faltante} pz</b></div>
-                    <div>Sobrante: <b className="text-amber-600">{m.sobrante} pz</b></div>
+                    <div>Faltante: <b className="text-red-600">{m.faltante} pz</b> <b className="text-red-600">· {money(m.faltanteVal)}</b></div>
+                    <div>Sobrante: <b className="text-amber-600">{m.sobrante} pz</b> <b className="text-amber-600">· {money(m.sobranteVal)}</b></div>
                     <div>Categorías: <b className="text-foreground">{m.categories.size}</b></div>
                     <div>Cortes: <b className="text-foreground">{m.sessions.size}</b></div>
                   </div>
