@@ -120,13 +120,13 @@ export async function buildDiff(rows: ParsedRow[]): Promise<ImportDiff> {
   const noBarNames = rowsWithoutBarcode.map((r) => r.product_name);
   const existingByName = new Map<
     string,
-    { barcode: string; product_name: string; uom: string | null; category: string | null; stock_a: number; stock_b: number }
+    { barcode: string; product_name: string; uom: string | null; category: string | null; stock_a: number; stock_b: number; price: number }
   >();
   for (let i = 0; i < noBarNames.length; i += 500) {
     const chunk = noBarNames.slice(i, i + 500);
     const { data, error } = await supabase
       .from("products")
-      .select("barcode, product_name, uom, category, stock_a, stock_b")
+      .select("barcode, product_name, uom, category, stock_a, stock_b, price")
       .in("product_name", chunk);
     if (error) throw error;
     for (const p of data ?? [])
@@ -137,6 +137,7 @@ export async function buildDiff(rows: ParsedRow[]): Promise<ImportDiff> {
         category: p.category,
         stock_a: Number(p.stock_a),
         stock_b: Number(p.stock_b),
+        price: Number((p as { price?: number }).price ?? 0),
       });
   }
 
@@ -153,8 +154,9 @@ export async function buildDiff(rows: ParsedRow[]): Promise<ImportDiff> {
       const categoryChanged = (cur.category ?? "") !== (r.category ?? "");
       const stockAChanged = r.stock_a != null && Number(cur.stock_a) !== r.stock_a;
       const stockBChanged = r.stock_b != null && Number(cur.stock_b) !== r.stock_b;
-      if (nameChanged || uomChanged || categoryChanged || stockAChanged || stockBChanged) {
-        diff.changedItems.push({ barcode: r.barcode, current: cur, next: r, nameChanged, uomChanged, categoryChanged, stockAChanged, stockBChanged });
+      const priceChanged = r.price != null && Number(cur.price) !== r.price;
+      if (nameChanged || uomChanged || categoryChanged || stockAChanged || stockBChanged || priceChanged) {
+        diff.changedItems.push({ barcode: r.barcode, current: cur, next: r, nameChanged, uomChanged, categoryChanged, stockAChanged, stockBChanged, priceChanged });
       } else {
         diff.identical++;
       }
