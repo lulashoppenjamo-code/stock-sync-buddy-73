@@ -67,6 +67,10 @@ function monthColor(key: string) {
 function monthKey(iso: string) {
   return iso.slice(0, 7);
 }
+function nowMonthKey() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
 function monthName(key: string) {
   const [y, m] = key.split("-").map(Number);
   return new Date(y, m - 1, 1).toLocaleDateString("es-MX", { month: "long", year: "numeric" });
@@ -93,6 +97,9 @@ function AuditHistoryPage() {
   const [selected, setSelected] = useState<string | null>(null);
   const [filterCat, setFilterCat] = useState("");
   const [filterDate, setFilterDate] = useState("");
+  // Por defecto "Cortes por categoría" muestra el mes en curso.
+  // Al buscar una fecha específica, se ignora el filtro de mes.
+  const [filterMonth, setFilterMonth] = useState<string>(nowMonthKey());
   const [adminPin, setAdminPin] = useState("");
   const [editRow, setEditRow] = useState<ClosedRow | null>(null);
   const [editMina, setEditMina] = useState(0);
@@ -174,7 +181,12 @@ function AuditHistoryPage() {
     }>();
     for (const r of rows) {
       if (filterCat && r.category !== filterCat) continue;
-      if (filterDate && !r.closed_at.startsWith(filterDate)) continue;
+      if (filterDate) {
+        // Búsqueda por fecha específica: manda sobre el filtro de mes.
+        if (!r.closed_at.startsWith(filterDate)) continue;
+      } else if (filterMonth && monthKey(r.closed_at) !== filterMonth) {
+        continue;
+      }
       const e = map.get(r.session_id) ?? {
         session_id: r.session_id, category: r.category, closed_at: r.closed_at,
         closed_by: r.closed_by, count: 0, sys: 0, mina: 0, morelos: 0, total: 0, diff: 0,
@@ -191,7 +203,13 @@ function AuditHistoryPage() {
       map.set(r.session_id, e);
     }
     return Array.from(map.values()).sort((a, b) => b.closed_at.localeCompare(a.closed_at));
-  }, [rows, filterCat, filterDate]);
+  }, [rows, filterCat, filterDate, filterMonth]);
+
+  const monthOptions = useMemo(() => {
+    const set = new Set<string>(rows.map((r) => monthKey(r.closed_at)));
+    set.add(nowMonthKey());
+    return Array.from(set).sort((a, b) => b.localeCompare(a));
+  }, [rows]);
 
   const categories = useMemo(
     () => Array.from(new Set(rows.map((r) => r.category))).sort((a, b) => a.localeCompare(b, "es")),
@@ -486,9 +504,27 @@ function AuditHistoryPage() {
                 </select>
               </div>
               <div className="flex-1 min-w-[140px]">
-                <label className="text-xs font-medium text-muted-foreground">Fecha</label>
-                <input type="date" value={filterDate} onChange={(e) => setFilterDate(e.target.value)}
+                <label className="text-xs font-medium text-muted-foreground">Mes</label>
+                <select value={filterMonth} disabled={!!filterDate}
+                  onChange={(e) => setFilterMonth(e.target.value)}
+                  className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm capitalize disabled:opacity-50">
+                  <option value="">Todos los meses</option>
+                  {monthOptions.map((k) => (
+                    <option key={k} value={k} className="capitalize">{monthName(k)}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex-1 min-w-[140px]">
+                <label className="text-xs font-medium text-muted-foreground">Buscar fecha específica</label>
+                <input type="date" value={filterDate}
+                  onChange={(e) => { setFilterDate(e.target.value); if (e.target.value) setFilterMonth(""); }}
                   className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm" />
+                {filterDate && (
+                  <button type="button" onClick={() => { setFilterDate(""); setFilterMonth(nowMonthKey()); }}
+                    className="mt-1 text-[11px] text-muted-foreground underline">
+                    Quitar fecha y volver al mes en curso
+                  </button>
+                )}
               </div>
             </CardContent>
           </Card>
@@ -550,7 +586,14 @@ function AuditHistoryPage() {
               });
             })()}
             {!isLoading && sessions.length === 0 && (
-              <div className="py-8 text-center text-xs text-muted-foreground rounded-md border">Sin cortes cerrados</div>
+              <div className="py-8 text-center text-xs text-muted-foreground rounded-md border space-y-1">
+                <p>Sin cortes cerrados{filterMonth ? ` en ${monthName(filterMonth)}` : ""}{filterDate ? ` para ${filterDate}` : ""}.</p>
+                {(filterMonth || filterDate) && (
+                  <button type="button" onClick={() => { setFilterDate(""); setFilterMonth(""); }} className="underline">
+                    Ver todos los meses
+                  </button>
+                )}
+              </div>
             )}
           </div>
         </>
