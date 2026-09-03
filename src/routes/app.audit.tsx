@@ -688,11 +688,11 @@ function AuditPage() {
                 <button key={c} type="button" onClick={() => setReportCategory(c)} disabled={!st}
                   className={`flex flex-col items-center rounded-md border px-2.5 py-1 text-[11px] font-medium leading-tight transition-colors ${
                     done ? "border-emerald-500 bg-emerald-500 text-white"
-                    : partial ? "border-amber-300 bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-200"
+                    : partial ? "border-amber-500 bg-amber-400 text-amber-950"
                     : "border-transparent bg-muted text-muted-foreground"
                   }`}>
-                  <span>{c}{done ? " ✓" : partial ? " ½" : ""}</span>
-                  <span className={`text-[9px] font-normal ${done ? "text-emerald-50" : "opacity-70"}`}>
+                  <span>{c}{done ? " ✓" : partial ? " ⏳" : ""}</span>
+                  <span className={`text-[9px] font-normal ${done ? "text-emerald-50" : partial ? "text-amber-900" : "opacity-70"}`}>
                     {total} artículo{total === 1 ? "" : "s"}
                   </span>
                 </button>
