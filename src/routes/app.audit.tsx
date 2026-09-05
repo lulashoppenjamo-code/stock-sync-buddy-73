@@ -5,8 +5,9 @@ import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
+import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { Loader2, ScanLine, Save, Search, CheckCircle2, Minus, Plus, Trash2, ClipboardList, Flag, History, WifiOff, ShieldAlert, RotateCcw, Pencil, Lock, AlertTriangle } from "lucide-react";
+import { Loader2, ScanLine, Save, Search, CheckCircle2, Minus, Plus, Trash2, ClipboardList, Flag, History, WifiOff, ShieldAlert, RotateCcw, Pencil, Lock, AlertTriangle, MessageSquare, Send } from "lucide-react";
 import { toast } from "sonner";
 import { getCollaborator, useCollaborator } from "@/lib/session";
 import { BarcodeScanner } from "@/components/BarcodeScanner";
@@ -78,6 +79,12 @@ function monthLabel() {
   return `${fmt(start)} al ${fmt(end)}`;
 }
 
+// Periodo usado para "branch_closures": primer día del mes actual (YYYY-MM-01)
+function periodKey() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
+}
+
 function stockColor(stock: number): string {
   if (stock < 0) return "text-red-600 dark:text-red-400";
   if (stock === 0) return "text-amber-500 dark:text-amber-400";
@@ -132,19 +139,20 @@ function AuditPage() {
   const scanRef = useRef<HTMLInputElement>(null);
   const qc = useQueryClient();
 
-  const [unscannedDialog, setUnscannedDialog] = useState(false);
-  const [unscannedProducts, setUnscannedProducts] = useState<Product[]>([]);
   const [closeDialog, setCloseDialog] = useState(false);
   const [closing, setClosing] = useState(false);
+  const [closeBranchDialog, setCloseBranchDialog] = useState(false);
+  const [closingBranch, setClosingBranch] = useState(false);
+  const [commentText, setCommentText] = useState("");
+  const [commentSending, setCommentSending] = useState(false);
 
   const rowRefs = useRef<Map<string, HTMLDivElement | null>>(new Map());
+  // El recuadro azul del último producto escaneado/seleccionado se mantiene
+  // hasta que se escanee/seleccione otro (no se borra solo con un timeout).
   const [highlightBarcode, setHighlightBarcode] = useState<string | null>(null);
-  const highlightTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   function flashProduct(barcode: string) {
     rowRefs.current.get(barcode)?.scrollIntoView({ behavior: "smooth", block: "center" });
     setHighlightBarcode(barcode);
-    if (highlightTimer.current) clearTimeout(highlightTimer.current);
-    highlightTimer.current = setTimeout(() => setHighlightBarcode(null), 2000);
   }
 
   useEffect(() => {
@@ -230,6 +238,46 @@ function AuditPage() {
     return map;
   }, [monthlyHistory]);
 
+  // ── Cierres por sucursal del mes (marca amarillo cuando 1 sucursal cierra) ──
+  const { data: branchClosures = [] } = useQuery({
+    queryKey: ["branch-closures", periodKey()],
+    staleTime: online ? 15_000 : Infinity,
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("branch_closures")
+        .select("category, branch, period, collaborator_name, total_counted, products_counted")
+        .eq("period", periodKey());
+      if (error) throw error;
+      return data as Array<{ category: string; branch: string; period: string; collaborator_name: string | null; total_counted: number; products_counted: number }>;
+    },
+  });
+
+  const branchClosureMap = useMemo(() => {
+    const map = new Map<string, { A: boolean; B: boolean }>();
+    for (const row of branchClosures) {
+      const entry = map.get(row.category) ?? { A: false, B: false };
+      if (row.branch === "A") entry.A = true;
+      if (row.branch === "B") entry.B = true;
+      map.set(row.category, entry);
+    }
+    return map;
+  }, [branchClosures]);
+
+  // ── Comentarios / reportes de auditoría (recientes) ──────────────────
+  const { data: recentComments = [] } = useQuery({
+    queryKey: ["audit-comments"],
+    staleTime: online ? 15_000 : Infinity,
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("audit_comments")
+        .select("id, category, branch, collaborator_name, comment, created_at")
+        .order("created_at", { ascending: false })
+        .limit(20);
+      if (error) throw error;
+      return data;
+    },
+  });
+
   const { data: products = [] } = useQuery({
     queryKey: ["cat-products", category],
     enabled: !!category,
@@ -291,13 +339,21 @@ function AuditPage() {
     return map;
   }, [realtimeAudits]);
 
-  const minaDone = realtimeMina.size > 0;
-  const morelosDone = realtimeMorelos.size > 0;
+  const closedA = category ? branchClosureMap.get(category)?.A ?? false : false;
+  const closedB = category ? branchClosureMap.get(category)?.B ?? false : false;
+
+  const minaDone = closedA || realtimeMina.size > 0;
+  const morelosDone = closedB || realtimeMorelos.size > 0;
   const bothDone = minaDone && morelosDone;
 
   const alreadyCountedThisMonth = category
     ? (branch === "A" ? categoryStatus.get(category)?.hasA : categoryStatus.get(category)?.hasB) ?? false
     : false;
+
+  // Mi sucursal ya cerró su conteo de esta categoría este mes (nuevo cierre por sucursal)
+  const myBranchClosed = category ? (branch === "A" ? closedA : closedB) : false;
+  // Bloquea la pantalla de conteo si el admin ya finalizó la categoría o si mi sucursal ya cerró su parte
+  const branchLocked = alreadyCountedThisMonth || myBranchClosed;
 
   async function lookupProduct(barcode: string): Promise<Product | null> {
     const local = products.find((p) => p.barcode === barcode);
@@ -354,10 +410,12 @@ function AuditPage() {
     if (!newCat) clearCatState();
   }
 
-  function getUnscanned(): Product[] {
+  // Productos de MI sucursal que todavía no tienen conteo (ni local ni ya guardado hoy)
+  function getUnclosedForBranch(): Product[] {
+    const mySums = branch === "A" ? realtimeMina : realtimeMorelos;
     return products.filter((p) => {
       const sys = Number(p.stock_a) + Number(p.stock_b);
-      return sys > 0 && !counts.has(p.barcode) && !realtimeSums.has(p.barcode);
+      return sys > 0 && !counts.has(p.barcode) && !mySums.has(p.barcode);
     });
   }
 
@@ -365,12 +423,6 @@ function AuditPage() {
     if (counts.size === 0) return toast.error("No hay productos contados");
     const collab = getCollaborator();
     if (!collab) return toast.error("Sesión expirada");
-    const unscanned = getUnscanned();
-    if (unscanned.length > 0) {
-      setUnscannedProducts(unscanned);
-      setUnscannedDialog(true);
-      return;
-    }
     await doSave(counts);
   }
 
@@ -406,7 +458,6 @@ function AuditPage() {
       setSummaryData(Array.from(countsToSave.values()));
       setCounts(new Map());
       clearCatState();
-      setUnscannedDialog(false);
       if (online) {
         qc.invalidateQueries({ queryKey: ["audits"] });
         qc.invalidateQueries({ queryKey: ["audits-realtime", category] });
@@ -415,15 +466,109 @@ function AuditPage() {
     finally { setSaving(false); }
   }
 
-  async function saveWithZeros() {
-    const newCounts = new Map(counts);
-    for (const p of unscannedProducts) {
-      const sys = Number(p.stock_a) + Number(p.stock_b);
-      newCounts.set(p.barcode, { barcode: p.barcode, product_name: p.product_name, count: 0, system_stock: sys });
+  // Cierra el conteo de MI sucursal para esta categoría: lo no contado se guarda en 0,
+  // se persiste todo, y se marca la categoría en amarillo para la otra sucursal.
+  async function closeBranchCount() {
+    const collab = getCollaborator();
+    if (!collab) { toast.error("Sesión expirada"); return; }
+    if (!category) return;
+    if (!online) {
+      toast.error("Necesitás conexión a internet para cerrar el conteo.");
+      return;
     }
-    setCounts(newCounts);
-    setUnscannedDialog(false);
-    await doSave(newCounts);
+    setClosingBranch(true);
+    try {
+      const unclosed = getUnclosedForBranch();
+      const finalCounts = new Map(counts);
+      for (const p of unclosed) {
+        const sys = Number(p.stock_a) + Number(p.stock_b);
+        finalCounts.set(p.barcode, { barcode: p.barcode, product_name: p.product_name, count: 0, system_stock: sys });
+      }
+
+      if (finalCounts.size > 0) {
+        const sessionId = crypto.randomUUID();
+        const rows = Array.from(finalCounts.values()).map((c) => ({
+          branch,
+          barcode: c.barcode,
+          product_name: c.product_name,
+          system_stock: c.system_stock,
+          physical_count: c.count,
+          difference: c.count - c.system_stock,
+          collaborator_id: collab.id,
+          collaborator_name: collab.name,
+          client_uid: `close-${sessionId}-${c.barcode}`,
+        }));
+        if (online) {
+          const { error } = await supabase.from("audits").insert(rows);
+          if (error) throw error;
+        } else {
+          for (const row of rows) {
+            await enqueue({ kind: "audit", uid: row.client_uid, createdAt: Date.now(), payload: row });
+          }
+        }
+      }
+
+      // Total contado por mi sucursal = lo local (con ceros incluidos) + lo ya guardado hoy que no está local
+      const mySums = branch === "A" ? realtimeMina : realtimeMorelos;
+      let total = 0;
+      let numProducts = 0;
+      for (const p of products) {
+        const local = finalCounts.get(p.barcode);
+        const val = local ? local.count : (mySums.get(p.barcode) ?? 0);
+        total += val;
+        if (val > 0) numProducts++;
+      }
+
+      if (online) {
+        const { error: e2 } = await supabase.from("branch_closures").upsert(
+          {
+            category, branch, period: periodKey(),
+            collaborator_id: collab.id, collaborator_name: collab.name,
+            total_counted: total, products_counted: numProducts,
+          },
+          { onConflict: "category,branch,period" }
+        );
+        if (e2) throw e2;
+      }
+
+      toast.success(`Conteo de "${category}" cerrado en ${branchLabel(branch)} ✓`);
+      setCloseBranchDialog(false);
+      setCounts(new Map());
+      clearCatState();
+      if (online) {
+        qc.invalidateQueries({ queryKey: ["audits-realtime", category] });
+        qc.invalidateQueries({ queryKey: ["branch-closures", periodKey()] });
+      }
+    } catch (e) {
+      toast.error("No se pudo cerrar: " + (e as Error).message);
+    } finally {
+      setClosingBranch(false);
+    }
+  }
+
+  async function sendComment() {
+    const collab = getCollaborator();
+    if (!collab) { toast.error("Sesión expirada"); return; }
+    const text = commentText.trim();
+    if (!text) return;
+    setCommentSending(true);
+    try {
+      const { error } = await supabase.from("audit_comments").insert({
+        category: category || null,
+        branch,
+        collaborator_id: collab.id,
+        collaborator_name: collab.name,
+        comment: text,
+      });
+      if (error) throw error;
+      setCommentText("");
+      toast.success("Comentario enviado");
+      qc.invalidateQueries({ queryKey: ["audit-comments"] });
+    } catch (e) {
+      toast.error("No se pudo enviar: " + (e as Error).message);
+    } finally {
+      setCommentSending(false);
+    }
   }
 
   async function finalizeCount() {
@@ -681,11 +826,14 @@ function AuditPage() {
           <div className="flex flex-wrap gap-1.5">
             {categories.map((c) => {
               const st = categoryStatus.get(c);
+              // Verde: el administrador ya finalizó el conteo (ambas sucursales, en audit_history)
               const done = !!st?.hasA && !!st?.hasB;
-              const partial = !done && (!!st?.hasA || !!st?.hasB);
+              // Amarillo: una sola sucursal cerró su conteo (branch_closures) — la otra falta
+              const bc = branchClosureMap.get(c);
+              const partial = !done && (!!bc?.A || !!bc?.B);
               const total = categoryCounts.get(c) ?? 0;
               return (
-                <button key={c} type="button" onClick={() => setReportCategory(c)} disabled={!st}
+                <button key={c} type="button" onClick={() => setReportCategory(c)} disabled={!st && !bc}
                   className={`flex flex-col items-center rounded-md border px-2.5 py-1 text-[11px] font-medium leading-tight transition-colors ${
                     done ? "border-emerald-500 bg-emerald-500 text-white"
                     : partial ? "border-amber-500 bg-amber-400 text-amber-950"
@@ -775,14 +923,18 @@ function AuditPage() {
         </CardContent>
       </Card>
 
-      {category && alreadyCountedThisMonth && (
-        <div className="flex flex-col items-center gap-2 rounded-md border border-emerald-300 bg-emerald-50 dark:bg-emerald-950/20 py-8 text-center">
-          <CheckCircle2 className="h-8 w-8 text-emerald-600" />
-          <p className="text-sm font-medium text-emerald-800 dark:text-emerald-200">
-            "{category}" ya se contó este mes en {branchLabel(branch)}
+      {category && branchLocked && (
+        <div className={`flex flex-col items-center gap-2 rounded-md border py-8 text-center ${alreadyCountedThisMonth ? "border-emerald-300 bg-emerald-50 dark:bg-emerald-950/20" : "border-amber-300 bg-amber-50 dark:bg-amber-950/20"}`}>
+          <CheckCircle2 className={`h-8 w-8 ${alreadyCountedThisMonth ? "text-emerald-600" : "text-amber-600"}`} />
+          <p className={`text-sm font-medium ${alreadyCountedThisMonth ? "text-emerald-800 dark:text-emerald-200" : "text-amber-800 dark:text-amber-200"}`}>
+            {alreadyCountedThisMonth
+              ? `"${category}" ya se contó este mes en ${branchLabel(branch)}`
+              : `Cerraste el conteo de "${category}" en ${branchLabel(branch)} ✓`}
           </p>
           <p className="text-xs text-muted-foreground max-w-xs">
-            Solo se permite un conteo por categoría al mes ({monthLabel()}).
+            {alreadyCountedThisMonth
+              ? `Solo se permite un conteo por categoría al mes (${monthLabel()}).`
+              : `Falta que ${branchLabel(branch === "A" ? "B" : "A")} cierre su conteo${me?.is_admin ? " para poder finalizar la categoría." : "."}`}
           </p>
           <div className="flex gap-2">
             <Button size="sm" variant="outline" onClick={() => setReportCategory(category)}>Ver reporte</Button>
@@ -797,7 +949,7 @@ function AuditPage() {
         </div>
       )}
 
-      {category && !alreadyCountedThisMonth && (
+      {category && !branchLocked && (
         <>
           <Card>
             <CardContent className="p-3 space-y-2">
@@ -924,6 +1076,8 @@ function AuditPage() {
                             const n = raw === "" ? 0 : Math.max(0, parseInt(raw, 10) || 0);
                             setCount(p.barcode, n);
                           }}
+                          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); scanRef.current?.focus(); } }}
+                          onBlur={() => scanRef.current?.focus()}
                           className={`w-9 rounded border border-input bg-transparent text-center text-sm tabular-nums font-bold focus:outline-none focus:ring-2 focus:ring-primary ${isCounted ? "text-emerald-700" : "text-muted-foreground"}`}
                         />
                         <button type="button" onClick={() => addCount(p.barcode)}
@@ -946,26 +1100,24 @@ function AuditPage() {
             {counts.size > 0 && (
               <div className="mt-2 grid grid-cols-1 gap-2">
                 {/* Guardar parcial — visible para todos */}
-                <Button onClick={saveCount} disabled={saving || finalizing} variant="outline" className="w-full">
+                <Button onClick={saveCount} disabled={saving || finalizing || closingBranch} variant="outline" className="w-full">
                   {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
                   {online ? `Guardar parcial (${counts.size})` : `Guardar offline (${counts.size})`}
                 </Button>
-                {/* Finalizar conteo — solo admin, solo cuando ambas sucursales tienen conteos */}
-                {me?.is_admin && bothDone && (
-                  <Button onClick={finalizeCount} disabled={saving || finalizing} className="w-full">
-                    {finalizing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Flag className="h-4 w-4" />}
-                    Finalizar conteo (Mina + Morelos)
-                  </Button>
-                )}
-                {me?.is_admin && !bothDone && (
-                  <div className="rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground text-center">
-                    <Flag className="inline h-3.5 w-3.5 mr-1" />
-                    Finalizar disponible cuando Mina y Morelos tengan conteos del día.
-                    {!minaDone && " Falta: Mina."}{!morelosDone && " Falta: Morelos."}
-                  </div>
-                )}
               </div>
             )}
+
+            {/* ── Cerrar conteo por sucursal — un solo botón, sin opciones, lo no contado va en 0 ── */}
+            <div className="mt-2">
+              <Button onClick={() => setCloseBranchDialog(true)} disabled={saving || finalizing || closingBranch}
+                className="w-full bg-amber-600 hover:bg-amber-700 text-white">
+                {closingBranch ? <Loader2 className="h-4 w-4 animate-spin" /> : <Flag className="h-4 w-4" />}
+                Cerrar conteo — {branchLabel(branch)}
+              </Button>
+              <p className="mt-1 text-center text-[11px] text-muted-foreground">
+                Lo que no se contó en "{category}" se guardará como 0. Después de cerrar, no podés seguir contando esta categoría este mes.
+              </p>
+            </div>
 
             {/* ── Finalizar conteo — solo admin, solo cuando ambas sucursales tienen conteos ── */}
             {me?.is_admin && category && bothDone && (
@@ -999,44 +1151,30 @@ function AuditPage() {
         </div>
       )}
 
-      {/* ── Dialog: productos no escaneados ── */}
-      <Dialog open={unscannedDialog} onOpenChange={setUnscannedDialog}>
-        <DialogContent className="max-h-[90vh] max-w-md overflow-y-auto">
+      {/* ── Dialog: cerrar conteo por sucursal ── */}
+      <Dialog open={closeBranchDialog} onOpenChange={(o) => { if (!o && !closingBranch) setCloseBranchDialog(false); }}>
+        <DialogContent className="max-w-sm">
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <AlertTriangle className="h-5 w-5 text-amber-500" />
-              {unscannedProducts.length} productos con stock no escaneados
+            <DialogTitle className="flex items-center gap-2 text-amber-700 dark:text-amber-300">
+              <AlertTriangle className="h-5 w-5" /> ¿Seguro que quieres cerrar este conteo?
             </DialogTitle>
           </DialogHeader>
-          <div className="space-y-3 text-sm">
-            <p className="text-xs text-muted-foreground">
-              Estos productos tienen existencias en sistema pero no fueron escaneados. ¿Los incluís como <strong>conteo = 0 (FALTA)</strong> o ignorás?
+          <div className="space-y-2 text-sm text-muted-foreground">
+            <p>Revisá bien tus datos antes de continuar — esta acción no se puede deshacer.</p>
+            <p>
+              Asegurate de que estás en <strong className="text-foreground">tu sesión correcta</strong>
+              {me?.name ? <> ({me.name})</> : null} y que estás contando en la sucursal correcta:{" "}
+              <strong className="text-foreground">{branchLabel(branch)}</strong>.
             </p>
-            <div className="max-h-48 divide-y overflow-auto rounded-md border">
-              {unscannedProducts.map((p) => {
-                const sys = Number(p.stock_a) + Number(p.stock_b);
-                return (
-                  <div key={p.barcode} className="flex items-center justify-between px-3 py-2 text-xs">
-                    <div>
-                      <div className="font-medium">{p.product_name}</div>
-                      <div className="font-mono text-muted-foreground">{p.barcode}</div>
-                    </div>
-                    <div className="text-right">
-                      <div className="text-muted-foreground">Sistema: {sys}</div>
-                      <div className="font-bold text-red-600">-{sys} FALTA</div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+            <p>
+              Lo que no se contó en "<strong className="text-foreground">{category}</strong>" se guardará como <strong className="text-foreground">0</strong>.
+            </p>
           </div>
-          <DialogFooter className="flex-col gap-2 sm:flex-row">
-            <Button variant="outline" onClick={() => doSave(counts)} disabled={saving} className="w-full sm:w-auto">
-              Ignorar — guardar solo lo escaneado
-            </Button>
-            <Button onClick={saveWithZeros} disabled={saving} className="w-full sm:w-auto">
-              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-              Incluir como 0 (FALTA)
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCloseBranchDialog(false)} disabled={closingBranch}>Cancelar</Button>
+            <Button onClick={closeBranchCount} disabled={closingBranch} className="bg-amber-600 hover:bg-amber-700">
+              {closingBranch ? <Loader2 className="h-4 w-4 animate-spin" /> : <Flag className="h-4 w-4" />}
+              Cerrar conteo
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1312,6 +1450,39 @@ function AuditPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* ── Comentarios y reportes de auditoría ── */}
+      <Card>
+        <CardContent className="p-3 space-y-2">
+          <div className="flex items-center gap-2 text-sm font-semibold">
+            <MessageSquare className="h-4 w-4" /> Comentarios y reportes
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            Anotá acá errores encontrados, desperfectos o sugerencias{category ? ` sobre "${category}"` : ""}.
+          </p>
+          <Textarea value={commentText} onChange={(e) => setCommentText(e.target.value)}
+            placeholder="Escribí tu comentario…" rows={3} />
+          <Button size="sm" onClick={sendComment} disabled={commentSending || !commentText.trim()}>
+            {commentSending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+            Enviar comentario
+          </Button>
+          {recentComments.length > 0 && (
+            <div className="mt-2 max-h-40 space-y-2 overflow-y-auto rounded-md border bg-muted/30 p-2">
+              {recentComments.map((c) => (
+                <div key={c.id} className="text-[11px]">
+                  <div className="flex flex-wrap items-center gap-1 text-muted-foreground">
+                    <span className="font-medium text-foreground">{c.collaborator_name ?? "—"}</span>
+                    {c.branch && <span>· {branchLabel(c.branch)}</span>}
+                    {c.category && <span>· {c.category}</span>}
+                    <span>· {new Date(c.created_at).toLocaleDateString("es-MX", { day: "numeric", month: "short" })}</span>
+                  </div>
+                  <p className="text-foreground">{c.comment}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       <BarcodeScanner open={scanning} onClose={() => setScanning(false)} continuous onDetected={(c) => addCount(c)} />
     </div>
