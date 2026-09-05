@@ -14,6 +14,66 @@ export type Database = {
   }
   public: {
     Tables: {
+      ai_messages: {
+        Row: {
+          collaborator_id: string | null
+          collaborator_name: string | null
+          content: string
+          created_at: string
+          id: string
+          role: string
+          thread_id: string
+        }
+        Insert: {
+          collaborator_id?: string | null
+          collaborator_name?: string | null
+          content: string
+          created_at?: string
+          id?: string
+          role: string
+          thread_id: string
+        }
+        Update: {
+          collaborator_id?: string | null
+          collaborator_name?: string | null
+          content?: string
+          created_at?: string
+          id?: string
+          role?: string
+          thread_id?: string
+        }
+        Relationships: []
+      }
+      audit_comments: {
+        Row: {
+          branch: string | null
+          category: string | null
+          collaborator_id: string | null
+          collaborator_name: string | null
+          comment: string
+          created_at: string
+          id: string
+        }
+        Insert: {
+          branch?: string | null
+          category?: string | null
+          collaborator_id?: string | null
+          collaborator_name?: string | null
+          comment: string
+          created_at?: string
+          id?: string
+        }
+        Update: {
+          branch?: string | null
+          category?: string | null
+          collaborator_id?: string | null
+          collaborator_name?: string | null
+          comment?: string
+          created_at?: string
+          id?: string
+        }
+        Relationships: []
+      }
       audit_history: {
         Row: {
           barcode: string
@@ -115,6 +175,45 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      branch_closures: {
+        Row: {
+          branch: string
+          category: string
+          collaborator_id: string | null
+          collaborator_name: string | null
+          comments: string | null
+          created_at: string
+          id: string
+          period: string
+          products_counted: number
+          total_counted: number
+        }
+        Insert: {
+          branch: string
+          category: string
+          collaborator_id?: string | null
+          collaborator_name?: string | null
+          comments?: string | null
+          created_at?: string
+          id?: string
+          period: string
+          products_counted?: number
+          total_counted?: number
+        }
+        Update: {
+          branch?: string
+          category?: string
+          collaborator_id?: string | null
+          collaborator_name?: string | null
+          comments?: string | null
+          created_at?: string
+          id?: string
+          period?: string
+          products_counted?: number
+          total_counted?: number
+        }
+        Relationships: []
       }
       categories: {
         Row: {
