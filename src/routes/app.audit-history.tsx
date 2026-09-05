@@ -601,9 +601,53 @@ function AuditHistoryPage() {
 
       {tab === "general" && (
         <div className="space-y-3">
+          {monthly.length > 0 && (
+            <Card>
+              <CardContent className="p-3 space-y-2">
+                <div className="flex items-center gap-2 text-sm font-semibold">
+                  <TrendingDown className="h-4 w-4 text-red-500" /> Progreso del faltante mes con mes
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  Barras: faltante en pesos · Línea: % de faltante sobre el stock del sistema. Si baja, vas mejorando.
+                </p>
+                <div className="h-56 w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <ComposedChart data={chartData} margin={{ top: 8, right: 8, left: -12, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                      <XAxis dataKey="label" tick={{ fontSize: 10 }} interval={0} angle={-20} textAnchor="end" height={44} />
+                      <YAxis yAxisId="val" tick={{ fontSize: 10 }} tickFormatter={(v: number) => `$${Math.round(v / 1000)}k`} />
+                      <YAxis yAxisId="pct" orientation="right" tick={{ fontSize: 10 }} tickFormatter={(v: number) => `${v}%`} />
+                      <RTooltip
+                        formatter={(value: number, name: string) =>
+                          name === "Faltante $" ? money(Number(value)) : `${Number(value).toFixed(2)}%`
+                        }
+                      />
+                      <Legend wrapperStyle={{ fontSize: 11 }} />
+                      <Bar yAxisId="val" dataKey="faltanteVal" name="Faltante $" fill="#ef4444" radius={[3, 3, 0, 0]} />
+                      <Line yAxisId="pct" type="monotone" dataKey="pctFaltante" name="% faltante" stroke="#7c3aed" strokeWidth={2} dot={{ r: 3 }} />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                </div>
+                {chartData.length >= 2 && (() => {
+                  const last = chartData[chartData.length - 1]!;
+                  const prev = chartData[chartData.length - 2]!;
+                  const delta = last.pctFaltante - prev.pctFaltante;
+                  return (
+                    <div className={`text-xs font-medium ${delta <= 0 ? "text-emerald-600" : "text-red-600"}`}>
+                      {delta <= 0 ? "▼ El faltante bajó" : "▲ El faltante subió"} {Math.abs(delta).toFixed(2)} pts en {last.label} vs {prev.label}
+                    </div>
+                  );
+                })()}
+              </CardContent>
+            </Card>
+          )}
+
+          <AuditAIChat />
+
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <BarChart3 className="h-4 w-4" /> Faltante por mes (todas las categorías cerradas)
           </div>
+
           {monthly.map((m, i) => {
             const p = pct(m.faltante, m.sys);
             const prev = monthly[i + 1];
