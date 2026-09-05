@@ -10,7 +10,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { Loader2, ArrowLeft, History, BarChart3, ShieldAlert, Pencil, CheckCircle2, PackageCheck, TrendingDown } from "lucide-react";
+import { Loader2, ArrowLeft, History, BarChart3, ShieldAlert, Pencil, CheckCircle2, PackageCheck, TrendingDown, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { BRANCH_LABELS } from "@/lib/branches";
 import { useCollaborator } from "@/lib/session";
@@ -111,6 +111,34 @@ function AuditHistoryPage() {
   const [editMorelos, setEditMorelos] = useState(0);
   const [savingEdit, setSavingEdit] = useState(false);
   const [savingZobaze, setSavingZobaze] = useState(false);
+  const [deletingSession, setDeletingSession] = useState<string | null>(null);
+  const [confirmDeleteSession, setConfirmDeleteSession] = useState<string | null>(null);
+
+  async function deleteSession(sessionId: string) {
+    if (!me?.is_admin) return;
+    if (adminPin.length < 4) { toast.error("Ingresá tu PIN de administrador"); return; }
+    setDeletingSession(sessionId);
+    try {
+      // Delete from closed_counts
+      const { error: e1 } = await supabase
+        .from("closed_counts")
+        .delete()
+        .eq("session_id", sessionId);
+      if (e1) throw e1;
+      // Delete from audit_history (same session)
+      const { error: e2 } = await supabase
+        .from("audit_history")
+        .delete()
+        .eq("session_id", sessionId);
+      if (e2) throw e2;
+      toast.success("Historial eliminado");
+      setConfirmDeleteSession(null);
+      setSelected(null);
+      qc.invalidateQueries({ queryKey: ["closed_counts"] });
+      qc.invalidateQueries({ queryKey: ["audit-history-month"] });
+    } catch (e) { toast.error((e as Error).message); }
+    finally { setDeletingSession(null); }
+  }
 
   const { data: rows = [], isLoading } = useQuery({
     queryKey: ["closed_counts"],
@@ -326,6 +354,34 @@ function AuditHistoryPage() {
             <p className="text-[11px] text-muted-foreground">
               El conteo se conserva tal cual para llevar el registro; esta marca solo indica que ya ajustaste las existencias en Zobaze según este corte.
             </p>
+
+            {/* Eliminar historial — solo admin */}
+            {me?.is_admin && (
+              <div className="pt-1 border-t">
+                {confirmDeleteSession === selected ? (
+                  <div className="space-y-2">
+                    <p className="text-xs text-red-600 font-medium">⚠ ¿Seguro que querés eliminar todo este historial? No se puede deshacer.</p>
+                    <div className="flex gap-2">
+                      <Button size="sm" variant="outline" onClick={() => setConfirmDeleteSession(null)}>Cancelar</Button>
+                      <Button size="sm" variant="destructive" disabled={!!deletingSession}
+                        onClick={() => deleteSession(selected)}>
+                        {deletingSession ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                        Sí, eliminar
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <Button size="sm" variant="outline"
+                    className="border-red-300 text-red-600 hover:bg-red-50"
+                    onClick={() => {
+                      if (adminPin.length < 4) { toast.error("Ingresá tu PIN de administrador primero"); return; }
+                      setConfirmDeleteSession(selected);
+                    }}>
+                    <Trash2 className="h-3.5 w-3.5" /> Eliminar historial de este corte
+                  </Button>
+                )}
+              </div>
+            )}
 
             <div className="grid grid-cols-2 gap-2 pt-2 text-center">
               <div className="rounded bg-muted p-2">
