@@ -1,15 +1,20 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
+import {
+  ResponsiveContainer, ComposedChart, CartesianGrid, XAxis, YAxis,
+  Tooltip as RTooltip, Legend, Bar, Line,
+} from "recharts";
 import { supabase } from "@/integrations/supabase/client";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { Loader2, ArrowLeft, History, BarChart3, ShieldAlert, Pencil, CheckCircle2, PackageCheck } from "lucide-react";
+import { Loader2, ArrowLeft, History, BarChart3, ShieldAlert, Pencil, CheckCircle2, PackageCheck, TrendingDown } from "lucide-react";
 import { toast } from "sonner";
 import { BRANCH_LABELS } from "@/lib/branches";
 import { useCollaborator } from "@/lib/session";
+import { AuditAIChat } from "@/components/AuditAIChat";
 
 export const Route = createFileRoute("/app/audit-history")({
   component: AuditHistoryPage,
@@ -245,6 +250,17 @@ function AuditHistoryPage() {
     }
     return Array.from(map.values()).sort((a, b) => b.key.localeCompare(a.key));
   }, [rows]);
+
+  // ── Datos para la gráfica de progreso mes con mes (orden cronológico ascendente) ──
+  const chartData = useMemo(() => {
+    return [...monthly]
+      .sort((a, b) => a.key.localeCompare(b.key))
+      .map((m) => ({
+        label: monthName(m.key).replace(/ de \d{4}$/, ""),
+        faltanteVal: m.faltanteVal,
+        pctFaltante: pct(m.faltante, m.sys),
+      }));
+  }, [monthly]);
 
   // ── Detalle de un corte ──────────────────────────────────────────────
   if (selected) {
