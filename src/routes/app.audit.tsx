@@ -151,8 +151,11 @@ function AuditPage() {
   // hasta que se escanee/seleccione otro (no se borra solo con un timeout).
   const [highlightBarcode, setHighlightBarcode] = useState<string | null>(null);
   function flashProduct(barcode: string) {
-    rowRefs.current.get(barcode)?.scrollIntoView({ behavior: "smooth", block: "center" });
     setHighlightBarcode(barcode);
+    // Pequeño delay para asegurar que el DOM ya actualizó antes de hacer scroll
+    setTimeout(() => {
+      rowRefs.current.get(barcode)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 80);
   }
 
   useEffect(() => {
@@ -1107,17 +1110,7 @@ function AuditPage() {
               </div>
             )}
 
-            {/* ── Cerrar conteo por sucursal — un solo botón, sin opciones, lo no contado va en 0 ── */}
-            <div className="mt-2">
-              <Button onClick={() => setCloseBranchDialog(true)} disabled={saving || finalizing || closingBranch}
-                className="w-full bg-amber-600 hover:bg-amber-700 text-white">
-                {closingBranch ? <Loader2 className="h-4 w-4 animate-spin" /> : <Flag className="h-4 w-4" />}
-                Cerrar conteo — {branchLabel(branch)}
-              </Button>
-              <p className="mt-1 text-center text-[11px] text-muted-foreground">
-                Lo que no se contó en "{category}" se guardará como 0. Después de cerrar, no podés seguir contando esta categoría este mes.
-              </p>
-            </div>
+
 
             {/* ── Finalizar conteo — solo admin, solo cuando ambas sucursales tienen conteos ── */}
             {me?.is_admin && category && bothDone && (
