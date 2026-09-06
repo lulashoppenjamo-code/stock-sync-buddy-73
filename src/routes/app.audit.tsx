@@ -820,8 +820,8 @@ function AuditPage() {
               <div className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${morelosDone ? "bg-emerald-100 text-emerald-700" : "bg-muted text-muted-foreground"}`}>
                 {morelosDone ? "✓" : "○"} Morelos
               </div>
-              {me?.is_admin && bothDone && (
-                <span className="ml-auto text-xs text-emerald-600 font-medium">¡Listas para cerrar!</span>
+              {me?.is_admin && bothClosed && (
+                <span className="ml-auto text-xs text-emerald-600 font-medium">¡Listas para el cierre general!</span>
               )}
             </div>
           )}
