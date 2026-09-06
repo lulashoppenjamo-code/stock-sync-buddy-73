@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { Loader2, ScanLine, Search, CheckCircle2, Minus, Plus, Trash2, ClipboardList, Flag, History, WifiOff, ShieldAlert, RotateCcw, Pencil, AlertTriangle, MessageSquare, Send } from "lucide-react";
+import { Loader2, Save, ScanLine, Search, CheckCircle2, Minus, Plus, Trash2, ClipboardList, Flag, History, WifiOff, ShieldAlert, RotateCcw, Pencil, AlertTriangle, MessageSquare, Send } from "lucide-react";
 import { toast } from "sonner";
 import { getCollaborator, useCollaborator } from "@/lib/session";
 import { BarcodeScanner } from "@/components/BarcodeScanner";
@@ -51,7 +51,8 @@ type AdminAction =
   | { type: "reset"; category: string; branch: "A" | "B" }
   | { type: "resetRealtime"; category: string; branch: "A" | "B" }
   | { type: "deleteRow"; row: HistoryRow }
-  | { type: "editRow"; row: HistoryRow; newQty: number };
+  | { type: "editRow"; row: HistoryRow; newQty: number }
+  | { type: "restoreClosure"; category: string; branch: "A" | "B" };
 
 // ── localStorage ───────────────────────────────────────────────────────
 const CAT_KEY = "inv.audit.category.v2";
@@ -144,6 +145,16 @@ function AuditPage() {
   const [closeBranchDialog, setCloseBranchDialog] = useState(false);
   const [closingBranch, setClosingBranch] = useState(false);
   const [commentText, setCommentText] = useState("");
+  // Limpiar comentario al cambiar de categoría O de sucursal, para que el
+  // cuadro de texto siempre quede en blanco al moverse a otro conteo distinto.
+  const prevCategoryBranchRef = useRef<string>("");
+  useEffect(() => {
+    const key = `${category}|${branch}`;
+    if (key !== prevCategoryBranchRef.current) {
+      setCommentText("");
+      prevCategoryBranchRef.current = key;
+    }
+  }, [category, branch]);
   const [commentSending, setCommentSending] = useState(false);
 
   const rowRefs = useRef<Map<string, HTMLDivElement | null>>(new Map());
@@ -267,13 +278,18 @@ function AuditPage() {
   }, [branchClosures]);
 
   // ── Comentarios / reportes de auditoría (recientes) ──────────────────
+  // Se filtran SIEMPRE por categoría + sucursal, así son exclusivos de ese conteo.
   const { data: recentComments = [] } = useQuery({
-    queryKey: ["audit-comments"],
+    queryKey: ["audit-comments", category, branch],
+    enabled: !!category,
     staleTime: online ? 15_000 : Infinity,
     queryFn: async () => {
+      if (!category) return [];
       const { data, error } = await supabase
         .from("audit_comments")
         .select("id, category, branch, collaborator_name, comment, created_at")
+        .eq("category", category)
+        .eq("branch", branch)
         .order("created_at", { ascending: false })
         .limit(20);
       if (error) throw error;
@@ -537,35 +553,24 @@ function AuditPage() {
     try {
       const sessionId = crypto.randomUUID();
       const closedAt = new Date().toISOString();
-      const barcodes = products.map((p) => p.barcode);
 
-      // ── Leer TODOS los conteos de HOY de AMBAS sucursales directo de Supabase ──
-      // Independiente de qué sucursal tenga seleccionada el admin
-      const { data: allAuditsToday, error: auditsErr } = await supabase
-        .from("audits")
-        .select("barcode, physical_count, collaborator_name, branch, created_at")
-        .in("barcode", barcodes)
-        .gte("created_at", startOfTodayIso())
-        .order("created_at", { ascending: true });
-      if (auditsErr) throw auditsErr;
-
-      // Construir mapas consolidados de ambas sucursales
-      const allMina = new Map<string, number>();
-      const allMorelos = new Map<string, number>();
+      // Detalle de quién contó y cuándo, por producto (de los escaneos en vivo de hoy)
       const detailsByBarcode = new Map<string, { name: string; branch: string; qty: number; at: string }[]>();
-
-      for (const a of allAuditsToday ?? []) {
-        if (a.branch === "A") allMina.set(a.barcode, (allMina.get(a.barcode) ?? 0) + Number(a.physical_count));
-        if (a.branch === "B") allMorelos.set(a.barcode, (allMorelos.get(a.barcode) ?? 0) + Number(a.physical_count));
+      for (const a of realtimeAudits) {
         const list = detailsByBarcode.get(a.barcode) ?? [];
-        list.push({ name: a.collaborator_name ?? "Anónimo", branch: branchLabel(a.branch), qty: Number(a.physical_count), at: a.created_at });
+        list.push({
+          name: a.collaborator_name ?? "Anónimo",
+          branch: branchLabel(a.branch),
+          qty: Number(a.physical_count),
+          at: a.created_at,
+        });
         detailsByBarcode.set(a.barcode, list);
       }
 
       const reportRows = products.map((p) => {
         const sys = Number(p.stock_a) + Number(p.stock_b);
-        const minaCount = allMina.get(p.barcode) ?? 0;
-        const morelosCount = allMorelos.get(p.barcode) ?? 0;
+        const minaCount = realtimeMina.get(p.barcode) ?? 0;
+        const morelosCount = realtimeMorelos.get(p.barcode) ?? 0;
         const price = Number(p.price) || 0;
         const diff = (minaCount + morelosCount) - sys;
         const details = (detailsByBarcode.get(p.barcode) ?? []).sort((a, b) => a.at.localeCompare(b.at));
@@ -579,8 +584,8 @@ function AuditPage() {
           difference: diff,
           unit_price: price,
           difference_value: diff * price,
-          scanned_mina: allMina.has(p.barcode),
-          scanned_morelos: allMorelos.has(p.barcode),
+          scanned_mina: realtimeMina.has(p.barcode),
+          scanned_morelos: realtimeMorelos.has(p.barcode),
           closed_by: collab.name, closed_at: closedAt,
           count_details: details,
           last_counted_by: last?.name ?? null,
@@ -588,34 +593,53 @@ function AuditPage() {
         };
       });
 
+      // Insertar en audit_history para Mina (A) y Morelos (B)
+      // Esto marca la categoría en verde en el corte mensual
+      // El stock del sistema es consolidado (total), así que la diferencia real
+      // solo tiene sentido contra la suma de ambas sucursales. Para no reportar
+      // falsos faltantes por sucursal, cada renglón guarda su conteo y la
+      // diferencia total del producto (Mina + Morelos vs sistema).
       const historyRowsMina = products.map((p) => {
         const sys = Number(p.stock_a) + Number(p.stock_b);
-        const total = (allMina.get(p.barcode) ?? 0) + (allMorelos.get(p.barcode) ?? 0);
+        const total = (realtimeMina.get(p.barcode) ?? 0) + (realtimeMorelos.get(p.barcode) ?? 0);
         return {
-          session_id: sessionId, category, branch: "A" as const,
-          barcode: p.barcode, product_name: p.product_name,
-          system_stock: sys, counted_quantity: allMina.get(p.barcode) ?? 0,
+          session_id: sessionId,
+          category,
+          branch: "A" as const,
+          barcode: p.barcode,
+          product_name: p.product_name,
+          system_stock: sys,
+          counted_quantity: realtimeMina.get(p.barcode) ?? 0,
           difference: total - sys,
-          collaborator_id: collab.id, collaborator_name: collab.name,
+          collaborator_id: collab.id,
+          collaborator_name: collab.name,
         };
       });
       const historyRowsMorelos = products.map((p) => {
         const sys = Number(p.stock_a) + Number(p.stock_b);
-        const total = (allMina.get(p.barcode) ?? 0) + (allMorelos.get(p.barcode) ?? 0);
+        const total = (realtimeMina.get(p.barcode) ?? 0) + (realtimeMorelos.get(p.barcode) ?? 0);
         return {
-          session_id: sessionId, category, branch: "B" as const,
-          barcode: p.barcode, product_name: p.product_name,
-          system_stock: sys, counted_quantity: allMorelos.get(p.barcode) ?? 0,
+          session_id: sessionId,
+          category,
+          branch: "B" as const,
+          barcode: p.barcode,
+          product_name: p.product_name,
+          system_stock: sys,
+          counted_quantity: realtimeMorelos.get(p.barcode) ?? 0,
           difference: total - sys,
-          collaborator_id: collab.id, collaborator_name: collab.name,
+          collaborator_id: collab.id,
+          collaborator_name: collab.name,
         };
       });
 
       if (online) {
+        // Save closed_counts report
         const { error: e1 } = await supabase.from("closed_counts").insert(reportRows);
         if (e1) throw e1;
+        // Save audit_history for both branches → marks category green in monthly view
         const { error: e2 } = await supabase.from("audit_history").insert([...historyRowsMina, ...historyRowsMorelos]);
         if (e2) throw e2;
+        // Los comentarios pendientes de esta categoría quedan ligados a este corte
         const { error: e3 } = await supabase
           .from("audit_comments")
           .update({ session_id: sessionId })
@@ -639,7 +663,7 @@ function AuditPage() {
 
   async function confirmAdminAction() {
     if (!me) return;
-    if (adminPin.length < 4) { toast.error("Ingresá tu PIN de administrador"); return; }
+    if (adminAction?.type !== "restoreClosure" && adminPin.length < 4) { toast.error("Ingresá tu PIN de administrador"); return; }
     if (!adminAction) return;
     setAdminBusy(true);
     try {
@@ -675,6 +699,22 @@ function AuditPage() {
         });
         if (error) throw error;
         toast.success("Cantidad actualizada");
+      } else if (adminAction.type === "restoreClosure") {
+        // Borra el cierre de esa sucursal para esta categoría/mes en branch_closures.
+        // Esto "reactiva" la categoría cuando el historial (audit_history) ya se
+        // borró a mano pero el cierre de sucursal seguía marcado, dejándola trabada.
+        const { error } = await supabase
+          .from("branch_closures")
+          .delete()
+          .eq("category", adminAction.category)
+          .eq("branch", adminAction.branch)
+          .eq("period", periodKey());
+        if (error) throw error;
+        toast.success(`"${adminAction.category}" reactivada en ${branchLabel(adminAction.branch)} — ya se puede volver a contar.`);
+        if (category === adminAction.category && branch === adminAction.branch) {
+          setCounts(new Map()); clearCatState();
+        }
+        qc.invalidateQueries({ queryKey: ["branch-closures", periodKey()] });
       }
       setAdminAction(null); setAdminPin("");
       qc.invalidateQueries({ queryKey: ["audit-history-month"] });
@@ -784,14 +824,21 @@ function AuditPage() {
             <div className="shrink-0">
               <label className="text-xs font-medium text-muted-foreground">Sucursal</label>
               {me?.is_admin ? (
-                // Admin puede cambiar sucursal
+                // Admin puede cambiar sucursal. Cuando el cierre general ya está
+                // disponible (las dos sucursales cerraron), se muestran AMBAS
+                // marcadas como activas para dejar claro que el cierre general
+                // las incluye a las dos, no solo a la que está viendo ahora.
                 <div className="mt-1 inline-flex overflow-hidden rounded-md border">
-                  {(["A", "B"] as const).map((b) => (
-                    <button key={b} type="button" onClick={() => setCollabBranch(b)}
-                      className={`px-4 py-1.5 text-sm font-medium transition-colors ${branch === b ? "bg-primary text-primary-foreground" : "bg-background hover:bg-muted"}`}>
-                      {b === "A" ? "Mina" : "Morelos"}
-                    </button>
-                  ))}
+                  {(["A", "B"] as const).map((b) => {
+                    const bothSelected = !!category && bothClosed;
+                    const active = bothSelected || branch === b;
+                    return (
+                      <button key={b} type="button" onClick={() => setCollabBranch(b)}
+                        className={`px-4 py-1.5 text-sm font-medium transition-colors ${active ? "bg-primary text-primary-foreground" : "bg-background hover:bg-muted"}`}>
+                        {b === "A" ? "Mina" : "Morelos"}
+                      </button>
+                    );
+                  })}
                 </div>
               ) : (
                 // Colaboradora normal: sucursal fija, solo visual
@@ -868,6 +915,13 @@ function AuditPage() {
                 className="border-amber-400 text-amber-700 hover:bg-amber-50 dark:text-amber-300"
                 onClick={() => setAdminAction({ type: "reset", category, branch })}>
                 <RotateCcw className="h-4 w-4" /> Reiniciar (admin)
+              </Button>
+            )}
+            {me?.is_admin && myBranchClosed && !alreadyCountedThisMonth && (
+              <Button size="sm" variant="outline"
+                className="border-blue-400 text-blue-700 hover:bg-blue-50 dark:text-blue-300"
+                onClick={() => setAdminAction({ type: "restoreClosure", category, branch })}>
+                <RotateCcw className="h-4 w-4" /> Reactivar categoría
               </Button>
             )}
           </div>
@@ -1098,14 +1152,21 @@ function AuditPage() {
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-4 text-sm">
+            {/* Siempre muestra ambas sucursales independiente de cuál tenga seleccionada admin */}
             <div className="grid grid-cols-2 gap-2">
-              <div className="rounded-md border p-2 text-center">
-                <div className="text-xs font-medium text-muted-foreground mb-1">✓ Mina</div>
-                <div className="text-lg font-bold text-emerald-700">{realtimeMina.size} escaneados</div>
+              <div className={`rounded-md border p-2 text-center ${closedA ? "border-emerald-400 bg-emerald-50" : "border-amber-300 bg-amber-50"}`}>
+                <div className="text-xs font-medium text-muted-foreground mb-1">{closedA ? "✓" : "○"} Mina</div>
+                <div className={`text-lg font-bold ${closedA ? "text-emerald-700" : "text-amber-600"}`}>
+                  {realtimeMina.size} escaneados
+                </div>
+                <div className="text-[10px] text-muted-foreground">{closedA ? "Conteo cerrado" : "Pendiente"}</div>
               </div>
-              <div className="rounded-md border p-2 text-center">
-                <div className="text-xs font-medium text-muted-foreground mb-1">✓ Morelos</div>
-                <div className="text-lg font-bold text-emerald-700">{realtimeMorelos.size} escaneados</div>
+              <div className={`rounded-md border p-2 text-center ${closedB ? "border-emerald-400 bg-emerald-50" : "border-amber-300 bg-amber-50"}`}>
+                <div className="text-xs font-medium text-muted-foreground mb-1">{closedB ? "✓" : "○"} Morelos</div>
+                <div className={`text-lg font-bold ${closedB ? "text-emerald-700" : "text-amber-600"}`}>
+                  {realtimeMorelos.size} escaneados
+                </div>
+                <div className="text-[10px] text-muted-foreground">{closedB ? "Conteo cerrado" : "Pendiente"}</div>
               </div>
             </div>
             <div>
@@ -1225,6 +1286,7 @@ function AuditPage() {
           {reportCategory && (() => {
             const rows = buildCategoryReport(reportCategory);
             const st = categoryStatus.get(reportCategory);
+            const bc = branchClosureMap.get(reportCategory);
             const bothDoneReport = !!st?.hasA && !!st?.hasB;
             return (
               <div className="space-y-3 text-sm">
@@ -1282,6 +1344,18 @@ function AuditPage() {
                         </Button>
                       ))}
                     </div>
+                    {/* Reactivar: borra el cierre de branch_closures cuando quedó
+                        trabado sin historial (p. ej. tras borrar registros a mano) */}
+                    <div className="flex flex-wrap gap-2">
+                      {(["A", "B"] as const).map((b) => (
+                        <Button key={`restore-${b}`} size="sm" variant="outline"
+                          disabled={!(b === "A" ? bc?.A : bc?.B)}
+                          className="border-blue-400 text-blue-700 hover:bg-blue-100 dark:text-blue-300"
+                          onClick={() => setAdminAction({ type: "restoreClosure", category: reportCategory!, branch: b })}>
+                          <RotateCcw className="h-3.5 w-3.5" /> Reactivar {branchLabel(b)}
+                        </Button>
+                      ))}
+                    </div>
                     <div className="space-y-1.5">
                       <p className="text-[11px] font-medium text-muted-foreground">Registros individuales</p>
                       <div className="max-h-56 divide-y overflow-y-auto rounded-md border bg-background">
@@ -1316,6 +1390,7 @@ function AuditPage() {
               {adminAction?.type === "resetRealtime" && "Reiniciar conteos de hoy"}
               {adminAction?.type === "deleteRow" && "Eliminar registro"}
               {adminAction?.type === "editRow" && "Editar cantidad contada"}
+              {adminAction?.type === "restoreClosure" && "Reactivar categoría"}
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-3 text-sm">
@@ -1344,12 +1419,20 @@ function AuditPage() {
                   )} />
               </div>
             )}
-            <div>
-              <label className="text-xs font-medium text-muted-foreground">Tu PIN de administrador</label>
-              <Input type="password" inputMode="numeric" autoFocus value={adminPin}
-                onChange={(e) => setAdminPin(e.target.value.replace(/\D/g, ""))}
-                placeholder="PIN" className="mt-1" />
-            </div>
+            {adminAction?.type === "restoreClosure" && (
+              <p className="text-muted-foreground">
+                Se eliminará el cierre de <strong>"{adminAction.category}"</strong> en{" "}
+                <strong>{branchLabel(adminAction.branch)}</strong> para volver a permitir el conteo este mes.
+              </p>
+            )}
+            {adminAction?.type !== "restoreClosure" && (
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">Tu PIN de administrador</label>
+                <Input type="password" inputMode="numeric" autoFocus value={adminPin}
+                  onChange={(e) => setAdminPin(e.target.value.replace(/\D/g, ""))}
+                  placeholder="PIN" className="mt-1" />
+              </div>
+            )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => { setAdminAction(null); setAdminPin(""); }}>Cancelar</Button>
@@ -1367,7 +1450,7 @@ function AuditPage() {
             <MessageSquare className="h-4 w-4" /> Comentarios y reportes
           </div>
           <p className="text-[11px] text-muted-foreground">
-            Anotá acá errores encontrados, desperfectos o sugerencias{category ? ` sobre "${category}"` : ""}.
+            Anotá acá errores encontrados, desperfectos o sugerencias{category ? ` sobre "${category}" (${branchLabel(branch)})` : ""}.
           </p>
           <Textarea value={commentText} onChange={(e) => setCommentText(e.target.value)}
             placeholder="Escribí tu comentario…" rows={3} />
