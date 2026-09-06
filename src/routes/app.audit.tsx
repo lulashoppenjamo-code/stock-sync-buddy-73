@@ -307,7 +307,7 @@ function AuditPage() {
         .from("audits")
         .select("barcode, physical_count, collaborator_name, branch, created_at")
         .in("barcode", barcodes)
-        .gte("created_at", startOfTodayIso())
+        .gte("created_at", monthRange().startIso)
         .order("created_at", { ascending: true });
       if (error) throw error;
       return data as Array<{ barcode: string; physical_count: number; collaborator_name: string | null; branch: string; created_at: string }>;
