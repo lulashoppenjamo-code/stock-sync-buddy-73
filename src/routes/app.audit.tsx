@@ -851,10 +851,17 @@ function AuditPage() {
           <p className="text-xs text-muted-foreground max-w-xs">
             {alreadyCountedThisMonth
               ? `Solo se permite un conteo por categoría al mes (${monthLabel()}).`
-              : `Falta que ${branchLabel(branch === "A" ? "B" : "A")} cierre su conteo${me?.is_admin ? " para poder finalizar la categoría." : "."}`}
+              : bothClosed
+                ? "Las dos sucursales ya cerraron su conteo. Falta el cierre general del administrador."
+                : `Falta que ${branchLabel(branch === "A" ? "B" : "A")} cierre su conteo.`}
           </p>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap justify-center gap-2">
             <Button size="sm" variant="outline" onClick={() => setReportCategory(category)}>Ver reporte</Button>
+            {me?.is_admin && bothClosed && !alreadyCountedThisMonth && (
+              <Button size="sm" className="bg-emerald-600 hover:bg-emerald-700" onClick={() => setCloseDialog(true)}>
+                <Flag className="h-4 w-4" /> Cerrar conteo general
+              </Button>
+            )}
             {me?.is_admin && (
               <Button size="sm" variant="outline"
                 className="border-amber-400 text-amber-700 hover:bg-amber-50 dark:text-amber-300"
