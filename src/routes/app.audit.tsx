@@ -52,7 +52,8 @@ type AdminAction =
   | { type: "resetRealtime"; category: string; branch: "A" | "B" }
   | { type: "deleteRow"; row: HistoryRow }
   | { type: "editRow"; row: HistoryRow; newQty: number }
-  | { type: "restoreClosure"; category: string; branch: "A" | "B" };
+  | { type: "restoreClosure"; category: string; branch: "A" | "B" }
+  | { type: "regenerateReport"; category: string };
 
 // ── localStorage ───────────────────────────────────────────────────────
 const CAT_KEY = "inv.audit.category.v2";
@@ -276,6 +277,30 @@ function AuditPage() {
     }
     return map;
   }, [branchClosures]);
+
+  // ── Categorías con reporte ya guardado en el Historial (closed_counts) ──
+  // Sirve para poner en verde una categoría aunque, por algún borrado manual
+  // de registros individuales, falten filas en audit_history: si el reporte
+  // general ya existe en el historial, la categoría se considera cerrada.
+  const { data: closedCountsThisMonth = [] } = useQuery({
+    queryKey: ["closed-counts-categories", periodKey()],
+    staleTime: online ? 30_000 : Infinity,
+    queryFn: async () => {
+      const { startIso, endIso } = monthRange();
+      const { data, error } = await supabase
+        .from("closed_counts")
+        .select("category")
+        .gte("closed_at", startIso)
+        .lte("closed_at", endIso);
+      if (error) throw error;
+      return data as Array<{ category: string }>;
+    },
+  });
+
+  const closedCountsCategories = useMemo(
+    () => new Set(closedCountsThisMonth.map((r) => r.category)),
+    [closedCountsThisMonth]
+  );
 
   // ── Comentarios / reportes de auditoría (recientes) ──────────────────
   // Se filtran SIEMPRE por categoría + sucursal, así son exclusivos de ese conteo.
@@ -715,6 +740,106 @@ function AuditPage() {
           setCounts(new Map()); clearCatState();
         }
         qc.invalidateQueries({ queryKey: ["branch-closures", periodKey()] });
+      } else if (adminAction.type === "regenerateReport") {
+        // Vuelve a guardar el conteo general (closed_counts + audit_history) de una
+        // categoría este mes, usando los conteos en vivo actuales (tabla "audits").
+        // Primero limpia lo que haya quedado de esa categoría este mes (por si algún
+        // registro se borró a mano) para no duplicar cantidades, y luego reconstruye
+        // el reporte completo desde cero. No toca ninguna otra categoría.
+        const cat = adminAction.category;
+        const { startIso, endIso } = monthRange();
+
+        const { data: catProducts, error: ep } = await supabase
+          .from("products")
+          .select("barcode, product_name, stock_a, stock_b, price")
+          .eq("category", cat);
+        if (ep) throw ep;
+        const prods = catProducts ?? [];
+        const barcodes = prods.map((p) => p.barcode);
+
+        let liveAudits: Array<{ barcode: string; physical_count: number; collaborator_name: string | null; branch: string; created_at: string }> = [];
+        if (barcodes.length) {
+          const { data: la, error: ea } = await supabase
+            .from("audits")
+            .select("barcode, physical_count, collaborator_name, branch, created_at")
+            .in("barcode", barcodes)
+            .gte("created_at", startIso)
+            .lte("created_at", endIso);
+          if (ea) throw ea;
+          liveAudits = la ?? [];
+        }
+
+        const minaMap = new Map<string, number>();
+        const morelosMap = new Map<string, number>();
+        const detailsByBarcode = new Map<string, { name: string; branch: string; qty: number; at: string }[]>();
+        for (const a of liveAudits) {
+          const qty = Number(a.physical_count);
+          if (a.branch === "A") minaMap.set(a.barcode, (minaMap.get(a.barcode) ?? 0) + qty);
+          if (a.branch === "B") morelosMap.set(a.barcode, (morelosMap.get(a.barcode) ?? 0) + qty);
+          const list = detailsByBarcode.get(a.barcode) ?? [];
+          list.push({ name: a.collaborator_name ?? "Anónimo", branch: branchLabel(a.branch), qty, at: a.created_at });
+          detailsByBarcode.set(a.barcode, list);
+        }
+
+        const { error: eDelCounts } = await supabase
+          .from("closed_counts").delete().eq("category", cat).gte("closed_at", startIso).lte("closed_at", endIso);
+        if (eDelCounts) throw eDelCounts;
+        const { error: eDelHist } = await supabase
+          .from("audit_history").delete().eq("category", cat).gte("created_at", startIso).lte("created_at", endIso);
+        if (eDelHist) throw eDelHist;
+
+        const sessionId = crypto.randomUUID();
+        const closedAt = new Date().toISOString();
+
+        const reportRows = prods.map((p) => {
+          const sys = Number(p.stock_a) + Number(p.stock_b);
+          const minaCount = minaMap.get(p.barcode) ?? 0;
+          const morelosCount = morelosMap.get(p.barcode) ?? 0;
+          const price = Number(p.price) || 0;
+          const diff = (minaCount + morelosCount) - sys;
+          const details = (detailsByBarcode.get(p.barcode) ?? []).sort((a, b) => a.at.localeCompare(b.at));
+          const last = details[details.length - 1];
+          return {
+            session_id: sessionId, category: cat,
+            barcode: p.barcode, product_name: p.product_name,
+            system_stock: sys, mina_count: minaCount, morelos_count: morelosCount,
+            total_counted: minaCount + morelosCount, difference: diff,
+            unit_price: price, difference_value: diff * price,
+            scanned_mina: minaMap.has(p.barcode), scanned_morelos: morelosMap.has(p.barcode),
+            closed_by: me.name, closed_at: closedAt,
+            count_details: details, last_counted_by: last?.name ?? null, last_counted_at: last?.at ?? null,
+          };
+        });
+        const historyRowsMina = prods.map((p) => {
+          const sys = Number(p.stock_a) + Number(p.stock_b);
+          const total = (minaMap.get(p.barcode) ?? 0) + (morelosMap.get(p.barcode) ?? 0);
+          return {
+            session_id: sessionId, category: cat, branch: "A" as const,
+            barcode: p.barcode, product_name: p.product_name, system_stock: sys,
+            counted_quantity: minaMap.get(p.barcode) ?? 0, difference: total - sys,
+            collaborator_id: me.id, collaborator_name: me.name,
+          };
+        });
+        const historyRowsMorelos = prods.map((p) => {
+          const sys = Number(p.stock_a) + Number(p.stock_b);
+          const total = (minaMap.get(p.barcode) ?? 0) + (morelosMap.get(p.barcode) ?? 0);
+          return {
+            session_id: sessionId, category: cat, branch: "B" as const,
+            barcode: p.barcode, product_name: p.product_name, system_stock: sys,
+            counted_quantity: morelosMap.get(p.barcode) ?? 0, difference: total - sys,
+            collaborator_id: me.id, collaborator_name: me.name,
+          };
+        });
+
+        const { error: e1 } = await supabase.from("closed_counts").insert(reportRows);
+        if (e1) throw e1;
+        const { error: e2 } = await supabase.from("audit_history").insert([...historyRowsMina, ...historyRowsMorelos]);
+        if (e2) throw e2;
+
+        toast.success(`Reporte general de "${cat}" guardado de nuevo ✓`);
+        if (category === cat) { setCounts(new Map()); clearCatState(); }
+        qc.invalidateQueries({ queryKey: ["closed_counts"] });
+        qc.invalidateQueries({ queryKey: ["closed-counts-categories"] });
       }
       setAdminAction(null); setAdminPin("");
       qc.invalidateQueries({ queryKey: ["audit-history-month"] });
@@ -785,13 +910,15 @@ function AuditPage() {
             {categories.map((c) => {
               const st = categoryStatus.get(c);
               // Verde: el administrador ya finalizó el conteo (ambas sucursales, en audit_history)
-              const done = !!st?.hasA && !!st?.hasB;
+              // O el reporte general ya existe en el Historial (closed_counts), aunque falte
+              // algún registro individual de audit_history por haberse borrado a mano.
+              const done = (!!st?.hasA && !!st?.hasB) || closedCountsCategories.has(c);
               // Amarillo: una sola sucursal cerró su conteo (branch_closures) — la otra falta
               const bc = branchClosureMap.get(c);
               const partial = !done && (!!bc?.A || !!bc?.B);
               const total = categoryCounts.get(c) ?? 0;
               return (
-                <button key={c} type="button" onClick={() => setReportCategory(c)} disabled={!st && !bc}
+                <button key={c} type="button" onClick={() => setReportCategory(c)} disabled={!st && !bc && !closedCountsCategories.has(c)}
                   className={`flex flex-col items-center rounded-md border px-2.5 py-1 text-[11px] font-medium leading-tight transition-colors ${
                     done ? "border-emerald-500 bg-emerald-500 text-white"
                     : partial ? "border-amber-500 bg-amber-400 text-amber-950"
@@ -1287,7 +1414,7 @@ function AuditPage() {
             const rows = buildCategoryReport(reportCategory);
             const st = categoryStatus.get(reportCategory);
             const bc = branchClosureMap.get(reportCategory);
-            const bothDoneReport = !!st?.hasA && !!st?.hasB;
+            const bothDoneReport = (!!st?.hasA && !!st?.hasB) || closedCountsCategories.has(reportCategory);
             return (
               <div className="space-y-3 text-sm">
                 <div className="grid grid-cols-3 gap-2">
@@ -1356,6 +1483,14 @@ function AuditPage() {
                         </Button>
                       ))}
                     </div>
+                    {/* Volver a guardar el conteo general: reconstruye closed_counts +
+                        audit_history de esta categoría desde los conteos en vivo actuales.
+                        Útil cuando se borraron registros del reporte a mano. */}
+                    <Button size="sm" variant="outline"
+                      className="w-full border-emerald-400 text-emerald-700 hover:bg-emerald-100 dark:text-emerald-300"
+                      onClick={() => setAdminAction({ type: "regenerateReport", category: reportCategory! })}>
+                      <Save className="h-3.5 w-3.5" /> Volver a guardar conteo general de "{reportCategory}"
+                    </Button>
                     <div className="space-y-1.5">
                       <p className="text-[11px] font-medium text-muted-foreground">Registros individuales</p>
                       <div className="max-h-56 divide-y overflow-y-auto rounded-md border bg-background">
@@ -1391,6 +1526,7 @@ function AuditPage() {
               {adminAction?.type === "deleteRow" && "Eliminar registro"}
               {adminAction?.type === "editRow" && "Editar cantidad contada"}
               {adminAction?.type === "restoreClosure" && "Reactivar categoría"}
+              {adminAction?.type === "regenerateReport" && "Volver a guardar conteo general"}
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-3 text-sm">
@@ -1423,6 +1559,13 @@ function AuditPage() {
               <p className="text-muted-foreground">
                 Se eliminará el cierre de <strong>"{adminAction.category}"</strong> en{" "}
                 <strong>{branchLabel(adminAction.branch)}</strong> para volver a permitir el conteo este mes.
+              </p>
+            )}
+            {adminAction?.type === "regenerateReport" && (
+              <p className="text-muted-foreground">
+                Se borrará y se volverá a guardar el reporte general y el historial de{" "}
+                <strong>"{adminAction.category}"</strong> este mes, usando los conteos en vivo actuales
+                de Mina y Morelos. No afecta a ninguna otra categoría.
               </p>
             )}
             {adminAction?.type !== "restoreClosure" && (
