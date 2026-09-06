@@ -597,47 +597,6 @@ function AuditPage() {
     }
   }
 
-  async function finalizeCount() {
-    if (counts.size === 0) return toast.error("No hay productos contados");
-    const collab = getCollaborator();
-    if (!collab) return toast.error("Sesión expirada");
-    if (alreadyCountedThisMonth) {
-      return toast.error(`"${category}" ya se contó este mes en ${branchLabel(branch)}. Solo se permite 1 conteo por mes.`);
-    }
-    if (!confirm(`Finalizar conteo de "${category}"? Se guardará el resumen y se cerrará esta sesión.`)) return;
-    setFinalizing(true);
-    try {
-      const sessionId = crypto.randomUUID();
-      const snapshot = Array.from(counts.values());
-      const rows = snapshot.map((c) => ({
-        session_id: sessionId, category, branch,
-        barcode: c.barcode, product_name: c.product_name,
-        system_stock: c.system_stock, counted_quantity: c.count,
-        difference: c.count - c.system_stock,
-        collaborator_id: collab.id, collaborator_name: collab.name,
-      }));
-
-      if (online) {
-        const { error } = await supabase.from("audit_history").insert(rows);
-        if (error) throw error;
-        toast.success("Conteo finalizado y guardado en historial");
-      } else {
-        const pendingKey = `inv.pending.finalize.${sessionId}`;
-        localStorage.setItem(pendingKey, JSON.stringify({ rows, savedAt: Date.now() }));
-        toast.success("Sin internet — conteo guardado localmente.");
-      }
-
-      setSummaryData(snapshot);
-      setSummaryFinal(true);
-      setCounts(new Map());
-      clearCatState();
-      if (online) {
-        qc.invalidateQueries({ queryKey: ["audit_history"] });
-        qc.invalidateQueries({ queryKey: ["audit-history-month"] });
-      }
-    } catch (e) { toast.error("No se pudo guardar: " + (e as Error).message); }
-    finally { setFinalizing(false); }
-  }
 
   async function confirmClose() {
     const collab = getCollaborator();
