@@ -424,68 +424,6 @@ function AuditPage() {
     });
   }
 
-
-  async function doSave(countsToSave: Map<string, CountEntry>) {
-    const collab = getCollaborator();
-    if (!collab) return;
-    setSaving(true);
-    try {
-      const sessionId = crypto.randomUUID();
-      const rows = Array.from(countsToSave.values()).map((c) => ({
-        branch, // siempre la sucursal del colaborador
-        barcode: c.barcode,
-        product_name: c.product_name,
-        system_stock: c.system_stock,
-        physical_count: c.count,
-        difference: c.count - c.system_stock,
-        collaborator_id: collab.id,
-        collaborator_name: collab.name,
-        client_uid: `audit-${sessionId}-${c.barcode}`,
-      }));
-
-      if (online) {
-        const { error } = await supabase.from("audits").insert(rows);
-        if (error) throw error;
-        toast.success(`Conteo guardado — ${rows.length} productos`);
-      } else {
-        for (const row of rows) {
-          await enqueue({ kind: "audit", uid: row.client_uid, createdAt: Date.now(), payload: row });
-        }
-        toast.success(`Sin internet — ${rows.length} productos guardados localmente.`);
-      }
-
-      // ── Al guardar parcial, marcar la categoría en amarillo (branch_closures) ──
-      if (online && category) {
-        const mySums = branch === "A" ? realtimeMina : realtimeMorelos;
-        let total = 0; let numProducts = 0;
-        for (const c of countsToSave.values()) {
-          total += c.count;
-          if (c.count > 0) numProducts++;
-        }
-        // Sumar lo ya guardado hoy de mi sucursal
-        for (const [bc, qty] of mySums.entries()) {
-          if (!countsToSave.has(bc)) { total += qty; if (qty > 0) numProducts++; }
-        }
-        await supabase.from("branch_closures").upsert(
-          { category, branch, period: periodKey(),
-            collaborator_id: collab.id, collaborator_name: collab.name,
-            total_counted: total, products_counted: numProducts },
-          { onConflict: "category,branch,period" }
-        );
-        qc.invalidateQueries({ queryKey: ["branch-closures", periodKey()] });
-      }
-
-      setSummaryData(Array.from(countsToSave.values()));
-      setCounts(new Map());
-      clearCatState();
-      if (online) {
-        qc.invalidateQueries({ queryKey: ["audits"] });
-        qc.invalidateQueries({ queryKey: ["audits-realtime", category] });
-      }
-    } catch (e) { toast.error((e as Error).message); }
-    finally { setSaving(false); }
-  }
-
   // Cierra el conteo de MI sucursal para esta categoría: lo no contado se guarda en 0,
   // se persiste todo, y se marca la categoría en amarillo para la otra sucursal.
   async function closeBranchCount() {
