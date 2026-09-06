@@ -537,24 +537,35 @@ function AuditPage() {
     try {
       const sessionId = crypto.randomUUID();
       const closedAt = new Date().toISOString();
+      const barcodes = products.map((p) => p.barcode);
 
-      // Detalle de quién contó y cuándo, por producto (de los escaneos en vivo de hoy)
+      // ── Leer TODOS los conteos de HOY de AMBAS sucursales directo de Supabase ──
+      // Independiente de qué sucursal tenga seleccionada el admin
+      const { data: allAuditsToday, error: auditsErr } = await supabase
+        .from("audits")
+        .select("barcode, physical_count, collaborator_name, branch, created_at")
+        .in("barcode", barcodes)
+        .gte("created_at", startOfTodayIso())
+        .order("created_at", { ascending: true });
+      if (auditsErr) throw auditsErr;
+
+      // Construir mapas consolidados de ambas sucursales
+      const allMina = new Map<string, number>();
+      const allMorelos = new Map<string, number>();
       const detailsByBarcode = new Map<string, { name: string; branch: string; qty: number; at: string }[]>();
-      for (const a of realtimeAudits) {
+
+      for (const a of allAuditsToday ?? []) {
+        if (a.branch === "A") allMina.set(a.barcode, (allMina.get(a.barcode) ?? 0) + Number(a.physical_count));
+        if (a.branch === "B") allMorelos.set(a.barcode, (allMorelos.get(a.barcode) ?? 0) + Number(a.physical_count));
         const list = detailsByBarcode.get(a.barcode) ?? [];
-        list.push({
-          name: a.collaborator_name ?? "Anónimo",
-          branch: branchLabel(a.branch),
-          qty: Number(a.physical_count),
-          at: a.created_at,
-        });
+        list.push({ name: a.collaborator_name ?? "Anónimo", branch: branchLabel(a.branch), qty: Number(a.physical_count), at: a.created_at });
         detailsByBarcode.set(a.barcode, list);
       }
 
       const reportRows = products.map((p) => {
         const sys = Number(p.stock_a) + Number(p.stock_b);
-        const minaCount = realtimeMina.get(p.barcode) ?? 0;
-        const morelosCount = realtimeMorelos.get(p.barcode) ?? 0;
+        const minaCount = allMina.get(p.barcode) ?? 0;
+        const morelosCount = allMorelos.get(p.barcode) ?? 0;
         const price = Number(p.price) || 0;
         const diff = (minaCount + morelosCount) - sys;
         const details = (detailsByBarcode.get(p.barcode) ?? []).sort((a, b) => a.at.localeCompare(b.at));
@@ -568,8 +579,8 @@ function AuditPage() {
           difference: diff,
           unit_price: price,
           difference_value: diff * price,
-          scanned_mina: realtimeMina.has(p.barcode),
-          scanned_morelos: realtimeMorelos.has(p.barcode),
+          scanned_mina: allMina.has(p.barcode),
+          scanned_morelos: allMorelos.has(p.barcode),
           closed_by: collab.name, closed_at: closedAt,
           count_details: details,
           last_counted_by: last?.name ?? null,
@@ -577,53 +588,34 @@ function AuditPage() {
         };
       });
 
-      // Insertar en audit_history para Mina (A) y Morelos (B)
-      // Esto marca la categoría en verde en el corte mensual
-      // El stock del sistema es consolidado (total), así que la diferencia real
-      // solo tiene sentido contra la suma de ambas sucursales. Para no reportar
-      // falsos faltantes por sucursal, cada renglón guarda su conteo y la
-      // diferencia total del producto (Mina + Morelos vs sistema).
       const historyRowsMina = products.map((p) => {
         const sys = Number(p.stock_a) + Number(p.stock_b);
-        const total = (realtimeMina.get(p.barcode) ?? 0) + (realtimeMorelos.get(p.barcode) ?? 0);
+        const total = (allMina.get(p.barcode) ?? 0) + (allMorelos.get(p.barcode) ?? 0);
         return {
-          session_id: sessionId,
-          category,
-          branch: "A" as const,
-          barcode: p.barcode,
-          product_name: p.product_name,
-          system_stock: sys,
-          counted_quantity: realtimeMina.get(p.barcode) ?? 0,
+          session_id: sessionId, category, branch: "A" as const,
+          barcode: p.barcode, product_name: p.product_name,
+          system_stock: sys, counted_quantity: allMina.get(p.barcode) ?? 0,
           difference: total - sys,
-          collaborator_id: collab.id,
-          collaborator_name: collab.name,
+          collaborator_id: collab.id, collaborator_name: collab.name,
         };
       });
       const historyRowsMorelos = products.map((p) => {
         const sys = Number(p.stock_a) + Number(p.stock_b);
-        const total = (realtimeMina.get(p.barcode) ?? 0) + (realtimeMorelos.get(p.barcode) ?? 0);
+        const total = (allMina.get(p.barcode) ?? 0) + (allMorelos.get(p.barcode) ?? 0);
         return {
-          session_id: sessionId,
-          category,
-          branch: "B" as const,
-          barcode: p.barcode,
-          product_name: p.product_name,
-          system_stock: sys,
-          counted_quantity: realtimeMorelos.get(p.barcode) ?? 0,
+          session_id: sessionId, category, branch: "B" as const,
+          barcode: p.barcode, product_name: p.product_name,
+          system_stock: sys, counted_quantity: allMorelos.get(p.barcode) ?? 0,
           difference: total - sys,
-          collaborator_id: collab.id,
-          collaborator_name: collab.name,
+          collaborator_id: collab.id, collaborator_name: collab.name,
         };
       });
 
       if (online) {
-        // Save closed_counts report
         const { error: e1 } = await supabase.from("closed_counts").insert(reportRows);
         if (e1) throw e1;
-        // Save audit_history for both branches → marks category green in monthly view
         const { error: e2 } = await supabase.from("audit_history").insert([...historyRowsMina, ...historyRowsMorelos]);
         if (e2) throw e2;
-        // Los comentarios pendientes de esta categoría quedan ligados a este corte
         const { error: e3 } = await supabase
           .from("audit_comments")
           .update({ session_id: sessionId })
