@@ -424,12 +424,6 @@ function AuditPage() {
     });
   }
 
-  async function saveCount() {
-    if (counts.size === 0) return toast.error("No hay productos contados");
-    const collab = getCollaborator();
-    if (!collab) return toast.error("Sesión expirada");
-    await doSave(counts);
-  }
 
   async function doSave(countsToSave: Map<string, CountEntry>) {
     const collab = getCollaborator();
