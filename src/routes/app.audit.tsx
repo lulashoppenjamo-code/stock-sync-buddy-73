@@ -458,6 +458,27 @@ function AuditPage() {
         toast.success(`Sin internet — ${rows.length} productos guardados localmente.`);
       }
 
+      // ── Al guardar parcial, marcar la categoría en amarillo (branch_closures) ──
+      if (online && category) {
+        const mySums = branch === "A" ? realtimeMina : realtimeMorelos;
+        let total = 0; let numProducts = 0;
+        for (const c of countsToSave.values()) {
+          total += c.count;
+          if (c.count > 0) numProducts++;
+        }
+        // Sumar lo ya guardado hoy de mi sucursal
+        for (const [bc, qty] of mySums.entries()) {
+          if (!countsToSave.has(bc)) { total += qty; if (qty > 0) numProducts++; }
+        }
+        await supabase.from("branch_closures").upsert(
+          { category, branch, period: periodKey(),
+            collaborator_id: collab.id, collaborator_name: collab.name,
+            total_counted: total, products_counted: numProducts },
+          { onConflict: "category,branch,period" }
+        );
+        qc.invalidateQueries({ queryKey: ["branch-closures", periodKey()] });
+      }
+
       setSummaryData(Array.from(countsToSave.values()));
       setCounts(new Map());
       clearCatState();
