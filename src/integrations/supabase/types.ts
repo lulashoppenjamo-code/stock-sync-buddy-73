@@ -53,6 +53,7 @@ export type Database = {
           comment: string
           created_at: string
           id: string
+          session_id: string | null
         }
         Insert: {
           branch?: string | null
@@ -62,6 +63,7 @@ export type Database = {
           comment: string
           created_at?: string
           id?: string
+          session_id?: string | null
         }
         Update: {
           branch?: string | null
@@ -71,6 +73,7 @@ export type Database = {
           comment?: string
           created_at?: string
           id?: string
+          session_id?: string | null
         }
         Relationships: []
       }

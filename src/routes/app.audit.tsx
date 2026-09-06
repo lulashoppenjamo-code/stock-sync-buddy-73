@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { Loader2, ScanLine, Save, Search, CheckCircle2, Minus, Plus, Trash2, ClipboardList, Flag, History, WifiOff, ShieldAlert, RotateCcw, Pencil, Lock, AlertTriangle, MessageSquare, Send } from "lucide-react";
+import { Loader2, ScanLine, Search, CheckCircle2, Minus, Plus, Trash2, ClipboardList, Flag, History, WifiOff, ShieldAlert, RotateCcw, Pencil, AlertTriangle, MessageSquare, Send } from "lucide-react";
 import { toast } from "sonner";
 import { getCollaborator, useCollaborator } from "@/lib/session";
 import { BarcodeScanner } from "@/components/BarcodeScanner";
@@ -133,7 +133,7 @@ function AuditPage() {
   const [nameSearch, setNameSearch] = useState("");
   const [scanning, setScanning] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [finalizing, setFinalizing] = useState(false);
+  
   const [summaryData, setSummaryData] = useState<CountEntry[] | null>(null);
   const [summaryFinal, setSummaryFinal] = useState(false);
   const scanRef = useRef<HTMLInputElement>(null);
@@ -307,7 +307,7 @@ function AuditPage() {
         .from("audits")
         .select("barcode, physical_count, collaborator_name, branch, created_at")
         .in("barcode", barcodes)
-        .gte("created_at", startOfTodayIso())
+        .gte("created_at", monthRange().startIso)
         .order("created_at", { ascending: true });
       if (error) throw error;
       return data as Array<{ barcode: string; physical_count: number; collaborator_name: string | null; branch: string; created_at: string }>;
@@ -345,9 +345,11 @@ function AuditPage() {
   const closedA = category ? branchClosureMap.get(category)?.A ?? false : false;
   const closedB = category ? branchClosureMap.get(category)?.B ?? false : false;
 
-  const minaDone = closedA || realtimeMina.size > 0;
-  const morelosDone = closedB || realtimeMorelos.size > 0;
-  const bothDone = minaDone && morelosDone;
+  // Una sucursal "terminó" solo cuando cerró formalmente su conteo
+  const minaDone = closedA;
+  const morelosDone = closedB;
+  // El cierre general (admin) requiere que AMBAS sucursales hayan cerrado
+  const bothClosed = closedA && closedB;
 
   const alreadyCountedThisMonth = category
     ? (branch === "A" ? categoryStatus.get(category)?.hasA : categoryStatus.get(category)?.hasB) ?? false
@@ -420,74 +422,6 @@ function AuditPage() {
       const sys = Number(p.stock_a) + Number(p.stock_b);
       return sys > 0 && !counts.has(p.barcode) && !mySums.has(p.barcode);
     });
-  }
-
-  async function saveCount() {
-    if (counts.size === 0) return toast.error("No hay productos contados");
-    const collab = getCollaborator();
-    if (!collab) return toast.error("Sesión expirada");
-    await doSave(counts);
-  }
-
-  async function doSave(countsToSave: Map<string, CountEntry>) {
-    const collab = getCollaborator();
-    if (!collab) return;
-    setSaving(true);
-    try {
-      const sessionId = crypto.randomUUID();
-      const rows = Array.from(countsToSave.values()).map((c) => ({
-        branch, // siempre la sucursal del colaborador
-        barcode: c.barcode,
-        product_name: c.product_name,
-        system_stock: c.system_stock,
-        physical_count: c.count,
-        difference: c.count - c.system_stock,
-        collaborator_id: collab.id,
-        collaborator_name: collab.name,
-        client_uid: `audit-${sessionId}-${c.barcode}`,
-      }));
-
-      if (online) {
-        const { error } = await supabase.from("audits").insert(rows);
-        if (error) throw error;
-        toast.success(`Conteo guardado — ${rows.length} productos`);
-      } else {
-        for (const row of rows) {
-          await enqueue({ kind: "audit", uid: row.client_uid, createdAt: Date.now(), payload: row });
-        }
-        toast.success(`Sin internet — ${rows.length} productos guardados localmente.`);
-      }
-
-      // ── Al guardar parcial, marcar la categoría en amarillo (branch_closures) ──
-      if (online && category) {
-        const mySums = branch === "A" ? realtimeMina : realtimeMorelos;
-        let total = 0; let numProducts = 0;
-        for (const c of countsToSave.values()) {
-          total += c.count;
-          if (c.count > 0) numProducts++;
-        }
-        // Sumar lo ya guardado hoy de mi sucursal
-        for (const [bc, qty] of mySums.entries()) {
-          if (!countsToSave.has(bc)) { total += qty; if (qty > 0) numProducts++; }
-        }
-        await supabase.from("branch_closures").upsert(
-          { category, branch, period: periodKey(),
-            collaborator_id: collab.id, collaborator_name: collab.name,
-            total_counted: total, products_counted: numProducts },
-          { onConflict: "category,branch,period" }
-        );
-        qc.invalidateQueries({ queryKey: ["branch-closures", periodKey()] });
-      }
-
-      setSummaryData(Array.from(countsToSave.values()));
-      setCounts(new Map());
-      clearCatState();
-      if (online) {
-        qc.invalidateQueries({ queryKey: ["audits"] });
-        qc.invalidateQueries({ queryKey: ["audits-realtime", category] });
-      }
-    } catch (e) { toast.error((e as Error).message); }
-    finally { setSaving(false); }
   }
 
   // Cierra el conteo de MI sucursal para esta categoría: lo no contado se guarda en 0,
@@ -595,47 +529,6 @@ function AuditPage() {
     }
   }
 
-  async function finalizeCount() {
-    if (counts.size === 0) return toast.error("No hay productos contados");
-    const collab = getCollaborator();
-    if (!collab) return toast.error("Sesión expirada");
-    if (alreadyCountedThisMonth) {
-      return toast.error(`"${category}" ya se contó este mes en ${branchLabel(branch)}. Solo se permite 1 conteo por mes.`);
-    }
-    if (!confirm(`Finalizar conteo de "${category}"? Se guardará el resumen y se cerrará esta sesión.`)) return;
-    setFinalizing(true);
-    try {
-      const sessionId = crypto.randomUUID();
-      const snapshot = Array.from(counts.values());
-      const rows = snapshot.map((c) => ({
-        session_id: sessionId, category, branch,
-        barcode: c.barcode, product_name: c.product_name,
-        system_stock: c.system_stock, counted_quantity: c.count,
-        difference: c.count - c.system_stock,
-        collaborator_id: collab.id, collaborator_name: collab.name,
-      }));
-
-      if (online) {
-        const { error } = await supabase.from("audit_history").insert(rows);
-        if (error) throw error;
-        toast.success("Conteo finalizado y guardado en historial");
-      } else {
-        const pendingKey = `inv.pending.finalize.${sessionId}`;
-        localStorage.setItem(pendingKey, JSON.stringify({ rows, savedAt: Date.now() }));
-        toast.success("Sin internet — conteo guardado localmente.");
-      }
-
-      setSummaryData(snapshot);
-      setSummaryFinal(true);
-      setCounts(new Map());
-      clearCatState();
-      if (online) {
-        qc.invalidateQueries({ queryKey: ["audit_history"] });
-        qc.invalidateQueries({ queryKey: ["audit-history-month"] });
-      }
-    } catch (e) { toast.error("No se pudo guardar: " + (e as Error).message); }
-    finally { setFinalizing(false); }
-  }
 
   async function confirmClose() {
     const collab = getCollaborator();
@@ -730,14 +623,23 @@ function AuditPage() {
         // Save audit_history for both branches → marks category green in monthly view
         const { error: e2 } = await supabase.from("audit_history").insert([...historyRowsMina, ...historyRowsMorelos]);
         if (e2) throw e2;
+        // Los comentarios pendientes de esta categoría quedan ligados a este corte
+        const { error: e3 } = await supabase
+          .from("audit_comments")
+          .update({ session_id: sessionId })
+          .eq("category", category)
+          .is("session_id", null)
+          .gte("created_at", monthRange().startIso);
+        if (e3) console.warn("No se pudieron ligar los comentarios:", e3.message);
       }
 
-      toast.success(`Categoría "${category}" finalizada ✓ — ya aparece en verde en el corte mensual`);
+      toast.success(`Categoría "${category}" cerrada ✓ — ya aparece en verde en el corte mensual`);
       setCloseDialog(false);
       if (online) {
         qc.invalidateQueries({ queryKey: ["closed_counts"] });
         qc.invalidateQueries({ queryKey: ["audit-history-month"] });
         qc.invalidateQueries({ queryKey: ["audits-realtime", category] });
+        qc.invalidateQueries({ queryKey: ["audit-comments"] });
       }
     } catch (e) { toast.error("Error al finalizar: " + (e as Error).message); }
     finally { setClosing(false); }
@@ -927,8 +829,8 @@ function AuditPage() {
               <div className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${morelosDone ? "bg-emerald-100 text-emerald-700" : "bg-muted text-muted-foreground"}`}>
                 {morelosDone ? "✓" : "○"} Morelos
               </div>
-              {me?.is_admin && bothDone && (
-                <span className="ml-auto text-xs text-emerald-600 font-medium">¡Listas para cerrar!</span>
+              {me?.is_admin && bothClosed && (
+                <span className="ml-auto text-xs text-emerald-600 font-medium">¡Listas para el cierre general!</span>
               )}
             </div>
           )}
@@ -958,10 +860,17 @@ function AuditPage() {
           <p className="text-xs text-muted-foreground max-w-xs">
             {alreadyCountedThisMonth
               ? `Solo se permite un conteo por categoría al mes (${monthLabel()}).`
-              : `Falta que ${branchLabel(branch === "A" ? "B" : "A")} cierre su conteo${me?.is_admin ? " para poder finalizar la categoría." : "."}`}
+              : bothClosed
+                ? "Las dos sucursales ya cerraron su conteo. Falta el cierre general del administrador."
+                : `Falta que ${branchLabel(branch === "A" ? "B" : "A")} cierre su conteo.`}
           </p>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap justify-center gap-2">
             <Button size="sm" variant="outline" onClick={() => setReportCategory(category)}>Ver reporte</Button>
+            {me?.is_admin && bothClosed && !alreadyCountedThisMonth && (
+              <Button size="sm" className="bg-emerald-600 hover:bg-emerald-700" onClick={() => setCloseDialog(true)}>
+                <Flag className="h-4 w-4" /> Cerrar conteo general
+              </Button>
+            )}
             {me?.is_admin && (
               <Button size="sm" variant="outline"
                 className="border-amber-400 text-amber-700 hover:bg-amber-50 dark:text-amber-300"
@@ -1016,12 +925,6 @@ function AuditPage() {
               <span className="text-xs font-medium text-muted-foreground">
                 {counts.size} / {products.length} productos contados
               </span>
-              {counts.size > 0 && (
-                <Button onClick={saveCount} disabled={saving} size="sm">
-                  {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                  Guardar conteo
-                </Button>
-              )}
             </div>
             <p className="px-1 text-[11px] text-muted-foreground">Tocá el número para escribir la cantidad directamente.</p>
 
@@ -1121,37 +1024,37 @@ function AuditPage() {
               )}
             </div>
 
-            {counts.size > 0 && (
-              <div className="mt-2 grid grid-cols-1 gap-2">
-                {/* Guardar parcial — visible para todos */}
-                <Button onClick={saveCount} disabled={saving || finalizing || closingBranch} variant="outline" className="w-full">
-                  {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                  {online ? `Guardar parcial (${counts.size})` : `Guardar offline (${counts.size})`}
-                </Button>
-              </div>
-            )}
+            {/* ── Un solo botón: cerrar el conteo de mi sucursal ── */}
+            <div className="mt-3">
+              <Button onClick={() => setCloseBranchDialog(true)} disabled={saving || closingBranch}
+                className="w-full bg-amber-600 hover:bg-amber-700">
+                {closingBranch ? <Loader2 className="h-4 w-4 animate-spin" /> : <Flag className="h-4 w-4" />}
+                Cerrar conteo de {branchLabel(branch)}
+              </Button>
+              <p className="mt-1 px-1 text-[11px] text-muted-foreground">
+                Se guardan tus {counts.size} producto{counts.size === 1 ? "" : "s"} contados y lo que no contaste queda en 0.
+              </p>
+            </div>
 
-
-
-            {/* ── Finalizar conteo — solo admin, solo cuando ambas sucursales tienen conteos ── */}
-            {me?.is_admin && category && bothDone && (
+            {/* ── Cierre general — solo admin, cuando AMBAS sucursales ya cerraron ── */}
+            {me?.is_admin && category && bothClosed && (
               <div className="mt-3 rounded-md border border-emerald-300 bg-emerald-50 dark:bg-emerald-950/20 p-3">
                 <div className="mb-2 flex items-center gap-2 text-xs font-medium text-emerald-700 dark:text-emerald-300">
-                  <Flag className="h-3.5 w-3.5" /> Finalizar conteo — Solo administrador
+                  <Flag className="h-3.5 w-3.5" /> Cierre general — Solo administrador
                 </div>
                 <p className="mb-3 text-xs text-muted-foreground">
-                  Mina ✓ y Morelos ✓ tienen conteos de hoy. Al finalizar, "{category}" quedará marcada como contada este mes.
+                  Mina ✓ y Morelos ✓ ya cerraron su conteo. Al cerrar en general, "{category}" quedará en verde y se guardará el reporte con los comentarios.
                 </p>
                 <Button onClick={() => setCloseDialog(true)} className="w-full bg-emerald-600 hover:bg-emerald-700">
-                  <Flag className="h-4 w-4" /> Finalizar conteo de "{category}"
+                  <Flag className="h-4 w-4" /> Cerrar conteo general de "{category}"
                 </Button>
               </div>
             )}
-            {me?.is_admin && category && !bothDone && (
+            {me?.is_admin && category && !bothClosed && (
               <div className="mt-2 rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
                 <Flag className="mb-1 h-3.5 w-3.5 inline mr-1" />
-                Finalizar disponible cuando Mina y Morelos tengan conteos del día.
-                {!minaDone && " Falta: Mina."}{!morelosDone && " Falta: Morelos."}
+                El cierre general se habilita cuando las dos sucursales cierren su conteo.
+                {!closedA && " Falta: Mina."}{!closedB && " Falta: Morelos."}
               </div>
             )}
           </div>
