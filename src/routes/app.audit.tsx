@@ -623,14 +623,23 @@ function AuditPage() {
         // Save audit_history for both branches → marks category green in monthly view
         const { error: e2 } = await supabase.from("audit_history").insert([...historyRowsMina, ...historyRowsMorelos]);
         if (e2) throw e2;
+        // Los comentarios pendientes de esta categoría quedan ligados a este corte
+        const { error: e3 } = await supabase
+          .from("audit_comments")
+          .update({ session_id: sessionId })
+          .eq("category", category)
+          .is("session_id", null)
+          .gte("created_at", monthRange().startIso);
+        if (e3) console.warn("No se pudieron ligar los comentarios:", e3.message);
       }
 
-      toast.success(`Categoría "${category}" finalizada ✓ — ya aparece en verde en el corte mensual`);
+      toast.success(`Categoría "${category}" cerrada ✓ — ya aparece en verde en el corte mensual`);
       setCloseDialog(false);
       if (online) {
         qc.invalidateQueries({ queryKey: ["closed_counts"] });
         qc.invalidateQueries({ queryKey: ["audit-history-month"] });
         qc.invalidateQueries({ queryKey: ["audits-realtime", category] });
+        qc.invalidateQueries({ queryKey: ["audit-comments"] });
       }
     } catch (e) { toast.error("Error al finalizar: " + (e as Error).message); }
     finally { setClosing(false); }
