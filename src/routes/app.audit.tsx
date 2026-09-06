@@ -1016,12 +1016,6 @@ function AuditPage() {
               <span className="text-xs font-medium text-muted-foreground">
                 {counts.size} / {products.length} productos contados
               </span>
-              {counts.size > 0 && (
-                <Button onClick={saveCount} disabled={saving} size="sm">
-                  {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                  Guardar conteo
-                </Button>
-              )}
             </div>
             <p className="px-1 text-[11px] text-muted-foreground">Tocá el número para escribir la cantidad directamente.</p>
 
