@@ -345,9 +345,11 @@ function AuditPage() {
   const closedA = category ? branchClosureMap.get(category)?.A ?? false : false;
   const closedB = category ? branchClosureMap.get(category)?.B ?? false : false;
 
-  const minaDone = closedA || realtimeMina.size > 0;
-  const morelosDone = closedB || realtimeMorelos.size > 0;
-  const bothDone = minaDone && morelosDone;
+  // Una sucursal "terminó" solo cuando cerró formalmente su conteo
+  const minaDone = closedA;
+  const morelosDone = closedB;
+  // El cierre general (admin) requiere que AMBAS sucursales hayan cerrado
+  const bothClosed = closedA && closedB;
 
   const alreadyCountedThisMonth = category
     ? (branch === "A" ? categoryStatus.get(category)?.hasA : categoryStatus.get(category)?.hasB) ?? false
