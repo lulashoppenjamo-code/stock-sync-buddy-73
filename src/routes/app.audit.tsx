@@ -1121,37 +1121,37 @@ function AuditPage() {
               )}
             </div>
 
-            {counts.size > 0 && (
-              <div className="mt-2 grid grid-cols-1 gap-2">
-                {/* Guardar parcial — visible para todos */}
-                <Button onClick={saveCount} disabled={saving || finalizing || closingBranch} variant="outline" className="w-full">
-                  {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                  {online ? `Guardar parcial (${counts.size})` : `Guardar offline (${counts.size})`}
-                </Button>
-              </div>
-            )}
+            {/* ── Un solo botón: cerrar el conteo de mi sucursal ── */}
+            <div className="mt-3">
+              <Button onClick={() => setCloseBranchDialog(true)} disabled={saving || closingBranch}
+                className="w-full bg-amber-600 hover:bg-amber-700">
+                {closingBranch ? <Loader2 className="h-4 w-4 animate-spin" /> : <Flag className="h-4 w-4" />}
+                Cerrar conteo de {branchLabel(branch)}
+              </Button>
+              <p className="mt-1 px-1 text-[11px] text-muted-foreground">
+                Se guardan tus {counts.size} producto{counts.size === 1 ? "" : "s"} contados y lo que no contaste queda en 0.
+              </p>
+            </div>
 
-
-
-            {/* ── Finalizar conteo — solo admin, solo cuando ambas sucursales tienen conteos ── */}
-            {me?.is_admin && category && bothDone && (
+            {/* ── Cierre general — solo admin, cuando AMBAS sucursales ya cerraron ── */}
+            {me?.is_admin && category && bothClosed && (
               <div className="mt-3 rounded-md border border-emerald-300 bg-emerald-50 dark:bg-emerald-950/20 p-3">
                 <div className="mb-2 flex items-center gap-2 text-xs font-medium text-emerald-700 dark:text-emerald-300">
-                  <Flag className="h-3.5 w-3.5" /> Finalizar conteo — Solo administrador
+                  <Flag className="h-3.5 w-3.5" /> Cierre general — Solo administrador
                 </div>
                 <p className="mb-3 text-xs text-muted-foreground">
-                  Mina ✓ y Morelos ✓ tienen conteos de hoy. Al finalizar, "{category}" quedará marcada como contada este mes.
+                  Mina ✓ y Morelos ✓ ya cerraron su conteo. Al cerrar en general, "{category}" quedará en verde y se guardará el reporte con los comentarios.
                 </p>
                 <Button onClick={() => setCloseDialog(true)} className="w-full bg-emerald-600 hover:bg-emerald-700">
-                  <Flag className="h-4 w-4" /> Finalizar conteo de "{category}"
+                  <Flag className="h-4 w-4" /> Cerrar conteo general de "{category}"
                 </Button>
               </div>
             )}
-            {me?.is_admin && category && !bothDone && (
+            {me?.is_admin && category && !bothClosed && (
               <div className="mt-2 rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
                 <Flag className="mb-1 h-3.5 w-3.5 inline mr-1" />
-                Finalizar disponible cuando Mina y Morelos tengan conteos del día.
-                {!minaDone && " Falta: Mina."}{!morelosDone && " Falta: Morelos."}
+                El cierre general se habilita cuando las dos sucursales cierren su conteo.
+                {!closedA && " Falta: Mina."}{!closedB && " Falta: Morelos."}
               </div>
             )}
           </div>
