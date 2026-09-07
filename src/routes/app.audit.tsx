@@ -53,7 +53,12 @@ type AdminAction =
   | { type: "deleteRow"; row: HistoryRow }
   | { type: "editRow"; row: HistoryRow; newQty: number }
   | { type: "restoreClosure"; category: string; branch: "A" | "B" }
-  | { type: "regenerateReport"; category: string };
+  | { type: "regenerateReport"; category: string }
+  | {
+      type: "editProduct";
+      oldBarcode: string;
+      data: { barcode: string; product_name: string; category: string | null; stock_a: number; stock_b: number; price: number };
+    };
 
 // ── localStorage ───────────────────────────────────────────────────────
 const CAT_KEY = "inv.audit.category.v2";
@@ -179,6 +184,49 @@ function AuditPage() {
   const [adminBusy, setAdminBusy] = useState(false);
   const [reportCategory, setReportCategory] = useState<string | null>(null);
 
+  // ── Editar producto (admin): buscar y modificar código, categoría, etc. ──
+  const [productEditOpen, setProductEditOpen] = useState(false);
+  const [productQuery, setProductQuery] = useState("");
+  const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  const [epBarcode, setEpBarcode] = useState("");
+  const [epName, setEpName] = useState("");
+  const [epCategory, setEpCategory] = useState("");
+  const [epStockA, setEpStockA] = useState(0);
+  const [epStockB, setEpStockB] = useState(0);
+  const [epPrice, setEpPrice] = useState(0);
+
+  function pickProductToEdit(p: Product) {
+    setEditingProduct(p);
+    setEpBarcode(p.barcode);
+    setEpName(p.product_name);
+    setEpCategory(p.category ?? "");
+    setEpStockA(Number(p.stock_a));
+    setEpStockB(Number(p.stock_b));
+    setEpPrice(Number(p.price));
+  }
+
+  function closeProductEdit() {
+    setProductEditOpen(false);
+    setProductQuery("");
+    setEditingProduct(null);
+  }
+
+  const { data: productSearchResults = [] } = useQuery({
+    queryKey: ["product-search-edit", productQuery],
+    enabled: productEditOpen && productQuery.trim().length >= 2 && online,
+    staleTime: 10_000,
+    queryFn: async () => {
+      const q = productQuery.trim();
+      const { data, error } = await supabase
+        .from("products")
+        .select("barcode, product_name, category, stock_a, stock_b, price")
+        .or(`product_name.ilike.%${q}%,barcode.ilike.%${q}%`)
+        .limit(20);
+      if (error) throw error;
+      return data as Product[];
+    },
+  });
+
   const { data: categories = [] } = useQuery({
     queryKey: ["categories-all"],
     queryFn: async () => {
@@ -301,6 +349,61 @@ function AuditPage() {
     () => new Set(closedCountsThisMonth.map((r) => r.category)),
     [closedCountsThisMonth]
   );
+
+  // ── Conteo en vivo para el diálogo de "Reporte mensual" ──────────────
+  // Independiente de la categoría que se esté contando ahora mismo: trae los
+  // productos y los escaneos de este mes de la categoría que se está VIENDO
+  // en el reporte (reportCategory), para poder mostrar resultados aunque el
+  // corte general todavía no se haya cerrado.
+  const { data: reportLiveProducts = [] } = useQuery({
+    queryKey: ["report-live-products", reportCategory],
+    enabled: !!reportCategory,
+    staleTime: online ? 15_000 : Infinity,
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("products")
+        .select("barcode, product_name, stock_a, stock_b")
+        .eq("category", reportCategory as string);
+      if (error) throw error;
+      return data as Array<{ barcode: string; product_name: string; stock_a: number; stock_b: number }>;
+    },
+  });
+
+  const { data: reportLiveAudits = [] } = useQuery({
+    queryKey: ["report-live-audits", reportCategory],
+    enabled: !!reportCategory && reportLiveProducts.length > 0 && online,
+    staleTime: online ? 15_000 : Infinity,
+    queryFn: async () => {
+      const barcodes = reportLiveProducts.map((p) => p.barcode);
+      const { startIso, endIso } = monthRange();
+      const { data, error } = await supabase
+        .from("audits")
+        .select("barcode, physical_count, branch")
+        .in("barcode", barcodes)
+        .gte("created_at", startIso)
+        .lte("created_at", endIso);
+      if (error) throw error;
+      return data as Array<{ barcode: string; physical_count: number; branch: string }>;
+    },
+  });
+
+  const reportLiveRows = useMemo(() => {
+    const minaMap = new Map<string, number>();
+    const morelosMap = new Map<string, number>();
+    for (const a of reportLiveAudits) {
+      const qty = Number(a.physical_count);
+      if (a.branch === "A") minaMap.set(a.barcode, (minaMap.get(a.barcode) ?? 0) + qty);
+      if (a.branch === "B") morelosMap.set(a.barcode, (morelosMap.get(a.barcode) ?? 0) + qty);
+    }
+    return reportLiveProducts
+      .map((p) => {
+        const sys = Number(p.stock_a) + Number(p.stock_b);
+        const mina = minaMap.get(p.barcode) ?? 0;
+        const morelos = morelosMap.get(p.barcode) ?? 0;
+        return { barcode: p.barcode, product_name: p.product_name, system_stock: sys, mina, morelos, total: mina + morelos };
+      })
+      .filter((r) => r.mina > 0 || r.morelos > 0);
+  }, [reportLiveProducts, reportLiveAudits]);
 
   // ── Comentarios / reportes de auditoría (recientes) ──────────────────
   // Se filtran SIEMPRE por categoría + sucursal, así son exclusivos de ese conteo.
@@ -840,6 +943,32 @@ function AuditPage() {
         if (category === cat) { setCounts(new Map()); clearCatState(); }
         qc.invalidateQueries({ queryKey: ["closed_counts"] });
         qc.invalidateQueries({ queryKey: ["closed-counts-categories"] });
+      } else if (adminAction.type === "editProduct") {
+        // Edita un producto del inventario (código, nombre, categoría, stock, precio).
+        // Solo llega hasta acá si el admin confirmó con su PIN en el diálogo.
+        const { oldBarcode, data } = adminAction;
+        if (!data.barcode.trim() || !data.product_name.trim()) {
+          throw new Error("El código y el nombre son obligatorios");
+        }
+        const { error } = await supabase
+          .from("products")
+          .update({
+            barcode: data.barcode.trim(),
+            product_name: data.product_name.trim(),
+            category: data.category ? data.category.trim() : null,
+            stock_a: data.stock_a,
+            stock_b: data.stock_b,
+            price: data.price,
+          })
+          .eq("barcode", oldBarcode);
+        if (error) throw error;
+        toast.success(`Producto "${data.product_name}" actualizado ✓`);
+        closeProductEdit();
+        qc.invalidateQueries({ queryKey: ["categories-all"] });
+        qc.invalidateQueries({ queryKey: ["category-counts"] });
+        qc.invalidateQueries({ queryKey: ["cat-products"] });
+        qc.invalidateQueries({ queryKey: ["product-search-edit"] });
+        qc.invalidateQueries({ queryKey: ["report-live-products"] });
       }
       setAdminAction(null); setAdminPin("");
       qc.invalidateQueries({ queryKey: ["audit-history-month"] });
@@ -1456,6 +1585,36 @@ function AuditPage() {
                   })}
                   {rows.length === 0 && <div className="p-3 text-xs text-muted-foreground">Sin conteos registrados este mes.</div>}
                 </div>
+
+                {/* ── Conteo en vivo (tabla "audits"), aunque aún no se haya cerrado ── */}
+                {reportLiveRows.length > 0 && (
+                  <div className="space-y-1.5">
+                    <p className="text-[11px] font-medium text-blue-700 dark:text-blue-300">
+                      Conteo en vivo actual {rows.length === 0 ? "(aún sin cerrar)" : "(puede incluir escaneos del corte ya cerrado)"}
+                    </p>
+                    <div className="divide-y rounded-md border border-blue-200 dark:border-blue-900">
+                      {reportLiveRows
+                        .sort((a, b) => (a.total - a.system_stock) - (b.total - b.system_stock))
+                        .map((r) => {
+                          const diff = r.total - r.system_stock;
+                          return (
+                            <div key={r.barcode} className="flex items-center gap-2 px-3 py-2 text-xs bg-blue-50/60 dark:bg-blue-950/10">
+                              <div className="min-w-0 flex-1">
+                                <div className="font-medium truncate">{r.product_name}</div>
+                                <div className="font-mono text-muted-foreground">{r.barcode}</div>
+                              </div>
+                              <div className="shrink-0 text-right space-y-0.5">
+                                <div className="text-muted-foreground">Sys: {r.system_stock} · Mina: {r.mina} · Morelos: {r.morelos}</div>
+                                <div className={`font-bold ${diff === 0 ? "text-emerald-600" : diff < 0 ? "text-red-600" : "text-amber-600"}`}>
+                                  {diff === 0 ? "✓ Sin diferencia" : diff > 0 ? `+${diff} SOBRA` : `${diff} FALTA`}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                    </div>
+                  </div>
+                )}
                 {me?.is_admin && (
                   <div className="space-y-3 rounded-md border border-amber-300 bg-amber-50/60 p-3 dark:bg-amber-950/10">
                     <div className="flex items-center gap-1.5 text-xs font-semibold text-amber-800 dark:text-amber-300">
@@ -1491,6 +1650,11 @@ function AuditPage() {
                       onClick={() => setAdminAction({ type: "regenerateReport", category: reportCategory! })}>
                       <Save className="h-3.5 w-3.5" /> Volver a guardar conteo general de "{reportCategory}"
                     </Button>
+                    <Button size="sm" variant="outline"
+                      className="w-full border-slate-400 text-slate-700 hover:bg-slate-100 dark:text-slate-300"
+                      onClick={() => setProductEditOpen(true)}>
+                      <Pencil className="h-3.5 w-3.5" /> Editar un producto (código, categoría, stock, precio)
+                    </Button>
                     <div className="space-y-1.5">
                       <p className="text-[11px] font-medium text-muted-foreground">Registros individuales</p>
                       <div className="max-h-56 divide-y overflow-y-auto rounded-md border bg-background">
@@ -1515,6 +1679,92 @@ function AuditPage() {
         </DialogContent>
       </Dialog>
 
+      {/* ── Editar producto (admin): buscar y modificar ── */}
+      <Dialog open={productEditOpen} onOpenChange={(o) => { if (!o) closeProductEdit(); }}>
+        <DialogContent className="max-h-[90vh] max-w-md overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-1.5">
+              <Pencil className="h-4 w-4" /> Editar producto
+            </DialogTitle>
+          </DialogHeader>
+          {!editingProduct ? (
+            <div className="space-y-2">
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input autoFocus value={productQuery} onChange={(e) => setProductQuery(e.target.value)}
+                  placeholder="Buscar por nombre o código de barras…" className="pl-9" />
+              </div>
+              <div className="max-h-72 divide-y overflow-auto rounded-md border">
+                {productSearchResults.map((p) => (
+                  <button key={p.barcode} type="button" onClick={() => pickProductToEdit(p)}
+                    className="flex w-full items-center justify-between px-3 py-2 text-left text-sm hover:bg-muted">
+                    <div className="min-w-0">
+                      <div className="truncate font-medium">{p.product_name}</div>
+                      <div className="font-mono text-xs text-muted-foreground">{p.barcode} · {p.category ?? "Sin categoría"}</div>
+                    </div>
+                  </button>
+                ))}
+                {productQuery.trim().length >= 2 && productSearchResults.length === 0 && (
+                  <div className="p-3 text-xs text-muted-foreground">Sin resultados</div>
+                )}
+                {productQuery.trim().length < 2 && (
+                  <div className="p-3 text-xs text-muted-foreground">Escribí al menos 2 caracteres para buscar.</div>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-3 text-sm">
+              <button type="button" onClick={() => setEditingProduct(null)} className="text-xs text-muted-foreground underline">
+                ← Buscar otro producto
+              </button>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">Código de barras</label>
+                <Input value={epBarcode} onChange={(e) => setEpBarcode(e.target.value)} className="font-mono" />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">Nombre</label>
+                <Input value={epName} onChange={(e) => setEpName(e.target.value)} />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">Categoría</label>
+                <input list="edit-product-categories" value={epCategory} onChange={(e) => setEpCategory(e.target.value)}
+                  className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm" placeholder="Elegir o escribir categoría…" />
+                <datalist id="edit-product-categories">
+                  {categories.map((c) => <option key={c} value={c} />)}
+                </datalist>
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground">Stock Mina</label>
+                  <Input type="number" value={epStockA} onChange={(e) => setEpStockA(Number(e.target.value) || 0)} />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground">Stock Morelos</label>
+                  <Input type="number" value={epStockB} onChange={(e) => setEpStockB(Number(e.target.value) || 0)} />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground">Precio</label>
+                  <Input type="number" value={epPrice} onChange={(e) => setEpPrice(Number(e.target.value) || 0)} />
+                </div>
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={closeProductEdit}>Cancelar</Button>
+            {editingProduct && (
+              <Button
+                onClick={() => setAdminAction({
+                  type: "editProduct",
+                  oldBarcode: editingProduct.barcode,
+                  data: { barcode: epBarcode, product_name: epName, category: epCategory || null, stock_a: epStockA, stock_b: epStockB, price: epPrice },
+                })}>
+                <Save className="h-4 w-4" /> Guardar cambios
+              </Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* ── Admin PIN dialog ── */}
       <Dialog open={!!adminAction} onOpenChange={(o) => { if (!o) { setAdminAction(null); setAdminPin(""); } }}>
         <DialogContent className="max-w-sm">
@@ -1527,6 +1777,7 @@ function AuditPage() {
               {adminAction?.type === "editRow" && "Editar cantidad contada"}
               {adminAction?.type === "restoreClosure" && "Reactivar categoría"}
               {adminAction?.type === "regenerateReport" && "Volver a guardar conteo general"}
+              {adminAction?.type === "editProduct" && "Editar producto"}
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-3 text-sm">
@@ -1566,6 +1817,12 @@ function AuditPage() {
                 Se borrará y se volverá a guardar el reporte general y el historial de{" "}
                 <strong>"{adminAction.category}"</strong> este mes, usando los conteos en vivo actuales
                 de Mina y Morelos. No afecta a ninguna otra categoría.
+              </p>
+            )}
+            {adminAction?.type === "editProduct" && (
+              <p className="text-muted-foreground">
+                Se actualizará el producto <strong>"{adminAction.data.product_name}"</strong> (código actual:{" "}
+                <span className="font-mono">{adminAction.oldBarcode}</span>) con los datos nuevos.
               </p>
             )}
             {adminAction?.type !== "restoreClosure" && (
