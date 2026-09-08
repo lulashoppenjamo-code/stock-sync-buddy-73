@@ -518,11 +518,14 @@ function AuditPage() {
   const addCount = useCallback(async (barcode: string) => {
     const code = barcode.trim();
     if (!code) return;
-    if (!category) { toast.error("Seleccioná una categoría primero"); return; }
+    // Limpiar siempre el campo antes de procesar para evitar concatenación
+    setScanInput("");
+    if (!category) { toast.error("Seleccioná una categoría primero"); scanRef.current?.focus(); return; }
     const prod = await lookupProduct(code);
-    if (!prod) return;
+    if (!prod) { scanRef.current?.focus(); return; } // lookupProduct ya muestra el error
     if (prod.category !== category) {
       toast.error(`"${prod.product_name}" no es de la categoría ${category}`);
+      scanRef.current?.focus();
       return;
     }
     const sys = Number(prod.stock_a) + Number(prod.stock_b);
@@ -533,7 +536,6 @@ function AuditPage() {
       return newMap;
     });
     toast.success(`+1 · ${prod.product_name}`);
-    setScanInput("");
     scanRef.current?.focus();
     flashProduct(code);
   }, [products, category, online]);
