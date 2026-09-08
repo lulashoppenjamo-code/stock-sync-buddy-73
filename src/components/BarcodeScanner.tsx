@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Loader2 } from "lucide-react";
+import { Loader2, Zap, Hand } from "lucide-react";
 
 type Props = {
   open: boolean;
@@ -18,7 +18,7 @@ function playBeep() {
     osc.connect(gain);
     gain.connect(ctx.destination);
     osc.type = "sine";
-    osc.frequency.setValueAtTime(1480, ctx.currentTime); // high beep
+    osc.frequency.setValueAtTime(1480, ctx.currentTime);
     gain.gain.setValueAtTime(0.4, ctx.currentTime);
     gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.12);
     osc.start(ctx.currentTime);
@@ -35,6 +35,10 @@ export function BarcodeScanner({ open, onClose, onDetected, continuous = false }
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastCode, setLastCode] = useState<string | null>(null);
+  // ── Modo: "auto" = continuo, "manual" = un escaneo a la vez con botón ──
+  const [mode, setMode] = useState<"auto" | "manual">("auto");
+  const [pendingCode, setPendingCode] = useState<string | null>(null);
+  const detectorRef = useRef<any>(null);
 
   const stopAll = useCallback(() => {
     activeRef.current = false;
@@ -45,22 +49,31 @@ export function BarcodeScanner({ open, onClose, onDetected, continuous = false }
 
   const handleClose = useCallback(() => { stopAll(); onClose(); }, [stopAll, onClose]);
 
+  // Confirmar escaneo en modo manual
+  function confirmScan() {
+    if (!pendingCode) return;
+    playBeep();
+    onDetected(pendingCode);
+    setPendingCode(null);
+    setLastCode(pendingCode);
+  }
+
   useEffect(() => {
     if (!open) return;
     setError(null);
     setLastCode(null);
+    setPendingCode(null);
     setStarting(true);
     activeRef.current = true;
 
     (async () => {
       try {
-        // Use BarcodeDetector API (native in Chrome Android)
         const BarcodeDetector = (window as any).BarcodeDetector;
         if (!BarcodeDetector) {
           throw new Error("Tu navegador no soporta lectura de códigos nativa. Usá el campo de texto para ingresar el código.");
         }
 
-        const detector = new BarcodeDetector({
+        detectorRef.current = new BarcodeDetector({
           formats: ["ean_13", "ean_8", "code_128", "code_39", "code_93", "upc_a", "upc_e", "itf", "qr_code", "data_matrix"],
         });
 
@@ -77,11 +90,12 @@ export function BarcodeScanner({ open, onClose, onDetected, continuous = false }
         const scan = async () => {
           if (!activeRef.current || !videoRef.current) return;
           try {
-            const barcodes = await detector.detect(videoRef.current);
+            const barcodes = await detectorRef.current.detect(videoRef.current);
             if (barcodes.length > 0) {
               const code = barcodes[0].rawValue?.trim();
               if (code) {
-                if (continuous) {
+                if (mode === "auto" && continuous) {
+                  // Modo automático: escanea cada 800ms
                   const now = Date.now();
                   if (now - lastEmitRef.current >= 800) {
                     lastEmitRef.current = now;
@@ -89,7 +103,15 @@ export function BarcodeScanner({ open, onClose, onDetected, continuous = false }
                     setLastCode(code);
                     onDetected(code);
                   }
+                } else if (mode === "manual") {
+                  // Modo manual: solo detecta y muestra, espera confirmación
+                  const now = Date.now();
+                  if (now - lastEmitRef.current >= 600) {
+                    lastEmitRef.current = now;
+                    setPendingCode(code);
+                  }
                 } else {
+                  // Modo no-continuo original
                   stopAll();
                   playBeep();
                   onDetected(code);
@@ -115,7 +137,7 @@ export function BarcodeScanner({ open, onClose, onDetected, continuous = false }
     })();
 
     return () => { stopAll(); };
-  }, [open, continuous, onDetected, onClose, stopAll]);
+  }, [open, continuous, onDetected, onClose, stopAll, mode]);
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) handleClose(); }}>
@@ -123,6 +145,25 @@ export function BarcodeScanner({ open, onClose, onDetected, continuous = false }
         <DialogHeader className="px-4 pt-4 pb-2">
           <DialogTitle>Escanear código de barras</DialogTitle>
         </DialogHeader>
+
+        {/* Toggle de modo — solo en modo continuo */}
+        {continuous && !error && !starting && (
+          <div className="flex items-center gap-2 px-4 pb-2">
+            <span className="text-xs text-muted-foreground">Modo:</span>
+            <div className="inline-flex overflow-hidden rounded-md border text-xs">
+              <button type="button"
+                onClick={() => { setMode("auto"); setPendingCode(null); }}
+                className={`flex items-center gap-1 px-3 py-1.5 font-medium transition-colors ${mode === "auto" ? "bg-primary text-primary-foreground" : "bg-background hover:bg-muted"}`}>
+                <Zap className="h-3 w-3" /> Automático
+              </button>
+              <button type="button"
+                onClick={() => { setMode("manual"); setPendingCode(null); }}
+                className={`flex items-center gap-1 px-3 py-1.5 font-medium transition-colors ${mode === "manual" ? "bg-amber-500 text-white" : "bg-background hover:bg-muted"}`}>
+                <Hand className="h-3 w-3" /> Manual
+              </button>
+            </div>
+          </div>
+        )}
 
         <div className="relative bg-black" style={{ aspectRatio: "16/9" }}>
           <video ref={videoRef} className="h-full w-full object-cover" autoPlay muted playsInline />
@@ -139,23 +180,31 @@ export function BarcodeScanner({ open, onClose, onDetected, continuous = false }
           {!starting && !error && (
             <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
               <div className="relative w-4/5" style={{ height: "38%" }}>
-                <div className="absolute top-0 left-0 h-5 w-5 border-t-2 border-l-2 border-red-400" />
-                <div className="absolute top-0 right-0 h-5 w-5 border-t-2 border-r-2 border-red-400" />
-                <div className="absolute bottom-0 left-0 h-5 w-5 border-b-2 border-l-2 border-red-400" />
-                <div className="absolute bottom-0 right-0 h-5 w-5 border-b-2 border-r-2 border-red-400" />
+                <div className={`absolute top-0 left-0 h-5 w-5 border-t-2 border-l-2 ${pendingCode ? "border-amber-400" : "border-red-400"}`} />
+                <div className={`absolute top-0 right-0 h-5 w-5 border-t-2 border-r-2 ${pendingCode ? "border-amber-400" : "border-red-400"}`} />
+                <div className={`absolute bottom-0 left-0 h-5 w-5 border-b-2 border-l-2 ${pendingCode ? "border-amber-400" : "border-red-400"}`} />
+                <div className={`absolute bottom-0 right-0 h-5 w-5 border-b-2 border-r-2 ${pendingCode ? "border-amber-400" : "border-red-400"}`} />
               </div>
             </div>
           )}
 
-          {continuous && lastCode && (
+          {/* Último código escaneado en auto */}
+          {mode === "auto" && lastCode && (
             <div className="pointer-events-none absolute top-3 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-emerald-500/90 px-3 py-1 font-mono text-xs text-white shadow-lg">
               ✓ {lastCode}
             </div>
           )}
 
+          {/* Código detectado en modo manual — espera confirmación */}
+          {mode === "manual" && pendingCode && (
+            <div className="absolute top-3 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-amber-500/95 px-3 py-1 font-mono text-xs text-white shadow-lg">
+              📦 {pendingCode}
+            </div>
+          )}
+
           {!error && !starting && (
             <div className="pointer-events-none absolute bottom-2 left-0 right-0 text-center text-[10px] text-white/70">
-              {continuous ? "Modo continuo — cada lectura suma 1" : "Centrá el código dentro del recuadro"}
+              {mode === "auto" ? "Automático — cada lectura suma 1" : "Manual — toca '+ Agregar' para confirmar"}
             </div>
           )}
         </div>
@@ -166,10 +215,23 @@ export function BarcodeScanner({ open, onClose, onDetected, continuous = false }
           </div>
         )}
 
-        <div className="flex justify-end px-4 pb-4 pt-2">
-          <Button variant="outline" onClick={handleClose}>
-            {continuous ? "Listo" : "Cancelar"}
-          </Button>
+        <div className="flex items-center justify-between px-4 pb-4 pt-2 gap-2">
+          {/* Botón de confirmar en modo manual */}
+          {mode === "manual" && continuous ? (
+            <>
+              <Button variant="outline" onClick={handleClose}>Listo</Button>
+              <Button
+                onClick={confirmScan}
+                disabled={!pendingCode}
+                className="flex-1 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40">
+                {pendingCode ? `+ Agregar: ${pendingCode}` : "Apuntá al código…"}
+              </Button>
+            </>
+          ) : (
+            <Button variant="outline" onClick={handleClose} className="ml-auto">
+              {continuous ? "Listo" : "Cancelar"}
+            </Button>
+          )}
         </div>
       </DialogContent>
     </Dialog>
