@@ -684,23 +684,38 @@ function AuditPage() {
       const sessionId = crypto.randomUUID();
       const closedAt = new Date().toISOString();
 
-      // Detalle de quién contó y cuándo, por producto (de los escaneos en vivo de hoy)
+      // ── Leer TODOS los audits del mes (no solo hoy) para ambas sucursales ──
+      // Esto garantiza que el verde funcione aunque el cierre sea días después
+      const barcodes = products.map((p) => p.barcode);
+      const { startIso: mStart } = monthRange();
+      let allMonthAudits: Array<{ barcode: string; physical_count: number; collaborator_name: string | null; branch: string; created_at: string }> = [];
+      if (barcodes.length) {
+        const { data: ma, error: mae } = await supabase
+          .from("audits")
+          .select("barcode, physical_count, collaborator_name, branch, created_at")
+          .in("barcode", barcodes)
+          .gte("created_at", mStart)
+          .order("created_at", { ascending: true });
+        if (mae) throw mae;
+        allMonthAudits = ma ?? [];
+      }
+
+      const allMina = new Map<string, number>();
+      const allMorelos = new Map<string, number>();
       const detailsByBarcode = new Map<string, { name: string; branch: string; qty: number; at: string }[]>();
-      for (const a of realtimeAudits) {
+      for (const a of allMonthAudits) {
+        const qty = Number(a.physical_count);
+        if (a.branch === "A") allMina.set(a.barcode, (allMina.get(a.barcode) ?? 0) + qty);
+        if (a.branch === "B") allMorelos.set(a.barcode, (allMorelos.get(a.barcode) ?? 0) + qty);
         const list = detailsByBarcode.get(a.barcode) ?? [];
-        list.push({
-          name: a.collaborator_name ?? "Anónimo",
-          branch: branchLabel(a.branch),
-          qty: Number(a.physical_count),
-          at: a.created_at,
-        });
+        list.push({ name: a.collaborator_name ?? "Anónimo", branch: branchLabel(a.branch), qty, at: a.created_at });
         detailsByBarcode.set(a.barcode, list);
       }
 
       const reportRows = products.map((p) => {
         const sys = Number(p.stock_a) + Number(p.stock_b);
-        const minaCount = realtimeMina.get(p.barcode) ?? 0;
-        const morelosCount = realtimeMorelos.get(p.barcode) ?? 0;
+        const minaCount = allMina.get(p.barcode) ?? 0;
+        const morelosCount = allMorelos.get(p.barcode) ?? 0;
         const price = Number(p.price) || 0;
         const diff = (minaCount + morelosCount) - sys;
         const details = (detailsByBarcode.get(p.barcode) ?? []).sort((a, b) => a.at.localeCompare(b.at));
@@ -711,11 +726,10 @@ function AuditPage() {
           system_stock: sys,
           mina_count: minaCount, morelos_count: morelosCount,
           total_counted: minaCount + morelosCount,
-          difference: diff,
-          unit_price: price,
+          difference: diff, unit_price: price,
           difference_value: diff * price,
-          scanned_mina: realtimeMina.has(p.barcode),
-          scanned_morelos: realtimeMorelos.has(p.barcode),
+          scanned_mina: allMina.has(p.barcode),
+          scanned_morelos: allMorelos.has(p.barcode),
           closed_by: collab.name, closed_at: closedAt,
           count_details: details,
           last_counted_by: last?.name ?? null,
@@ -723,42 +737,26 @@ function AuditPage() {
         };
       });
 
-      // Insertar en audit_history para Mina (A) y Morelos (B)
-      // Esto marca la categoría en verde en el corte mensual
-      // El stock del sistema es consolidado (total), así que la diferencia real
-      // solo tiene sentido contra la suma de ambas sucursales. Para no reportar
-      // falsos faltantes por sucursal, cada renglón guarda su conteo y la
-      // diferencia total del producto (Mina + Morelos vs sistema).
       const historyRowsMina = products.map((p) => {
         const sys = Number(p.stock_a) + Number(p.stock_b);
-        const total = (realtimeMina.get(p.barcode) ?? 0) + (realtimeMorelos.get(p.barcode) ?? 0);
+        const total = (allMina.get(p.barcode) ?? 0) + (allMorelos.get(p.barcode) ?? 0);
         return {
-          session_id: sessionId,
-          category,
-          branch: "A" as const,
-          barcode: p.barcode,
-          product_name: p.product_name,
-          system_stock: sys,
-          counted_quantity: realtimeMina.get(p.barcode) ?? 0,
+          session_id: sessionId, category, branch: "A" as const,
+          barcode: p.barcode, product_name: p.product_name, system_stock: sys,
+          counted_quantity: allMina.get(p.barcode) ?? 0,
           difference: total - sys,
-          collaborator_id: collab.id,
-          collaborator_name: collab.name,
+          collaborator_id: collab.id, collaborator_name: collab.name,
         };
       });
       const historyRowsMorelos = products.map((p) => {
         const sys = Number(p.stock_a) + Number(p.stock_b);
-        const total = (realtimeMina.get(p.barcode) ?? 0) + (realtimeMorelos.get(p.barcode) ?? 0);
+        const total = (allMina.get(p.barcode) ?? 0) + (allMorelos.get(p.barcode) ?? 0);
         return {
-          session_id: sessionId,
-          category,
-          branch: "B" as const,
-          barcode: p.barcode,
-          product_name: p.product_name,
-          system_stock: sys,
-          counted_quantity: realtimeMorelos.get(p.barcode) ?? 0,
+          session_id: sessionId, category, branch: "B" as const,
+          barcode: p.barcode, product_name: p.product_name, system_stock: sys,
+          counted_quantity: allMorelos.get(p.barcode) ?? 0,
           difference: total - sys,
-          collaborator_id: collab.id,
-          collaborator_name: collab.name,
+          collaborator_id: collab.id, collaborator_name: collab.name,
         };
       });
 
@@ -830,9 +828,26 @@ function AuditPage() {
         if (error) throw error;
         toast.success("Cantidad actualizada");
       } else if (adminAction.type === "restoreClosure") {
-        // Borra el cierre de esa sucursal para esta categoría/mes en branch_closures.
-        // Esto "reactiva" la categoría cuando el historial (audit_history) ya se
-        // borró a mano pero el cierre de sucursal seguía marcado, dejándola trabada.
+        // Reactiva la categoría/sucursal: borra branch_closures Y los audits del mes
+        // para esa sucursal, para que al recontar no se dupliquen los conteos anteriores.
+        const { startIso, endIso } = monthRange();
+        const catProds = products.filter((p) => p.category === adminAction.category || category === adminAction.category);
+        const catBarcodes = catProds.length > 0
+          ? catProds.map((p) => p.barcode)
+          : await supabase.from("products").select("barcode").eq("category", adminAction.category)
+              .then(({ data }) => (data ?? []).map((p) => p.barcode));
+
+        // Borrar audits del mes de esa sucursal para evitar duplicados al recontar
+        if (Array.isArray(catBarcodes) && catBarcodes.length > 0) {
+          await supabase.from("audits")
+            .delete()
+            .in("barcode", catBarcodes)
+            .eq("branch", adminAction.branch)
+            .gte("created_at", startIso)
+            .lte("created_at", endIso);
+        }
+
+        // Borrar el cierre de sucursal
         const { error } = await supabase
           .from("branch_closures")
           .delete()
@@ -840,11 +855,12 @@ function AuditPage() {
           .eq("branch", adminAction.branch)
           .eq("period", periodKey());
         if (error) throw error;
-        toast.success(`"${adminAction.category}" reactivada en ${branchLabel(adminAction.branch)} — ya se puede volver a contar.`);
+        toast.success(`"${adminAction.category}" reactivada en ${branchLabel(adminAction.branch)} — los conteos anteriores se limpiaron. Ya se puede volver a contar sin duplicados.`);
         if (category === adminAction.category && branch === adminAction.branch) {
           setCounts(new Map()); clearCatState();
         }
         qc.invalidateQueries({ queryKey: ["branch-closures", periodKey()] });
+        qc.invalidateQueries({ queryKey: ["audits-realtime", adminAction.category] });
       } else if (adminAction.type === "regenerateReport") {
         // Vuelve a guardar el conteo general (closed_counts + audit_history) de una
         // categoría este mes, usando los conteos en vivo actuales (tabla "audits").
