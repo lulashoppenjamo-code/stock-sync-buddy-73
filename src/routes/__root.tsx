@@ -112,7 +112,24 @@ function ClientBoot() {
   useEffect(() => {
     registerPwa();
     const cleanup = startQueueAutoDrain();
-    return cleanup;
+
+    // ── Bloquear botón físico "Atrás" del teléfono ──
+    // Agrega una entrada falsa al historial y al detectar popstate la repone,
+    // evitando que el botón de atrás saque al usuario de la app.
+    function pushDummy() {
+      window.history.pushState({ locked: true }, "");
+    }
+    function handlePopState() {
+      // Reponer la entrada para que el próximo "atrás" también quede bloqueado
+      pushDummy();
+    }
+    pushDummy();
+    window.addEventListener("popstate", handlePopState);
+
+    return () => {
+      cleanup();
+      window.removeEventListener("popstate", handlePopState);
+    };
   }, []);
   return null;
 }
