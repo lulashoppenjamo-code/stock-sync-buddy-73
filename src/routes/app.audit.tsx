@@ -495,8 +495,14 @@ function AuditPage() {
   // El cierre general (admin) requiere que AMBAS sucursales hayan cerrado
   const bothClosed = closedA && closedB;
 
+  // Si ya existe un reporte guardado (closed_counts) para esta categoría este
+  // mes, se considera cerrada SIEMPRE — aunque falten filas puntuales en
+  // audit_history por algún borrado manual. Así la categoría se ve y se
+  // comporta en verde de forma consistente en toda la pantalla, no solo en
+  // la tarjeta del resumen mensual.
+  const categoryHasSavedReport = category ? closedCountsCategories.has(category) : false;
   const alreadyCountedThisMonth = category
-    ? (branch === "A" ? categoryStatus.get(category)?.hasA : categoryStatus.get(category)?.hasB) ?? false
+    ? categoryHasSavedReport || ((branch === "A" ? categoryStatus.get(category)?.hasA : categoryStatus.get(category)?.hasB) ?? false)
     : false;
 
   // Mi sucursal ya cerró su conteo de esta categoría este mes (nuevo cierre por sucursal)
@@ -681,6 +687,28 @@ function AuditPage() {
     if (!collab) return;
     setClosing(true);
     try {
+      // ── Guard anti-duplicados ──────────────────────────────────────────
+      // Verifica directo contra la base (no contra el caché local) que esta
+      // categoría todavía no tenga un reporte general guardado este mes.
+      // Esto evita que un doble-tap del botón, o dos admins cerrando casi al
+      // mismo tiempo, generen filas repetidas en closed_counts/audit_history
+      // que duplicarían los conteos en el reporte.
+      if (online) {
+        const { startIso, endIso } = monthRange();
+        const { count: existingCount, error: eCheck } = await supabase
+          .from("closed_counts")
+          .select("id", { count: "exact", head: true })
+          .eq("category", category)
+          .gte("closed_at", startIso)
+          .lte("closed_at", endIso);
+        if (eCheck) throw eCheck;
+        if ((existingCount ?? 0) > 0) {
+          toast.error(`"${category}" ya fue cerrada este mes — no se puede volver a cerrar para evitar duplicar el reporte. Si necesitás rehacerlo, usá "Volver a guardar conteo general".`);
+          setCloseDialog(false);
+          return;
+        }
+      }
+
       const sessionId = crypto.randomUUID();
       const closedAt = new Date().toISOString();
 
