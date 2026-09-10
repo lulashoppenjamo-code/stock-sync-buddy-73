@@ -265,7 +265,11 @@ function AuditPage() {
 
   const { data: monthlyHistory = [] } = useQuery({
     queryKey: ["audit-history-month"],
-    staleTime: online ? 30_000 : Infinity,
+    // Alineado con "closed-counts-categories" (10s): ambos alimentan el
+    // cálculo de `done`/`reactivated`/`partial` del botón de categoría.
+    // Si quedan desincronizados, el candado puede parpadear entre estados
+    // mientras uno ya se refrescó y el otro todavía no.
+    staleTime: online ? 10_000 : Infinity,
     queryFn: async () => {
       const { startIso, endIso } = monthRange();
       const { data, error } = await supabase
@@ -307,9 +311,14 @@ function AuditPage() {
     const map = new Map<string, { A: boolean; B: boolean; reactivated: boolean }>();
     for (const row of branchClosures) {
       const entry = map.get(row.category) ?? { A: false, B: false, reactivated: false };
-      if (row.branch === "A") entry.A = true;
-      if (row.branch === "B") entry.B = true;
-      if ((row as any).status === "reactivated") entry.reactivated = true;
+      const isReactivated = (row as any).status === "reactivated";
+      // Una fila con status "reactivated" NO cuenta como sucursal cerrada:
+      // si no, myBranchClosed/branchLocked se quedan en true después de
+      // que el admin reactiva la categoría y el colaborador nunca recupera
+      // la pantalla de conteo.
+      if (row.branch === "A" && !isReactivated) entry.A = true;
+      if (row.branch === "B" && !isReactivated) entry.B = true;
+      if (isReactivated) entry.reactivated = true;
       map.set(row.category, entry);
     }
     return map;
@@ -548,10 +557,12 @@ function AuditPage() {
 
   function getUnclosedForBranch(): Product[] {
     const mySums = branch === "A" ? realtimeMina : realtimeMorelos;
-    return products.filter((p) => {
-      const sys = Number(p.stock_a) + Number(p.stock_b);
-      return sys > 0 && !counts.has(p.barcode) && !mySums.has(p.barcode);
-    });
+    // Antes se excluían los productos con stock de sistema 0 (sys > 0),
+    // así que si nadie los escaneaba nunca quedaba una fila en 'audits'
+    // probando que esa sucursal los revisó. Ahora se auto-cierran en 0
+    // igual que cualquier otro producto no escaneado, para que el registro
+    // de auditoría sea completo para toda la categoría.
+    return products.filter((p) => !counts.has(p.barcode) && !mySums.has(p.barcode));
   }
 
   async function closeBranchCount() {
