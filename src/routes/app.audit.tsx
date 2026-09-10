@@ -304,23 +304,24 @@ function AuditPage() {
   // ── Cierres por sucursal del mes (marca amarillo cuando 1 sucursal cierra) ──
   const { data: branchClosures = [] } = useQuery({
     queryKey: ["branch-closures", periodKey()],
-    staleTime: online ? 15_000 : Infinity,
+    staleTime: 0,
     queryFn: async () => {
       const { data, error } = await supabase
         .from("branch_closures")
-        .select("category, branch, period, collaborator_name, total_counted, products_counted")
+        .select("category, branch, period, collaborator_name, total_counted, products_counted, status")
         .eq("period", periodKey());
       if (error) throw error;
-      return data as Array<{ category: string; branch: string; period: string; collaborator_name: string | null; total_counted: number; products_counted: number }>;
+      return data as Array<{ category: string; branch: string; period: string; collaborator_name: string | null; total_counted: number; products_counted: number; status?: string }>;
     },
   });
 
   const branchClosureMap = useMemo(() => {
-    const map = new Map<string, { A: boolean; B: boolean }>();
+    const map = new Map<string, { A: boolean; B: boolean; reactivated: boolean }>();
     for (const row of branchClosures) {
-      const entry = map.get(row.category) ?? { A: false, B: false };
+      const entry = map.get(row.category) ?? { A: false, B: false, reactivated: false };
       if (row.branch === "A") entry.A = true;
       if (row.branch === "B") entry.B = true;
+      if ((row as any).status === "reactivated") entry.reactivated = true;
       map.set(row.category, entry);
     }
     return map;
@@ -861,21 +862,49 @@ function AuditPage() {
         if (error) throw error;
         toast.success("Cantidad actualizada");
       } else if (adminAction.type === "restoreClosure") {
-        // Borra el cierre de esa sucursal para esta categoría/mes en branch_closures.
-        // Esto "reactiva" la categoría cuando el historial (audit_history) ya se
-        // borró a mano pero el cierre de sucursal seguía marcado, dejándola trabada.
-        const { error } = await supabase
-          .from("branch_closures")
+        // Reactiva la categoría para corrección:
+        // - NO borra los audits previos (se conserva el progreso)
+        // - Borra SOLO el cierre de closed_counts y audit_history de este mes
+        //   para que al volver a cerrar no se dupliquen
+        // - Marca branch_closures con status="reactivated" (naranja)
+        const { startIso, endIso } = monthRange();
+        const cat = adminAction.category;
+        const br = adminAction.branch;
+
+        // Obtener barcodes de la categoría
+        const { data: catProds } = await supabase
+          .from("products").select("barcode").eq("category", cat);
+        const barcodes = (catProds ?? []).map((p) => p.barcode);
+
+        // Borrar solo closed_counts de este mes para esta categoría (no los audits)
+        await supabase.from("closed_counts")
           .delete()
-          .eq("category", adminAction.category)
-          .eq("branch", adminAction.branch)
-          .eq("period", periodKey());
-        if (error) throw error;
-        toast.success(`"${adminAction.category}" reactivada en ${branchLabel(adminAction.branch)} — ya se puede volver a contar.`);
-        if (category === adminAction.category && branch === adminAction.branch) {
-          setCounts(new Map()); clearCatState();
+          .eq("category", cat)
+          .gte("closed_at", startIso)
+          .lte("closed_at", endIso);
+
+        // Borrar audit_history de este mes para esta categoría (para evitar duplicados al recontar)
+        if (barcodes.length) {
+          await supabase.from("audit_history")
+            .delete()
+            .eq("category", cat)
+            .gte("created_at", startIso)
+            .lte("created_at", endIso);
         }
-        qc.invalidateQueries({ queryKey: ["branch-closures", periodKey()] });
+
+        // Marcar branch_closures con status reactivated en AMBAS sucursales (naranja)
+        await supabase.from("branch_closures").upsert([
+          { category: cat, branch: "A", period: periodKey(), status: "reactivated",
+            collaborator_name: me?.name ?? "Admin" },
+          { category: cat, branch: "B", period: periodKey(), status: "reactivated",
+            collaborator_name: me?.name ?? "Admin" },
+        ], { onConflict: "category,branch,period" });
+
+        toast.success(`"${cat}" reactivada para corrección — los conteos anteriores se conservan. Agregá los productos faltantes y volvé a cerrar el conteo general.`);
+        if (category === cat) { setCounts(new Map()); clearCatState(); }
+        qc.invalidateQueries({ queryKey: ["branch-closures", periodKey()], refetchType: "all" });
+        qc.invalidateQueries({ queryKey: ["closed-counts-categories", periodKey()], refetchType: "all" });
+        qc.invalidateQueries({ queryKey: ["audit-history-month"], refetchType: "all" });
       } else if (adminAction.type === "regenerateReport") {
         // Vuelve a guardar el conteo general (closed_counts + audit_history) de una
         // categoría este mes, usando los conteos en vivo actuales (tabla "audits").
@@ -1076,20 +1105,22 @@ function AuditPage() {
               // Verde: el administrador ya finalizó el conteo (ambas sucursales, en audit_history)
               // O el reporte general ya existe en el Historial (closed_counts), aunque falte
               // algún registro individual de audit_history por haberse borrado a mano.
-              const done = (!!st?.hasA && !!st?.hasB) || closedCountsCategories.has(c);
+              const reactivated = !!bc?.reactivated;
+              const done = !reactivated && ((!!st?.hasA && !!st?.hasB) || closedCountsCategories.has(c));
               // Amarillo: una sola sucursal cerró su conteo (branch_closures) — la otra falta
               const bc = branchClosureMap.get(c);
-              const partial = !done && (!!bc?.A || !!bc?.B);
+              const partial = !done && !reactivated && (!!bc?.A || !!bc?.B);
               const total = categoryCounts.get(c) ?? 0;
               return (
                 <button key={c} type="button" onClick={() => setReportCategory(c)} disabled={!st && !bc && !closedCountsCategories.has(c)}
                   className={`flex flex-col items-center rounded-md border px-2.5 py-1 text-[11px] font-medium leading-tight transition-colors ${
                     done ? "border-emerald-500 bg-emerald-500 text-white"
+                    : reactivated ? "border-orange-500 bg-orange-400 text-white"
                     : partial ? "border-amber-500 bg-amber-400 text-amber-950"
                     : "border-transparent bg-muted text-muted-foreground"
                   }`}>
-                  <span>{c}{done ? " ✓" : partial ? " ⏳" : ""}</span>
-                  <span className={`text-[9px] font-normal ${done ? "text-emerald-50" : partial ? "text-amber-900" : "opacity-70"}`}>
+                  <span>{c}{done ? " ✓" : reactivated ? " 🔄" : partial ? " ⏳" : ""}</span>
+                  <span className={`text-[9px] font-normal ${done ? "text-emerald-50" : reactivated ? "text-orange-50" : partial ? "text-amber-900" : "opacity-70"}`}>
                     {total} artículo{total === 1 ? "" : "s"}
                   </span>
                 </button>
