@@ -151,8 +151,7 @@ function AuditPage() {
   const [closeBranchDialog, setCloseBranchDialog] = useState(false);
   const [closingBranch, setClosingBranch] = useState(false);
   const [commentText, setCommentText] = useState("");
-  // Limpiar comentario al cambiar de categoría O de sucursal, para que el
-  // cuadro de texto siempre quede en blanco al moverse a otro conteo distinto.
+  // Limpiar comentario al cambiar de categoría O de sucursal
   const prevCategoryBranchRef = useRef<string>("");
   useEffect(() => {
     const key = `${category}|${branch}`;
@@ -164,12 +163,9 @@ function AuditPage() {
   const [commentSending, setCommentSending] = useState(false);
 
   const rowRefs = useRef<Map<string, HTMLDivElement | null>>(new Map());
-  // El recuadro azul del último producto escaneado/seleccionado se mantiene
-  // hasta que se escanee/seleccione otro (no se borra solo con un timeout).
   const [highlightBarcode, setHighlightBarcode] = useState<string | null>(null);
   function flashProduct(barcode: string) {
     setHighlightBarcode(barcode);
-    // Pequeño delay para asegurar que el DOM ya actualizó antes de hacer scroll
     setTimeout(() => {
       rowRefs.current.get(barcode)?.scrollIntoView({ behavior: "smooth", block: "center" });
     }, 80);
@@ -184,7 +180,7 @@ function AuditPage() {
   const [adminBusy, setAdminBusy] = useState(false);
   const [reportCategory, setReportCategory] = useState<string | null>(null);
 
-  // ── Editar producto (admin): buscar y modificar código, categoría, etc. ──
+  // ── Editar producto (admin) ──
   const [productEditOpen, setProductEditOpen] = useState(false);
   const [productQuery, setProductQuery] = useState("");
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
@@ -248,7 +244,7 @@ function AuditPage() {
     staleTime: online ? 30_000 : Infinity,
   });
 
-  // Total de artículos (SKUs) por categoría — para mostrar debajo de cada categoría
+  // Total de artículos por categoría
   const { data: categoryCounts = new Map<string, number>() } = useQuery({
     queryKey: ["category-counts"],
     queryFn: async () => {
@@ -301,7 +297,7 @@ function AuditPage() {
     return map;
   }, [monthlyHistory]);
 
-  // ── Cierres por sucursal del mes (marca amarillo cuando 1 sucursal cierra) ──
+  // Cierres por sucursal del mes
   const { data: branchClosures = [] } = useQuery({
     queryKey: ["branch-closures", periodKey()],
     staleTime: 0,
@@ -327,20 +323,16 @@ function AuditPage() {
     return map;
   }, [branchClosures]);
 
-  // ── Categorías con reporte ya guardado en el Historial (closed_counts) ──
-  // Sirve para poner en verde una categoría aunque, por algún borrado manual
-  // de registros individuales, falten filas en audit_history: si el reporte
-  // general ya existe en el historial, la categoría se considera cerrada.
+  // ── Categorías con Cierre General finalizado en 'closed_counts' ──
   const { data: closedCountsThisMonth = [] } = useQuery({
     queryKey: ["closed-counts-categories", periodKey()],
     staleTime: online ? 30_000 : Infinity,
     queryFn: async () => {
-      const { startIso, endIso } = monthRange();
+      const { startIso } = monthRange();
       const { data, error } = await supabase
         .from("closed_counts")
         .select("category")
-        .gte("closed_at", startIso)
-        .lte("closed_at", endIso);
+        .gte("closed_at", startIso);
       if (error) throw error;
       return data as Array<{ category: string }>;
     },
@@ -351,11 +343,7 @@ function AuditPage() {
     [closedCountsThisMonth]
   );
 
-  // ── Conteo en vivo para el diálogo de "Reporte mensual" ──────────────
-  // Independiente de la categoría que se esté contando ahora mismo: trae los
-  // productos y los escaneos de este mes de la categoría que se está VIENDO
-  // en el reporte (reportCategory), para poder mostrar resultados aunque el
-  // corte general todavía no se haya cerrado.
+  // Conteo en vivo para el reporte mensual
   const { data: reportLiveProducts = [] } = useQuery({
     queryKey: ["report-live-products", reportCategory],
     enabled: !!reportCategory,
@@ -406,8 +394,7 @@ function AuditPage() {
       .filter((r) => r.mina > 0 || r.morelos > 0);
   }, [reportLiveProducts, reportLiveAudits]);
 
-  // ── Comentarios / reportes de auditoría (recientes) ──────────────────
-  // Se filtran SIEMPRE por categoría + sucursal, así son exclusivos de ese conteo.
+  // Comentarios / reportes de auditoría
   const { data: recentComments = [] } = useQuery({
     queryKey: ["audit-comments", category, branch],
     enabled: !!category,
@@ -490,25 +477,16 @@ function AuditPage() {
   const closedA = category ? branchClosureMap.get(category)?.A ?? false : false;
   const closedB = category ? branchClosureMap.get(category)?.B ?? false : false;
 
-  // Una sucursal "terminó" solo cuando cerró formalmente su conteo
   const minaDone = closedA;
   const morelosDone = closedB;
-  // El cierre general (admin) requiere que AMBAS sucursales hayan cerrado
   const bothClosed = closedA && closedB;
 
-  // Si ya existe un reporte guardado (closed_counts) para esta categoría este
-  // mes, se considera cerrada SIEMPRE — aunque falten filas puntuales en
-  // audit_history por algún borrado manual. Así la categoría se ve y se
-  // comporta en verde de forma consistente en toda la pantalla, no solo en
-  // la tarjeta del resumen mensual.
   const categoryHasSavedReport = category ? closedCountsCategories.has(category) : false;
   const alreadyCountedThisMonth = category
     ? categoryHasSavedReport || ((branch === "A" ? categoryStatus.get(category)?.hasA : categoryStatus.get(category)?.hasB) ?? false)
     : false;
 
-  // Mi sucursal ya cerró su conteo de esta categoría este mes (nuevo cierre por sucursal)
   const myBranchClosed = category ? (branch === "A" ? closedA : closedB) : false;
-  // Bloquea la pantalla de conteo si el admin ya finalizó la categoría o si mi sucursal ya cerró su parte
   const branchLocked = alreadyCountedThisMonth || myBranchClosed;
 
   async function lookupProduct(barcode: string): Promise<Product | null> {
@@ -525,11 +503,10 @@ function AuditPage() {
   const addCount = useCallback(async (barcode: string) => {
     const code = barcode.trim();
     if (!code) return;
-    // Limpiar siempre el campo antes de procesar para evitar concatenación
     setScanInput("");
     if (!category) { toast.error("Seleccioná una categoría primero"); scanRef.current?.focus(); return; }
     const prod = await lookupProduct(code);
-    if (!prod) { scanRef.current?.focus(); return; } // lookupProduct ya muestra el error
+    if (!prod) { scanRef.current?.focus(); return; }
     if (prod.category !== category) {
       toast.error(`"${prod.product_name}" no es de la categoría ${category}`);
       scanRef.current?.focus();
@@ -568,7 +545,6 @@ function AuditPage() {
     if (!newCat) clearCatState();
   }
 
-  // Productos de MI sucursal que todavía no tienen conteo (ni local ni ya guardado hoy)
   function getUnclosedForBranch(): Product[] {
     const mySums = branch === "A" ? realtimeMina : realtimeMorelos;
     return products.filter((p) => {
@@ -577,8 +553,6 @@ function AuditPage() {
     });
   }
 
-  // Cierra el conteo de MI sucursal para esta categoría: lo no contado se guarda en 0,
-  // se persiste todo, y se marca la categoría en amarillo para la otra sucursal.
   async function closeBranchCount() {
     const collab = getCollaborator();
     if (!collab) { toast.error("Sesión expirada"); return; }
@@ -619,7 +593,6 @@ function AuditPage() {
         }
       }
 
-      // Total contado por mi sucursal = lo local (con ceros incluidos) + lo ya guardado hoy que no está local
       const mySums = branch === "A" ? realtimeMina : realtimeMorelos;
       let total = 0;
       let numProducts = 0;
@@ -682,18 +655,11 @@ function AuditPage() {
     }
   }
 
-
   async function confirmClose() {
     const collab = getCollaborator();
     if (!collab) return;
     setClosing(true);
     try {
-      // ── Guard anti-duplicados ──────────────────────────────────────────
-      // Verifica directo contra la base (no contra el caché local) que esta
-      // categoría todavía no tenga un reporte general guardado este mes.
-      // Esto evita que un doble-tap del botón, o dos admins cerrando casi al
-      // mismo tiempo, generen filas repetidas en closed_counts/audit_history
-      // que duplicarían los conteos en el reporte.
       if (online) {
         const { startIso, endIso } = monthRange();
         const { count: existingCount, error: eCheck } = await supabase
@@ -713,7 +679,6 @@ function AuditPage() {
       const sessionId = crypto.randomUUID();
       const closedAt = new Date().toISOString();
 
-      // Detalle de quién contó y cuándo, por producto (de los escaneos en vivo de hoy)
       const detailsByBarcode = new Map<string, { name: string; branch: string; qty: number; at: string }[]>();
       for (const a of realtimeAudits) {
         const list = detailsByBarcode.get(a.barcode) ?? [];
@@ -752,12 +717,6 @@ function AuditPage() {
         };
       });
 
-      // Insertar en audit_history para Mina (A) y Morelos (B)
-      // Esto marca la categoría en verde en el corte mensual
-      // El stock del sistema es consolidado (total), así que la diferencia real
-      // solo tiene sentido contra la suma de ambas sucursales. Para no reportar
-      // falsos faltantes por sucursal, cada renglón guarda su conteo y la
-      // diferencia total del producto (Mina + Morelos vs sistema).
       const historyRowsMina = products.map((p) => {
         const sys = Number(p.stock_a) + Number(p.stock_b);
         const total = (realtimeMina.get(p.barcode) ?? 0) + (realtimeMorelos.get(p.barcode) ?? 0);
@@ -792,13 +751,10 @@ function AuditPage() {
       });
 
       if (online) {
-        // Save closed_counts report
         const { error: e1 } = await supabase.from("closed_counts").insert(reportRows);
         if (e1) throw e1;
-        // Save audit_history for both branches → marks category green in monthly view
         const { error: e2 } = await supabase.from("audit_history").insert([...historyRowsMina, ...historyRowsMorelos]);
         if (e2) throw e2;
-        // Los comentarios pendientes de esta categoría quedan ligados a este corte
         const { error: e3 } = await supabase
           .from("audit_comments")
           .update({ session_id: sessionId })
@@ -806,9 +762,6 @@ function AuditPage() {
           .is("session_id", null)
           .gte("created_at", monthRange().startIso);
         if (e3) console.warn("No se pudieron ligar los comentarios:", e3.message);
-        // Limpia cualquier marca "reactivated" que hubiera quedado de una
-        // corrección previa, para que la categoría no se quede pegada en
-        // naranja para siempre después de volver a cerrarse correctamente.
         const { error: e4 } = await supabase
           .from("branch_closures")
           .update({ status: null })
@@ -821,7 +774,6 @@ function AuditPage() {
       toast.success(`Categoría "${category}" cerrada ✓ — ya aparece en verde en el corte mensual`);
       setCloseDialog(false);
       if (online) {
-        // refetchType "all" fuerza recarga inmediata aunque staleTime no haya expirado
         qc.invalidateQueries({ queryKey: ["closed_counts"], refetchType: "all" });
         qc.invalidateQueries({ queryKey: ["audit-history-month"], refetchType: "all" });
         qc.invalidateQueries({ queryKey: ["closed-counts-categories"], refetchType: "all" });
@@ -872,28 +824,19 @@ function AuditPage() {
         if (error) throw error;
         toast.success("Cantidad actualizada");
       } else if (adminAction.type === "restoreClosure") {
-        // Reactiva la categoría para corrección:
-        // - NO borra los audits previos (se conserva el progreso)
-        // - Borra SOLO el cierre de closed_counts y audit_history de este mes
-        //   para que al volver a cerrar no se dupliquen
-        // - Marca branch_closures con status="reactivated" (naranja)
         const { startIso, endIso } = monthRange();
         const cat = adminAction.category;
-        const br = adminAction.branch;
 
-        // Obtener barcodes de la categoría
         const { data: catProds } = await supabase
           .from("products").select("barcode").eq("category", cat);
         const barcodes = (catProds ?? []).map((p) => p.barcode);
 
-        // Borrar solo closed_counts de este mes para esta categoría (no los audits)
         await supabase.from("closed_counts")
           .delete()
           .eq("category", cat)
           .gte("closed_at", startIso)
           .lte("closed_at", endIso);
 
-        // Borrar audit_history de este mes para esta categoría (para evitar duplicados al recontar)
         if (barcodes.length) {
           await supabase.from("audit_history")
             .delete()
@@ -902,25 +845,17 @@ function AuditPage() {
             .lte("created_at", endIso);
         }
 
-        // Marcar branch_closures con status reactivated en AMBAS sucursales (naranja)
         await supabase.from("branch_closures").upsert([
-          { category: cat, branch: "A", period: periodKey(), status: "reactivated",
-            collaborator_name: me?.name ?? "Admin" },
-          { category: cat, branch: "B", period: periodKey(), status: "reactivated",
-            collaborator_name: me?.name ?? "Admin" },
+          { category: cat, branch: "A", period: periodKey(), status: "reactivated", collaborator_name: me?.name ?? "Admin" },
+          { category: cat, branch: "B", period: periodKey(), status: "reactivated", collaborator_name: me?.name ?? "Admin" },
         ], { onConflict: "category,branch,period" });
 
-        toast.success(`"${cat}" reactivada para corrección — los conteos anteriores se conservan. Agregá los productos faltantes y volvé a cerrar el conteo general.`);
+        toast.success(`"${cat}" reactivada para corrección — los conteos anteriores se conservan.`);
         if (category === cat) { setCounts(new Map()); clearCatState(); }
         qc.invalidateQueries({ queryKey: ["branch-closures", periodKey()], refetchType: "all" });
         qc.invalidateQueries({ queryKey: ["closed-counts-categories", periodKey()], refetchType: "all" });
         qc.invalidateQueries({ queryKey: ["audit-history-month"], refetchType: "all" });
       } else if (adminAction.type === "regenerateReport") {
-        // Vuelve a guardar el conteo general (closed_counts + audit_history) de una
-        // categoría este mes, usando los conteos en vivo actuales (tabla "audits").
-        // Primero limpia lo que haya quedado de esa categoría este mes (por si algún
-        // registro se borró a mano) para no duplicar cantidades, y luego reconstruye
-        // el reporte completo desde cero. No toca ninguna otra categoría.
         const cat = adminAction.category;
         const { startIso, endIso } = monthRange();
 
@@ -1010,8 +945,6 @@ function AuditPage() {
         if (e1) throw e1;
         const { error: e2 } = await supabase.from("audit_history").insert([...historyRowsMina, ...historyRowsMorelos]);
         if (e2) throw e2;
-        // Igual que al cerrar: limpiar cualquier marca "reactivated" pendiente
-        // de esta categoría para que vuelva a mostrarse en verde y no en naranja.
         const { error: e5 } = await supabase
           .from("branch_closures")
           .update({ status: null })
@@ -1027,8 +960,6 @@ function AuditPage() {
         qc.invalidateQueries({ queryKey: ["audit-history-month"], refetchType: "all" });
         qc.invalidateQueries({ queryKey: ["branch-closures"], refetchType: "all" });
       } else if (adminAction.type === "editProduct") {
-        // Edita un producto del inventario (código, nombre, categoría, stock, precio).
-        // Solo llega hasta acá si el admin confirmó con su PIN en el diálogo.
         const { oldBarcode, data } = adminAction;
         if (!data.barcode.trim() || !data.product_name.trim()) {
           throw new Error("El código y el nombre son obligatorios");
@@ -1122,15 +1053,17 @@ function AuditPage() {
             {categories.map((c) => {
               const st = categoryStatus.get(c);
               const bc = branchClosureMap.get(c);
-              // Verde: el administrador ya finalizó el conteo (ambas sucursales, en audit_history)
-              // O el reporte general ya existe en el Historial (closed_counts), aunque falte
-              // algún registro individual de audit_history por haberse borrado a mano.
-              // Esto se evalúa SIEMPRE primero: si ya hay reporte guardado, la categoría
-              // es verde aunque haya quedado una marca "reactivated" vieja sin limpiar.
-              const done = (!!st?.hasA && !!st?.hasB) || closedCountsCategories.has(c);
+              
+              // 1. VERDE: Únicamente si el Cierre General ya se realizó por el administrador
+              // O si ambas sucursales (A y B) completaron sus registros.
+              const done = closedCountsCategories.has(c) || (!!st?.hasA && !!st?.hasB);
+
+              // 2. NARANJA: Si fue reactivada para corrección
               const reactivated = !done && !!bc?.reactivated;
-              // Amarillo: una sola sucursal cerró su conteo (branch_closures) — la otra falta
+
+              // 3. AMARILLO: Si solo una sucursal (Mina o Morelos) ha cerrado pero falta el cierre general
               const partial = !done && !reactivated && (!!bc?.A || !!bc?.B);
+
               const total = categoryCounts.get(c) ?? 0;
               return (
                 <button key={c} type="button" onClick={() => setReportCategory(c)} disabled={!st && !bc && !closedCountsCategories.has(c)}
@@ -1167,10 +1100,6 @@ function AuditPage() {
             <div className="shrink-0">
               <label className="text-xs font-medium text-muted-foreground">Sucursal</label>
               {me?.is_admin ? (
-                // Admin puede cambiar sucursal. Cuando el cierre general ya está
-                // disponible (las dos sucursales cerraron), se muestran AMBAS
-                // marcadas como activas para dejar claro que el cierre general
-                // las incluye a las dos, no solo a la que está viendo ahora.
                 <div className="mt-1 inline-flex overflow-hidden rounded-md border">
                   {(["A", "B"] as const).map((b) => {
                     const bothSelected = !!category && bothClosed;
@@ -1184,7 +1113,6 @@ function AuditPage() {
                   })}
                 </div>
               ) : (
-                // Colaboradora normal: sucursal fija, solo visual
                 <div className="mt-1 inline-flex overflow-hidden rounded-md border">
                   <div className="bg-primary text-primary-foreground px-4 py-1.5 text-sm font-medium">
                     {branch === "A" ? "Mina" : "Morelos"}
@@ -1194,7 +1122,6 @@ function AuditPage() {
             </div>
           </div>
 
-          {/* Indicador de sucursal asignada para colaboradoras */}
           {!me?.is_admin && (
             <p className="text-[11px] text-muted-foreground">
               Estás contando para <strong>{branch === "A" ? "Sucursal Mina" : "Sucursal Morelos"}</strong>.
@@ -1202,7 +1129,6 @@ function AuditPage() {
             </p>
           )}
 
-          {/* Estado sucursales del día */}
           {category && (
             <div className="flex gap-2">
               <div className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${minaDone ? "bg-emerald-100 text-emerald-700" : "bg-muted text-muted-foreground"}`}>
@@ -1413,7 +1339,6 @@ function AuditPage() {
               )}
             </div>
 
-            {/* ── Un solo botón: cerrar el conteo de mi sucursal ── */}
             <div className="mt-3">
               <Button onClick={() => setCloseBranchDialog(true)} disabled={saving || closingBranch}
                 className="w-full bg-amber-600 hover:bg-amber-700">
@@ -1425,7 +1350,6 @@ function AuditPage() {
               </p>
             </div>
 
-            {/* ── Cierre general — solo admin, cuando AMBAS sucursales ya cerraron ── */}
             {me?.is_admin && category && bothClosed && (
               <div className="mt-3 rounded-md border border-emerald-300 bg-emerald-50 dark:bg-emerald-950/20 p-3">
                 <div className="mb-2 flex items-center gap-2 text-xs font-medium text-emerald-700 dark:text-emerald-300">
@@ -1495,7 +1419,6 @@ function AuditPage() {
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-4 text-sm">
-            {/* Siempre muestra ambas sucursales independiente de cuál tenga seleccionada admin */}
             <div className="grid grid-cols-2 gap-2">
               <div className={`rounded-md border p-2 text-center ${closedA ? "border-emerald-400 bg-emerald-50" : "border-amber-300 bg-amber-50"}`}>
                 <div className="text-xs font-medium text-muted-foreground mb-1">{closedA ? "✓" : "○"} Mina</div>
@@ -1630,7 +1553,7 @@ function AuditPage() {
             const rows = buildCategoryReport(reportCategory);
             const st = categoryStatus.get(reportCategory);
             const bc = branchClosureMap.get(reportCategory);
-            const bothDoneReport = (!!st?.hasA && !!st?.hasB) || closedCountsCategories.has(reportCategory);
+            const bothDoneReport = closedCountsCategories.has(reportCategory) || (!!st?.hasA && !!st?.hasB);
             return (
               <div className="space-y-3 text-sm">
                 <div className="grid grid-cols-3 gap-2">
@@ -1673,7 +1596,6 @@ function AuditPage() {
                   {rows.length === 0 && <div className="p-3 text-xs text-muted-foreground">Sin conteos registrados este mes.</div>}
                 </div>
 
-                {/* ── Conteo en vivo (tabla "audits"), aunque aún no se haya cerrado ── */}
                 {reportLiveRows.length > 0 && (
                   <div className="space-y-1.5">
                     <p className="text-[11px] font-medium text-blue-700 dark:text-blue-300">
@@ -1717,8 +1639,6 @@ function AuditPage() {
                         </Button>
                       ))}
                     </div>
-                    {/* Reactivar: borra el cierre de branch_closures cuando quedó
-                        trabado sin historial (p. ej. tras borrar registros a mano) */}
                     <div className="flex flex-wrap gap-2">
                       {(["A", "B"] as const).map((b) => (
                         <Button key={`restore-${b}`} size="sm" variant="outline"
@@ -1729,9 +1649,6 @@ function AuditPage() {
                         </Button>
                       ))}
                     </div>
-                    {/* Volver a guardar el conteo general: reconstruye closed_counts +
-                        audit_history de esta categoría desde los conteos en vivo actuales.
-                        Útil cuando se borraron registros del reporte a mano. */}
                     <Button size="sm" variant="outline"
                       className="w-full border-emerald-400 text-emerald-700 hover:bg-emerald-100 dark:text-emerald-300"
                       onClick={() => setAdminAction({ type: "regenerateReport", category: reportCategory! })}>
@@ -1766,7 +1683,7 @@ function AuditPage() {
         </DialogContent>
       </Dialog>
 
-      {/* ── Editar producto (admin): buscar y modificar ── */}
+      {/* ── Editar producto (admin) ── */}
       <Dialog open={productEditOpen} onOpenChange={(o) => { if (!o) closeProductEdit(); }}>
         <DialogContent className="max-h-[90vh] max-w-md overflow-y-auto">
           <DialogHeader>
@@ -1902,14 +1819,12 @@ function AuditPage() {
             {adminAction?.type === "regenerateReport" && (
               <p className="text-muted-foreground">
                 Se borrará y se volverá a guardar el reporte general y el historial de{" "}
-                <strong>"{adminAction.category}"</strong> este mes, usando los conteos en vivo actuales
-                de Mina y Morelos. No afecta a ninguna otra categoría.
+                <strong>"{adminAction.category}"</strong> este mes, usando los conteos en vivo actuales.
               </p>
             )}
             {adminAction?.type === "editProduct" && (
               <p className="text-muted-foreground">
-                Se actualizará el producto <strong>"{adminAction.data.product_name}"</strong> (código actual:{" "}
-                <span className="font-mono">{adminAction.oldBarcode}</span>) con los datos nuevos.
+                Se actualizará el producto <strong>"{adminAction.data.product_name}"</strong>.
               </p>
             )}
             {adminAction?.type !== "restoreClosure" && (
@@ -1930,7 +1845,7 @@ function AuditPage() {
         </DialogContent>
       </Dialog>
 
-      {/* ── Comentarios y reportes de auditoría ── */}
+      {/* ── Comentarios y reportes ── */}
       <Card>
         <CardContent className="p-3 space-y-2">
           <div className="flex items-center gap-2 text-sm font-semibold">
