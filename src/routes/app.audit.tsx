@@ -86,7 +86,6 @@ function monthLabel() {
   return `${fmt(start)} al ${fmt(end)}`;
 }
 
-// Periodo usado para "branch_closures": primer día del mes actual (YYYY-MM-01)
 function periodKey() {
   const now = new Date();
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
@@ -103,8 +102,6 @@ function AuditPage() {
   const _saved = useMemo(() => loadCatState(), []);
   const me = useCollaborator();
 
-  // ── Sucursal asignada al colaborador ──────────────────────────────────
-  // Admin puede cambiarla; colaboradoras normales tienen la suya fija
   const [collabBranch, setCollabBranch] = useState<"A" | "B" | null>(null);
 
   const { data: collabData } = useQuery({
@@ -121,16 +118,14 @@ function AuditPage() {
     },
   });
 
-  // Determinar la sucursal del colaborador logueado
   const myBranch = useMemo((): "A" | "B" => {
-    if (me?.is_admin) return collabBranch ?? "A"; // Admin puede elegir
+    if (me?.is_admin) return collabBranch ?? "A";
     const b = collabData?.branch;
     if (b === "B") return "B";
-    return "A"; // Default Mina
+    return "A";
   }, [me, collabData, collabBranch]);
 
   const [category, setCategory] = useState(_saved?.category ?? "");
-  // branch siempre refleja la sucursal del colaborador (no editable para no-admin)
   const branch: "A" | "B" = myBranch;
 
   const [counts, setCounts] = useState<Map<string, CountEntry>>(
@@ -151,7 +146,7 @@ function AuditPage() {
   const [closeBranchDialog, setCloseBranchDialog] = useState(false);
   const [closingBranch, setClosingBranch] = useState(false);
   const [commentText, setCommentText] = useState("");
-  // Limpiar comentario al cambiar de categoría O de sucursal
+
   const prevCategoryBranchRef = useRef<string>("");
   useEffect(() => {
     const key = `${category}|${branch}`;
@@ -180,7 +175,6 @@ function AuditPage() {
   const [adminBusy, setAdminBusy] = useState(false);
   const [reportCategory, setReportCategory] = useState<string | null>(null);
 
-  // ── Editar producto (admin) ──
   const [productEditOpen, setProductEditOpen] = useState(false);
   const [productQuery, setProductQuery] = useState("");
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
@@ -244,7 +238,6 @@ function AuditPage() {
     staleTime: online ? 30_000 : Infinity,
   });
 
-  // Total de artículos por categoría
   const { data: categoryCounts = new Map<string, number>() } = useQuery({
     queryKey: ["category-counts"],
     queryFn: async () => {
@@ -297,7 +290,6 @@ function AuditPage() {
     return map;
   }, [monthlyHistory]);
 
-  // Cierres por sucursal del mes
   const { data: branchClosures = [] } = useQuery({
     queryKey: ["branch-closures", periodKey()],
     staleTime: 0,
@@ -323,27 +315,37 @@ function AuditPage() {
     return map;
   }, [branchClosures]);
 
-  // ── Categorías con Cierre General finalizado en 'closed_counts' ──
+  // ── CANDADO DE COLOR VERDE: Consulta directa a la tabla 'closed_counts' ──
+  // Si la categoría ya existe registrada en la tabla de cortes guardados en el historial,
+  // la traemos sin filtros de horas estrictos para garantizar que siempre se pinte verde.
   const { data: closedCountsThisMonth = [] } = useQuery({
     queryKey: ["closed-counts-categories", periodKey()],
-    staleTime: online ? 30_000 : Infinity,
+    staleTime: online ? 10_000 : Infinity,
     queryFn: async () => {
-      const { startIso } = monthRange();
+      const now = new Date();
+      // YYYY-MM-01
+      const year = now.getFullYear();
+      const month = String(now.getMonth() + 1).padStart(2, "0");
+      const startOfMonthStr = `${year}-${month}-01T00:00:00`;
+
       const { data, error } = await supabase
         .from("closed_counts")
         .select("category")
-        .gte("closed_at", startIso);
+        .gte("closed_at", startOfMonthStr);
+
       if (error) throw error;
       return data as Array<{ category: string }>;
     },
   });
 
-  const closedCountsCategories = useMemo(
-    () => new Set(closedCountsThisMonth.map((r) => r.category)),
-    [closedCountsThisMonth]
-  );
+  const closedCountsCategories = useMemo(() => {
+    const set = new Set<string>();
+    for (const r of closedCountsThisMonth) {
+      if (r.category) set.add(r.category.trim());
+    }
+    return set;
+  }, [closedCountsThisMonth]);
 
-  // Conteo en vivo para el reporte mensual
   const { data: reportLiveProducts = [] } = useQuery({
     queryKey: ["report-live-products", reportCategory],
     enabled: !!reportCategory,
@@ -394,7 +396,6 @@ function AuditPage() {
       .filter((r) => r.mina > 0 || r.morelos > 0);
   }, [reportLiveProducts, reportLiveAudits]);
 
-  // Comentarios / reportes de auditoría
   const { data: recentComments = [] } = useQuery({
     queryKey: ["audit-comments", category, branch],
     enabled: !!category,
@@ -481,7 +482,7 @@ function AuditPage() {
   const morelosDone = closedB;
   const bothClosed = closedA && closedB;
 
-  const categoryHasSavedReport = category ? closedCountsCategories.has(category) : false;
+  const categoryHasSavedReport = category ? closedCountsCategories.has(category.trim()) : false;
   const alreadyCountedThisMonth = category
     ? categoryHasSavedReport || ((branch === "A" ? categoryStatus.get(category)?.hasA : categoryStatus.get(category)?.hasB) ?? false)
     : false;
@@ -670,7 +671,7 @@ function AuditPage() {
           .lte("closed_at", endIso);
         if (eCheck) throw eCheck;
         if ((existingCount ?? 0) > 0) {
-          toast.error(`"${category}" ya fue cerrada este mes — no se puede volver a cerrar para evitar duplicar el reporte. Si necesitás rehacerlo, usá "Volver a guardar conteo general".`);
+          toast.error(`"${category}" ya fue cerrada este mes — no se puede volver a cerrar.`);
           setCloseDialog(false);
           return;
         }
@@ -1042,7 +1043,7 @@ function AuditPage() {
         </div>
       )}
 
-      {/* ── Corte mensual ── */}
+      {/* ── Corte mensual por categoría ── */}
       <Card>
         <CardContent className="p-3 space-y-2">
           <div className="flex items-center justify-between">
@@ -1051,28 +1052,34 @@ function AuditPage() {
           </div>
           <div className="flex flex-wrap gap-1.5">
             {categories.map((c) => {
+              const catTrimmed = c.trim();
               const st = categoryStatus.get(c);
               const bc = branchClosureMap.get(c);
-              
-              // 1. VERDE: Únicamente si el Cierre General ya se realizó por el administrador
-              // O si ambas sucursales (A y B) completaron sus registros.
-              const done = closedCountsCategories.has(c) || (!!st?.hasA && !!st?.hasB);
 
-              // 2. NARANJA: Si fue reactivada para corrección
+              // CANDADO VERDE STRICTO: Se pinta en VERDE si existe en 'closed_counts' (Corte Guardado en Historial)
+              // O si ambas sucursales A y B ya están registradas en 'audit_history'.
+              const done = closedCountsCategories.has(catTrimmed) || (!!st?.hasA && !!st?.hasB);
+
               const reactivated = !done && !!bc?.reactivated;
-
-              // 3. AMARILLO: Si solo una sucursal (Mina o Morelos) ha cerrado pero falta el cierre general
               const partial = !done && !reactivated && (!!bc?.A || !!bc?.B);
 
               const total = categoryCounts.get(c) ?? 0;
               return (
-                <button key={c} type="button" onClick={() => setReportCategory(c)} disabled={!st && !bc && !closedCountsCategories.has(c)}
+                <button
+                  key={c}
+                  type="button"
+                  onClick={() => setReportCategory(c)}
+                  disabled={!st && !bc && !closedCountsCategories.has(catTrimmed)}
                   className={`flex flex-col items-center rounded-md border px-2.5 py-1 text-[11px] font-medium leading-tight transition-colors ${
-                    done ? "border-emerald-500 bg-emerald-500 text-white"
-                    : reactivated ? "border-orange-500 bg-orange-400 text-white"
-                    : partial ? "border-amber-500 bg-amber-400 text-amber-950"
-                    : "border-transparent bg-muted text-muted-foreground"
-                  }`}>
+                    done
+                      ? "border-emerald-500 bg-emerald-500 text-white"
+                      : reactivated
+                      ? "border-orange-500 bg-orange-400 text-white"
+                      : partial
+                      ? "border-amber-500 bg-amber-400 text-amber-950"
+                      : "border-transparent bg-muted text-muted-foreground"
+                  }`}
+                >
                   <span>{c}{done ? " ✓" : reactivated ? " 🔄" : partial ? " ⏳" : ""}</span>
                   <span className={`text-[9px] font-normal ${done ? "text-emerald-50" : reactivated ? "text-orange-50" : partial ? "text-amber-900" : "opacity-70"}`}>
                     {total} artículo{total === 1 ? "" : "s"}
@@ -1553,7 +1560,7 @@ function AuditPage() {
             const rows = buildCategoryReport(reportCategory);
             const st = categoryStatus.get(reportCategory);
             const bc = branchClosureMap.get(reportCategory);
-            const bothDoneReport = closedCountsCategories.has(reportCategory) || (!!st?.hasA && !!st?.hasB);
+            const bothDoneReport = closedCountsCategories.has(reportCategory.trim()) || (!!st?.hasA && !!st?.hasB);
             return (
               <div className="space-y-3 text-sm">
                 <div className="grid grid-cols-3 gap-2">
