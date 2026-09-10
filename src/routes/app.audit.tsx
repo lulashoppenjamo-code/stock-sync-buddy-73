@@ -286,10 +286,11 @@ function AuditPage() {
   const categoryStatus = useMemo(() => {
     const map = new Map<string, { hasA: boolean; hasB: boolean }>();
     for (const row of monthlyHistory) {
-      const entry = map.get(row.category) ?? { hasA: false, hasB: false };
+      const key = row.category.trim();
+      const entry = map.get(key) ?? { hasA: false, hasB: false };
       if (row.branch === "A") entry.hasA = true;
       if (row.branch === "B") entry.hasB = true;
-      map.set(row.category, entry);
+      map.set(key, entry);
     }
     return map;
   }, [monthlyHistory]);
@@ -310,7 +311,8 @@ function AuditPage() {
   const branchClosureMap = useMemo(() => {
     const map = new Map<string, { A: boolean; B: boolean; reactivated: boolean }>();
     for (const row of branchClosures) {
-      const entry = map.get(row.category) ?? { A: false, B: false, reactivated: false };
+      const key = row.category.trim();
+      const entry = map.get(key) ?? { A: false, B: false, reactivated: false };
       const isReactivated = (row as any).status === "reactivated";
       // Una fila con status "reactivated" NO cuenta como sucursal cerrada:
       // si no, myBranchClosed/branchLocked se quedan en true después de
@@ -319,7 +321,7 @@ function AuditPage() {
       if (row.branch === "A" && !isReactivated) entry.A = true;
       if (row.branch === "B" && !isReactivated) entry.B = true;
       if (isReactivated) entry.reactivated = true;
-      map.set(row.category, entry);
+      map.set(key, entry);
     }
     return map;
   }, [branchClosures]);
