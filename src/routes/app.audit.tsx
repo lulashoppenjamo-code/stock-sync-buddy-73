@@ -326,23 +326,19 @@ function AuditPage() {
     return map;
   }, [branchClosures]);
 
-  // ── CANDADO DE COLOR VERDE: Consulta directa a la tabla 'closed_counts' ──
-  // Si la categoría ya existe registrada en la tabla de cortes guardados en el historial,
-  // la traemos sin filtros de horas estrictos para garantizar que siempre se pinte verde.
+  // ── CANDADO DE COLOR VERDE: solo closed_counts del mes actual ──
+  // Usa el mismo rango (monthRange) que el resto de la app para evitar
+  // desfaces de zona horaria que hacían que algunas categorías no se pintaran verde.
   const { data: closedCountsThisMonth = [] } = useQuery({
     queryKey: ["closed-counts-categories", periodKey()],
     staleTime: online ? 10_000 : Infinity,
     queryFn: async () => {
-      const now = new Date();
-      // YYYY-MM-01
-      const year = now.getFullYear();
-      const month = String(now.getMonth() + 1).padStart(2, "0");
-      const startOfMonthStr = `${year}-${month}-01T00:00:00`;
-
+      const { startIso, endIso } = monthRange();
       const { data, error } = await supabase
         .from("closed_counts")
         .select("category")
-        .gte("closed_at", startOfMonthStr);
+        .gte("closed_at", startIso)
+        .lte("closed_at", endIso);
 
       if (error) throw error;
       return data as Array<{ category: string }>;
@@ -430,13 +426,30 @@ function AuditPage() {
     enabled: !!category,
     staleTime: online ? 30_000 : Infinity,
     queryFn: async () => {
+      const cat = (category ?? "").trim();
+      if (!cat) return [];
+
+      // 1) Match exacto (caso normal)
       const { data, error } = await supabase
         .from("products")
         .select("barcode, product_name, category, stock_a, stock_b, price")
-        .eq("category", category)
+        .eq("category", cat)
         .order("product_name");
       if (error) throw error;
-      return data as Product[];
+      if ((data ?? []).length > 0) return data as Product[];
+
+      // 2) Fallback: en la DB algunas filas tienen espacios extra en category.
+      //    El listado de categorías usa .trim(), así que el select puede no
+      //    coincidir con .eq exacto. Filtramos en cliente solo si el exacto falló.
+      const { data: all, error: e2 } = await supabase
+        .from("products")
+        .select("barcode, product_name, category, stock_a, stock_b, price")
+        .not("category", "is", null)
+        .not("category", "eq", "");
+      if (e2) throw e2;
+      return ((all ?? []) as Product[])
+        .filter((p) => (p.category ?? "").trim() === cat)
+        .sort((a, b) => a.product_name.localeCompare(b.product_name, "es"));
     },
   });
 
@@ -618,18 +631,21 @@ function AuditPage() {
       }
 
       if (online) {
+        const cat = (category ?? "").trim();
         const { error: e2 } = await supabase.from("branch_closures").upsert(
           {
-            category, branch, period: periodKey(),
+            category: cat, branch, period: periodKey(),
             collaborator_id: collab.id, collaborator_name: collab.name,
             total_counted: total, products_counted: numProducts,
+            // Limpiar status por si venía de una reactivación previa
+            status: null,
           },
           { onConflict: "category,branch,period" }
         );
         if (e2) throw e2;
       }
 
-      toast.success(`Conteo de "${category}" cerrado en ${branchLabel(branch)} ✓`);
+      toast.success(`Conteo de "${(category ?? "").trim()}" cerrado en ${branchLabel(branch)} ✓`);
       setCloseBranchDialog(false);
       setCounts(new Map());
       clearCatState();
@@ -672,22 +688,56 @@ function AuditPage() {
   async function confirmClose() {
     const collab = getCollaborator();
     if (!collab) return;
+    const cat = (category ?? "").trim();
+    if (!cat) {
+      toast.error("Seleccioná una categoría primero");
+      return;
+    }
+    if (!online) {
+      toast.error("Necesitás conexión a internet para cerrar la categoría.");
+      return;
+    }
     setClosing(true);
     try {
-      if (online) {
-        const { startIso, endIso } = monthRange();
-        const { count: existingCount, error: eCheck } = await supabase
-          .from("closed_counts")
-          .select("id", { count: "exact", head: true })
-          .eq("category", category)
-          .gte("closed_at", startIso)
-          .lte("closed_at", endIso);
-        if (eCheck) throw eCheck;
-        if ((existingCount ?? 0) > 0) {
-          toast.error(`"${category}" ya fue cerrada este mes — no se puede volver a cerrar.`);
-          setCloseDialog(false);
-          return;
+      // Asegurar productos: si el query en memoria está vacío (por mismatch de espacios
+      // en category), reintentamos con el mismo criterio tolerante a trim.
+      let prods = products;
+      if (prods.length === 0) {
+        const { data: exact, error: eExact } = await supabase
+          .from("products")
+          .select("barcode, product_name, category, stock_a, stock_b, price")
+          .eq("category", cat)
+          .order("product_name");
+        if (eExact) throw eExact;
+        prods = (exact ?? []) as Product[];
+        if (prods.length === 0) {
+          const { data: all, error: eAll } = await supabase
+            .from("products")
+            .select("barcode, product_name, category, stock_a, stock_b, price")
+            .not("category", "is", null)
+            .not("category", "eq", "");
+          if (eAll) throw eAll;
+          prods = ((all ?? []) as Product[]).filter((p) => (p.category ?? "").trim() === cat);
         }
+      }
+      if (prods.length === 0) {
+        throw new Error(
+          `No se encontraron productos para la categoría "${cat}". Revisá que el nombre coincida en la tabla de productos (sin espacios extra).`
+        );
+      }
+
+      const { startIso, endIso } = monthRange();
+      const { count: existingCount, error: eCheck } = await supabase
+        .from("closed_counts")
+        .select("id", { count: "exact", head: true })
+        .eq("category", cat)
+        .gte("closed_at", startIso)
+        .lte("closed_at", endIso);
+      if (eCheck) throw eCheck;
+      if ((existingCount ?? 0) > 0) {
+        toast.error(`"${cat}" ya fue cerrada este mes — no se puede volver a cerrar.`);
+        setCloseDialog(false);
+        return;
       }
 
       const sessionId = crypto.randomUUID();
@@ -705,7 +755,7 @@ function AuditPage() {
         detailsByBarcode.set(a.barcode, list);
       }
 
-      const reportRows = products.map((p) => {
+      const reportRows = prods.map((p) => {
         const sys = Number(p.stock_a) + Number(p.stock_b);
         const minaCount = realtimeMina.get(p.barcode) ?? 0;
         const morelosCount = realtimeMorelos.get(p.barcode) ?? 0;
@@ -714,29 +764,33 @@ function AuditPage() {
         const details = (detailsByBarcode.get(p.barcode) ?? []).sort((a, b) => a.at.localeCompare(b.at));
         const last = details[details.length - 1];
         return {
-          session_id: sessionId, category,
-          barcode: p.barcode, product_name: p.product_name,
+          session_id: sessionId,
+          category: cat,
+          barcode: p.barcode,
+          product_name: p.product_name,
           system_stock: sys,
-          mina_count: minaCount, morelos_count: morelosCount,
+          mina_count: minaCount,
+          morelos_count: morelosCount,
           total_counted: minaCount + morelosCount,
           difference: diff,
           unit_price: price,
           difference_value: diff * price,
           scanned_mina: realtimeMina.has(p.barcode),
           scanned_morelos: realtimeMorelos.has(p.barcode),
-          closed_by: collab.name, closed_at: closedAt,
+          closed_by: collab.name,
+          closed_at: closedAt,
           count_details: details,
           last_counted_by: last?.name ?? null,
           last_counted_at: last?.at ?? null,
         };
       });
 
-      const historyRowsMina = products.map((p) => {
+      const historyRowsMina = prods.map((p) => {
         const sys = Number(p.stock_a) + Number(p.stock_b);
         const total = (realtimeMina.get(p.barcode) ?? 0) + (realtimeMorelos.get(p.barcode) ?? 0);
         return {
           session_id: sessionId,
-          category,
+          category: cat,
           branch: "A" as const,
           barcode: p.barcode,
           product_name: p.product_name,
@@ -747,12 +801,12 @@ function AuditPage() {
           collaborator_name: collab.name,
         };
       });
-      const historyRowsMorelos = products.map((p) => {
+      const historyRowsMorelos = prods.map((p) => {
         const sys = Number(p.stock_a) + Number(p.stock_b);
         const total = (realtimeMina.get(p.barcode) ?? 0) + (realtimeMorelos.get(p.barcode) ?? 0);
         return {
           session_id: sessionId,
-          category,
+          category: cat,
           branch: "B" as const,
           barcode: p.barcode,
           product_name: p.product_name,
@@ -764,39 +818,46 @@ function AuditPage() {
         };
       });
 
-      if (online) {
-        const { error: e1 } = await supabase.from("closed_counts").insert(reportRows);
-        if (e1) throw e1;
-        const { error: e2 } = await supabase.from("audit_history").insert([...historyRowsMina, ...historyRowsMorelos]);
-        if (e2) throw e2;
-        const { error: e3 } = await supabase
-          .from("audit_comments")
-          .update({ session_id: sessionId })
-          .eq("category", category)
-          .is("session_id", null)
-          .gte("created_at", monthRange().startIso);
-        if (e3) console.warn("No se pudieron ligar los comentarios:", e3.message);
-        const { error: e4 } = await supabase
-          .from("branch_closures")
-          .update({ status: null })
-          .eq("category", category)
-          .eq("period", periodKey())
-          .eq("status", "reactivated");
-        if (e4) console.warn("No se pudo limpiar el estado 'reactivated':", e4.message);
+      // Insert obligatorio en closed_counts (esto es lo que pinta verde).
+      // Si falla, no mostramos éxito.
+      const { error: e1 } = await supabase.from("closed_counts").insert(reportRows);
+      if (e1) throw e1;
+      if (reportRows.length === 0) {
+        throw new Error("No se generaron filas de cierre. Revisá los productos de la categoría.");
       }
 
-      toast.success(`Categoría "${category}" cerrada ✓ — ya aparece en verde en el corte mensual`);
+      const { error: e2 } = await supabase.from("audit_history").insert([...historyRowsMina, ...historyRowsMorelos]);
+      if (e2) throw e2;
+
+      const { error: e3 } = await supabase
+        .from("audit_comments")
+        .update({ session_id: sessionId })
+        .eq("category", cat)
+        .is("session_id", null)
+        .gte("created_at", startIso);
+      if (e3) console.warn("No se pudieron ligar los comentarios:", e3.message);
+
+      const { error: e4 } = await supabase
+        .from("branch_closures")
+        .update({ status: null })
+        .eq("category", cat)
+        .eq("period", periodKey())
+        .eq("status", "reactivated");
+      if (e4) console.warn("No se pudo limpiar el estado 'reactivated':", e4.message);
+
+      toast.success(`Categoría "${cat}" cerrada ✓ — ya aparece en verde en el corte mensual`);
       setCloseDialog(false);
-      if (online) {
-        qc.invalidateQueries({ queryKey: ["closed_counts"], refetchType: "all" });
-        qc.invalidateQueries({ queryKey: ["audit-history-month"], refetchType: "all" });
-        qc.invalidateQueries({ queryKey: ["closed-counts-categories"], refetchType: "all" });
-        qc.invalidateQueries({ queryKey: ["audits-realtime", category], refetchType: "all" });
-        qc.invalidateQueries({ queryKey: ["branch-closures"], refetchType: "all" });
-        qc.invalidateQueries({ queryKey: ["audit-comments"], refetchType: "all" });
-      }
-    } catch (e) { toast.error("Error al finalizar: " + (e as Error).message); }
-    finally { setClosing(false); }
+      qc.invalidateQueries({ queryKey: ["closed_counts"], refetchType: "all" });
+      qc.invalidateQueries({ queryKey: ["audit-history-month"], refetchType: "all" });
+      qc.invalidateQueries({ queryKey: ["closed-counts-categories"], refetchType: "all" });
+      qc.invalidateQueries({ queryKey: ["audits-realtime", category], refetchType: "all" });
+      qc.invalidateQueries({ queryKey: ["branch-closures"], refetchType: "all" });
+      qc.invalidateQueries({ queryKey: ["audit-comments"], refetchType: "all" });
+    } catch (e) {
+      toast.error("Error al finalizar: " + (e as Error).message);
+    } finally {
+      setClosing(false);
+    }
   }
 
   async function confirmAdminAction() {
@@ -870,15 +931,32 @@ function AuditPage() {
         qc.invalidateQueries({ queryKey: ["closed-counts-categories", periodKey()], refetchType: "all" });
         qc.invalidateQueries({ queryKey: ["audit-history-month"], refetchType: "all" });
       } else if (adminAction.type === "regenerateReport") {
-        const cat = adminAction.category;
+        const cat = (adminAction.category ?? "").trim();
+        if (!cat) throw new Error("Categoría vacía");
         const { startIso, endIso } = monthRange();
 
-        const { data: catProducts, error: ep } = await supabase
-          .from("products")
-          .select("barcode, product_name, stock_a, stock_b, price")
-          .eq("category", cat);
-        if (ep) throw ep;
-        const prods = catProducts ?? [];
+        // Match exacto + fallback trim (mismo criterio que confirmClose)
+        let prods: Array<{ barcode: string; product_name: string; stock_a: number; stock_b: number; price: number }> = [];
+        {
+          const { data: exact, error: ep } = await supabase
+            .from("products")
+            .select("barcode, product_name, stock_a, stock_b, price, category")
+            .eq("category", cat);
+          if (ep) throw ep;
+          prods = exact ?? [];
+          if (prods.length === 0) {
+            const { data: all, error: eAll } = await supabase
+              .from("products")
+              .select("barcode, product_name, stock_a, stock_b, price, category")
+              .not("category", "is", null)
+              .not("category", "eq", "");
+            if (eAll) throw eAll;
+            prods = (all ?? []).filter((p: any) => (p.category ?? "").trim() === cat);
+          }
+        }
+        if (prods.length === 0) {
+          throw new Error(`No se encontraron productos para "${cat}". Revisá espacios en el nombre de categoría.`);
+        }
         const barcodes = prods.map((p) => p.barcode);
 
         let liveAudits: Array<{ barcode: string; physical_count: number; collaborator_name: string | null; branch: string; created_at: string }> = [];
@@ -1066,17 +1144,18 @@ function AuditPage() {
           <div className="flex flex-wrap gap-1.5">
             {categories.map((c) => {
               const catTrimmed = c.trim();
-              const st = categoryStatus.get(c);
-              const bc = branchClosureMap.get(c);
+              const st = categoryStatus.get(catTrimmed) ?? categoryStatus.get(c);
+              const bc = branchClosureMap.get(catTrimmed) ?? branchClosureMap.get(c);
 
-              // CANDADO VERDE STRICTO: Se pinta en VERDE si existe en 'closed_counts' (Corte Guardado en Historial)
-              // O si ambas sucursales A y B ya están registradas en 'audit_history'.
-              const done = closedCountsCategories.has(catTrimmed) || (!!st?.hasA && !!st?.hasB);
+              // CANDADO VERDE: solo se pinta en VERDE si existe registro en 'closed_counts'
+              // (cierre final del administrador). Así todas las categorías se comportan igual.
+              // El amarillo (partial) sigue dependiendo de branch_closures de cada sucursal.
+              const done = closedCountsCategories.has(catTrimmed);
 
               const reactivated = !done && !!bc?.reactivated;
               const partial = !done && !reactivated && (!!bc?.A || !!bc?.B);
 
-              const total = categoryCounts.get(c) ?? 0;
+              const total = categoryCounts.get(catTrimmed) ?? categoryCounts.get(c) ?? 0;
               return (
                 <button
                   key={c}
@@ -1573,7 +1652,8 @@ function AuditPage() {
             const rows = buildCategoryReport(reportCategory);
             const st = categoryStatus.get(reportCategory);
             const bc = branchClosureMap.get(reportCategory);
-            const bothDoneReport = closedCountsCategories.has(reportCategory.trim()) || (!!st?.hasA && !!st?.hasB);
+            // Verde solo cuando el admin ya cerró (existe en closed_counts). Misma regla que los botones de categoría.
+            const bothDoneReport = closedCountsCategories.has(reportCategory.trim());
             return (
               <div className="space-y-3 text-sm">
                 <div className="grid grid-cols-3 gap-2">
