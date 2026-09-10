@@ -806,6 +806,16 @@ function AuditPage() {
           .is("session_id", null)
           .gte("created_at", monthRange().startIso);
         if (e3) console.warn("No se pudieron ligar los comentarios:", e3.message);
+        // Limpia cualquier marca "reactivated" que hubiera quedado de una
+        // corrección previa, para que la categoría no se quede pegada en
+        // naranja para siempre después de volver a cerrarse correctamente.
+        const { error: e4 } = await supabase
+          .from("branch_closures")
+          .update({ status: null })
+          .eq("category", category)
+          .eq("period", periodKey())
+          .eq("status", "reactivated");
+        if (e4) console.warn("No se pudo limpiar el estado 'reactivated':", e4.message);
       }
 
       toast.success(`Categoría "${category}" cerrada ✓ — ya aparece en verde en el corte mensual`);
@@ -1000,6 +1010,15 @@ function AuditPage() {
         if (e1) throw e1;
         const { error: e2 } = await supabase.from("audit_history").insert([...historyRowsMina, ...historyRowsMorelos]);
         if (e2) throw e2;
+        // Igual que al cerrar: limpiar cualquier marca "reactivated" pendiente
+        // de esta categoría para que vuelva a mostrarse en verde y no en naranja.
+        const { error: e5 } = await supabase
+          .from("branch_closures")
+          .update({ status: null })
+          .eq("category", cat)
+          .eq("period", periodKey())
+          .eq("status", "reactivated");
+        if (e5) console.warn("No se pudo limpiar el estado 'reactivated':", e5.message);
 
         toast.success(`Reporte general de "${cat}" guardado de nuevo ✓`);
         if (category === cat) { setCounts(new Map()); clearCatState(); }
@@ -1102,13 +1121,15 @@ function AuditPage() {
           <div className="flex flex-wrap gap-1.5">
             {categories.map((c) => {
               const st = categoryStatus.get(c);
+              const bc = branchClosureMap.get(c);
               // Verde: el administrador ya finalizó el conteo (ambas sucursales, en audit_history)
               // O el reporte general ya existe en el Historial (closed_counts), aunque falte
               // algún registro individual de audit_history por haberse borrado a mano.
-              const reactivated = !!bc?.reactivated;
-              const done = !reactivated && ((!!st?.hasA && !!st?.hasB) || closedCountsCategories.has(c));
+              // Esto se evalúa SIEMPRE primero: si ya hay reporte guardado, la categoría
+              // es verde aunque haya quedado una marca "reactivated" vieja sin limpiar.
+              const done = (!!st?.hasA && !!st?.hasB) || closedCountsCategories.has(c);
+              const reactivated = !done && !!bc?.reactivated;
               // Amarillo: una sola sucursal cerró su conteo (branch_closures) — la otra falta
-              const bc = branchClosureMap.get(c);
               const partial = !done && !reactivated && (!!bc?.A || !!bc?.B);
               const total = categoryCounts.get(c) ?? 0;
               return (
@@ -1950,25 +1971,4 @@ function AuditPage() {
 function AdminHistoryRow({ row, onEdit, onDelete }: { row: HistoryRow; onEdit: () => void; onDelete: () => void }) {
   const diff = row.counted_quantity - row.system_stock;
   return (
-    <div className="flex items-center gap-2 px-2 py-1.5 text-[11px]">
-      <div className="min-w-0 flex-1">
-        <div className="truncate font-medium">{row.product_name}</div>
-        <div className="text-muted-foreground">
-          {branchLabel(row.branch)} · Sys: {row.system_stock} · Contado: {row.counted_quantity}{" "}
-          <span className={diff === 0 ? "text-emerald-600" : diff < 0 ? "text-red-600" : "text-amber-600"}>
-            ({diff === 0 ? "✓" : diff > 0 ? `+${diff}` : diff})
-          </span>
-        </div>
-        <div className="text-[10px] text-blue-600 dark:text-blue-400">
-          {row.collaborator_name ?? "—"} · {new Date(row.created_at).toLocaleString("es-MX", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
-        </div>
-      </div>
-      <button type="button" onClick={onEdit} className="shrink-0 rounded p-1 hover:bg-muted">
-        <Pencil className="h-3.5 w-3.5" />
-      </button>
-      <button type="button" onClick={onDelete} className="shrink-0 rounded p-1 text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30">
-        <Trash2 className="h-3.5 w-3.5" />
-      </button>
-    </div>
-  );
-}
+    <div className="flex items-center gap-2 p
