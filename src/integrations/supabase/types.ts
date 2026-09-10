@@ -190,6 +190,7 @@ export type Database = {
           id: string
           period: string
           products_counted: number
+          status: string | null
           total_counted: number
         }
         Insert: {
@@ -202,6 +203,7 @@ export type Database = {
           id?: string
           period: string
           products_counted?: number
+          status?: string | null
           total_counted?: number
         }
         Update: {
@@ -214,6 +216,7 @@ export type Database = {
           id?: string
           period?: string
           products_counted?: number
+          status?: string | null
           total_counted?: number
         }
         Relationships: []
