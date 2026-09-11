@@ -29,14 +29,37 @@ function money(n: number) {
 }
 
 /** Resumen compacto de todo el inventario para dárselo al modelo como contexto. */
+async function fetchAllClosedCounts(sb: ReturnType<typeof serverClient>) {
+  // PostgREST limita cada respuesta a un máximo de filas por defecto
+  // (típicamente 1000) sin importar el .limit() pedido desde el cliente.
+  // Paginamos con .range() hasta traer todo, para no perder meses viejos
+  // cuando hay más de una página de resultados.
+  const PAGE_SIZE = 1000;
+  const all: any[] = [];
+  let from = 0;
+  while (true) {
+    const { data, error } = await sb
+      .from("closed_counts")
+      .select("*")
+      .order("closed_at", { ascending: false })
+      .range(from, from + PAGE_SIZE - 1);
+    if (error) throw error;
+    const page = data ?? [];
+    all.push(...page);
+    if (page.length < PAGE_SIZE) break;
+    from += PAGE_SIZE;
+  }
+  return all;
+}
+
 async function buildContext(sb: ReturnType<typeof serverClient>) {
-  const [closed, comments, prods] = await Promise.all([
-    sb.from("closed_counts").select("*").order("closed_at", { ascending: false }).limit(5000),
+  const [closedRows, comments, prods] = await Promise.all([
+    fetchAllClosedCounts(sb),
     sb.from("audit_comments").select("category, branch, collaborator_name, comment, created_at").order("created_at", { ascending: false }).limit(100),
     sb.from("products").select("barcode").limit(1),
   ]);
 
-  const rows = closed.data ?? [];
+  const rows = closedRows ?? [];
   type Agg = { sys: number; mina: number; morelos: number; total: number; faltPz: number; sobrPz: number; faltVal: number; sobrVal: number };
   const newAgg = (): Agg => ({ sys: 0, mina: 0, morelos: 0, total: 0, faltPz: 0, sobrPz: 0, faltVal: 0, sobrVal: 0 });
   const byMonth = new Map<string, Agg>();
