@@ -906,6 +906,11 @@ function AuditPage() {
           .from("products").select("barcode").eq("category", cat);
         const barcodes = (catProds ?? []).map((p) => p.barcode);
 
+        // closed_counts es un resumen ya combinado de Mina + Morelos por
+        // producto (no tiene columna 'branch'), así que siempre hay que
+        // borrarlo completo al reactivar cualquiera de las dos sucursales.
+        // El reporte general queda inválido hasta que el admin presione
+        // "Volver a guardar conteo general".
         await supabase.from("closed_counts")
           .delete()
           .eq("category", cat)
@@ -913,20 +918,31 @@ function AuditPage() {
           .lte("closed_at", endIso);
 
         if (barcodes.length) {
+          // audit_history SÍ tiene 'branch': antes se borraban las filas de
+          // AMBAS sucursales aunque solo se reactivara una, así que el
+          // historial ya guardado de la sucursal que seguía cerrada
+          // desaparecía sin motivo. Ahora solo se borra la sucursal que se
+          // está reactivando.
           await supabase.from("audit_history")
             .delete()
             .eq("category", cat)
+            .eq("branch", adminAction.branch)
             .gte("created_at", startIso)
             .lte("created_at", endIso);
         }
 
-        await supabase.from("branch_closures").upsert([
-          { category: cat, branch: "A", period: periodKey(), status: "reactivated", collaborator_name: me?.name ?? "Admin" },
-          { category: cat, branch: "B", period: periodKey(), status: "reactivated", collaborator_name: me?.name ?? "Admin" },
-        ], { onConflict: "category,branch,period" });
+        // Antes esto marcaba A y B como "reactivated" sin importar cuál
+        // sucursal pidió el admin, así que reactivar Mina también
+        // desbloqueaba Morelos (y viceversa) aunque esa sucursal ya
+        // estuviera correctamente cerrada. Ahora solo toca la sucursal
+        // indicada en adminAction.branch.
+        await supabase.from("branch_closures").upsert(
+          { category: cat, branch: adminAction.branch, period: periodKey(), status: "reactivated", collaborator_name: me?.name ?? "Admin" },
+          { onConflict: "category,branch,period" },
+        );
 
-        toast.success(`"${cat}" reactivada para corrección — los conteos anteriores se conservan.`);
-        if (category === cat) { setCounts(new Map()); clearCatState(); }
+        toast.success(`"${cat}" reactivada en ${branchLabel(adminAction.branch)} para corrección — los conteos anteriores se conservan.`);
+        if (category === cat && branch === adminAction.branch) { setCounts(new Map()); clearCatState(); }
         qc.invalidateQueries({ queryKey: ["branch-closures", periodKey()], refetchType: "all" });
         qc.invalidateQueries({ queryKey: ["closed-counts-categories", periodKey()], refetchType: "all" });
         qc.invalidateQueries({ queryKey: ["audit-history-month"], refetchType: "all" });
