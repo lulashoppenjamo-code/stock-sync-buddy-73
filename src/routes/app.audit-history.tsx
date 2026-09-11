@@ -143,13 +143,27 @@ function AuditHistoryPage() {
   const { data: rows = [], isLoading } = useQuery({
     queryKey: ["closed_counts"],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from("closed_counts")
-        .select("*")
-        .order("closed_at", { ascending: false })
-        .limit(10000);
-      if (error) throw error;
-      return data as unknown as ClosedRow[];
+      // Supabase/PostgREST limita cada respuesta a un máximo de filas por
+      // defecto (típicamente 1000), sin importar el .limit() que pidamos
+      // desde el cliente. Como acá puede haber miles de filas (varios meses
+      // de cortes), traemos todo en páginas hasta agotar los resultados;
+      // así nunca se "pierden" silenciosamente los meses más viejos.
+      const PAGE_SIZE = 1000;
+      let all: ClosedRow[] = [];
+      let from = 0;
+      while (true) {
+        const { data, error } = await supabase
+          .from("closed_counts")
+          .select("*")
+          .order("closed_at", { ascending: false })
+          .range(from, from + PAGE_SIZE - 1);
+        if (error) throw error;
+        const page = (data ?? []) as unknown as ClosedRow[];
+        all = all.concat(page);
+        if (page.length < PAGE_SIZE) break;
+        from += PAGE_SIZE;
+      }
+      return all;
     },
   });
 
