@@ -11,6 +11,7 @@ import { Loader2, Save, ScanLine, Search, CheckCircle2, Minus, Plus, Trash2, Cli
 import { toast } from "sonner";
 import { getCollaborator, useCollaborator } from "@/lib/session";
 import { BarcodeScanner } from "@/components/BarcodeScanner";
+import { ProductComment } from "@/components/ProductComment";
 import { branchLabel } from "@/lib/branches";
 import { useOnline } from "@/hooks/use-online";
 import { enqueue } from "@/lib/offline-queue";
@@ -331,7 +332,7 @@ function AuditPage() {
   // desfaces de zona horaria que hacían que algunas categorías no se pintaran verde.
   const { data: closedCountsThisMonth = [] } = useQuery({
     queryKey: ["closed-counts-categories", periodKey()],
-    staleTime: online ? 10_000 : Infinity,
+    staleTime: 0,
     queryFn: async () => {
       const { startIso, endIso } = monthRange();
       const { data, error } = await supabase
@@ -1442,6 +1443,15 @@ function AuditPage() {
                           <Plus className="h-3 w-3" />
                         </button>
                       </div>
+                    {/* Comentario por producto */}
+                    <ProductComment
+                      barcode={p.barcode}
+                      productName={p.product_name}
+                      category={category}
+                      branch={branch}
+                      collaboratorName={getCollaborator()?.name ?? ""}
+                      collaboratorId={getCollaborator()?.id ?? ""}
+                    />
                     </div>
                   </div>
                 );
@@ -1960,39 +1970,6 @@ function AuditPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-
-      {/* ── Comentarios y reportes ── */}
-      <Card>
-        <CardContent className="p-3 space-y-2">
-          <div className="flex items-center gap-2 text-sm font-semibold">
-            <MessageSquare className="h-4 w-4" /> Comentarios y reportes
-          </div>
-          <p className="text-[11px] text-muted-foreground">
-            Anotá acá errores encontrados, desperfectos o sugerencias{category ? ` sobre "${category}" (${branchLabel(branch)})` : ""}.
-          </p>
-          <Textarea value={commentText} onChange={(e) => setCommentText(e.target.value)}
-            placeholder="Escribí tu comentario…" rows={3} />
-          <Button size="sm" onClick={sendComment} disabled={commentSending || !commentText.trim()}>
-            {commentSending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-            Enviar comentario
-          </Button>
-          {recentComments.length > 0 && (
-            <div className="mt-2 max-h-40 space-y-2 overflow-y-auto rounded-md border bg-muted/30 p-2">
-              {recentComments.map((c) => (
-                <div key={c.id} className="text-[11px]">
-                  <div className="flex flex-wrap items-center gap-1 text-muted-foreground">
-                    <span className="font-medium text-foreground">{c.collaborator_name ?? "—"}</span>
-                    {c.branch && <span>· {branchLabel(c.branch)}</span>}
-                    {c.category && <span>· {c.category}</span>}
-                    <span>· {new Date(c.created_at).toLocaleDateString("es-MX", { day: "numeric", month: "short" })}</span>
-                  </div>
-                  <p className="text-foreground">{c.comment}</p>
-                </div>
-              ))}
-            </div>
-          )}
-        </CardContent>
-      </Card>
 
       <BarcodeScanner open={scanning} onClose={() => setScanning(false)} continuous onDetected={(c) => addCount(c)} />
     </div>
