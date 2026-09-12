@@ -843,7 +843,7 @@ function AuditPage() {
         .eq("category", cat)
         .eq("period", periodKey())
         .eq("status", "reactivated");
-      if (e4) console.warn("No se pudo limpiar el estado 'reactivated':", e4.message);
+      if (e4) consolewarn("No se pudo limpiar el estado 'reactivated':", e4.message);
 
       toast.success(`Categoría "${cat}" cerrada ✓ — ya aparece en verde en el corte mensual`);
       setCloseDialog(false);
