@@ -386,6 +386,155 @@ export type Database = {
           },
         ]
       }
+      inventory_scan_events: {
+        Row: {
+          barcode: string
+          client_uid: string
+          created_at: string
+          delta: number | null
+          location: string
+          mode: string
+          quantity: number | null
+          session_id: string
+        }
+        Insert: {
+          barcode: string
+          client_uid: string
+          created_at?: string
+          delta?: number | null
+          location: string
+          mode: string
+          quantity?: number | null
+          session_id: string
+        }
+        Update: {
+          barcode?: string
+          client_uid?: string
+          created_at?: string
+          delta?: number | null
+          location?: string
+          mode?: string
+          quantity?: number | null
+          session_id?: string
+        }
+        Relationships: []
+      }
+      inventory_session_items: {
+        Row: {
+          barcode: string
+          category: string | null
+          counted_at: string | null
+          counted_by: string | null
+          created_at: string
+          difference: number
+          id: string
+          mina_count: number
+          morelos_count: number
+          physical_count: number
+          product_name: string
+          session_id: string
+          system_stock_snapshot: number
+          touched: boolean
+          unit_cost_snapshot: number
+        }
+        Insert: {
+          barcode: string
+          category?: string | null
+          counted_at?: string | null
+          counted_by?: string | null
+          created_at?: string
+          difference?: number
+          id?: string
+          mina_count?: number
+          morelos_count?: number
+          physical_count?: number
+          product_name: string
+          session_id: string
+          system_stock_snapshot?: number
+          touched?: boolean
+          unit_cost_snapshot?: number
+        }
+        Update: {
+          barcode?: string
+          category?: string | null
+          counted_at?: string | null
+          counted_by?: string | null
+          created_at?: string
+          difference?: number
+          id?: string
+          mina_count?: number
+          morelos_count?: number
+          physical_count?: number
+          product_name?: string
+          session_id?: string
+          system_stock_snapshot?: number
+          touched?: boolean
+          unit_cost_snapshot?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "inventory_session_items_session_id_fkey"
+            columns: ["session_id"]
+            isOneToOne: false
+            referencedRelation: "inventory_sessions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      inventory_sessions: {
+        Row: {
+          finished_at: string | null
+          finished_by_id: string | null
+          finished_by_name: string | null
+          id: string
+          notes: string | null
+          started_at: string
+          started_by_id: string | null
+          started_by_name: string | null
+          status: string
+          total_products: number
+        }
+        Insert: {
+          finished_at?: string | null
+          finished_by_id?: string | null
+          finished_by_name?: string | null
+          id?: string
+          notes?: string | null
+          started_at?: string
+          started_by_id?: string | null
+          started_by_name?: string | null
+          status?: string
+          total_products?: number
+        }
+        Update: {
+          finished_at?: string | null
+          finished_by_id?: string | null
+          finished_by_name?: string | null
+          id?: string
+          notes?: string | null
+          started_at?: string
+          started_by_id?: string | null
+          started_by_name?: string | null
+          status?: string
+          total_products?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "inventory_sessions_started_by_id_fkey"
+            columns: ["started_by_id"]
+            isOneToOne: false
+            referencedRelation: "collaborator_directory"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "inventory_sessions_started_by_id_fkey"
+            columns: ["started_by_id"]
+            isOneToOne: false
+            referencedRelation: "collaborators"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       products: {
         Row: {
           barcode: string
@@ -656,6 +805,68 @@ export type Database = {
           p_sender_name: string
         }
         Returns: string
+      }
+      create_inventory_session: {
+        Args: { p_started_by_id: string; p_started_by_name: string }
+        Returns: string
+      }
+      finalize_inventory_session: {
+        Args: {
+          p_finished_by_id: string
+          p_finished_by_name: string
+          p_session_id: string
+        }
+        Returns: {
+          coincide: number
+          counted: number
+          faltante: number
+          pending: number
+          perdida_neta: number
+          products_total: number
+          sobrante: number
+          valor_fisico: number
+          valor_teorico: number
+        }[]
+      }
+      inventory_manual_set: {
+        Args: {
+          p_barcode: string
+          p_client_uid: string
+          p_collaborator_name: string
+          p_location: Database["public"]["Enums"]["branch_code"]
+          p_quantity: number
+          p_session_id: string
+        }
+        Returns: {
+          barcode: string
+          difference: number
+          mina_count: number
+          morelos_count: number
+          physical_count: number
+          product_name: string
+          system_stock_snapshot: number
+          touched: boolean
+        }[]
+      }
+      inventory_scan: {
+        Args: {
+          p_barcode: string
+          p_client_uid: string
+          p_collaborator_name: string
+          p_delta: number
+          p_location: Database["public"]["Enums"]["branch_code"]
+          p_session_id: string
+        }
+        Returns: {
+          barcode: string
+          difference: number
+          mina_count: number
+          morelos_count: number
+          physical_count: number
+          product_name: string
+          system_stock_snapshot: number
+          touched: boolean
+        }[]
       }
       verify_pin: {
         Args: { p_collaborator_id: string; p_pin: string }
