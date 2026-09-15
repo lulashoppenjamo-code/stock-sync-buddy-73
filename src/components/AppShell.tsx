@@ -1,5 +1,5 @@
 import { Link, useRouter, useLocation } from "@tanstack/react-router";
-import { Boxes, ClipboardCheck, ArrowLeftRight, History, Settings, LogOut, WifiOff, CloudUpload, PackageCheck } from "lucide-react";
+import { Boxes, ClipboardCheck, ArrowLeftRight, History, Settings, LogOut, WifiOff, CloudUpload, PackageCheck, ScanBarcode } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { useOnline, usePendingCount } from "@/hooks/use-online";
 import { useCollaborator, setCollaborator } from "@/lib/session";
@@ -11,6 +11,7 @@ const navItems = [
   { to: "/app/audit", label: "Auditoría", icon: ClipboardCheck },
   { to: "/app/transfer", label: "Traspaso", icon: ArrowLeftRight },
   { to: "/app/reception", label: "Recepción", icon: PackageCheck, badge: true as const },
+  { to: "/app/inventory-full", label: "Inventario físico", icon: ScanBarcode },
   { to: "/app/history", label: "Historial", icon: History },
 ];
 
