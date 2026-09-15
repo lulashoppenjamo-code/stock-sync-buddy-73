@@ -38,6 +38,21 @@ export type QueuedOp =
         client_uid: string;
       };
       photo: { blob: Blob; ext: string };
+    }
+  | {
+      kind: "inventory_count";
+      uid: string;
+      createdAt: number;
+      payload: {
+        session_id: string;
+        barcode: string;
+        location: "A" | "B";
+        mode: "increment" | "set";
+        delta?: number;
+        quantity?: number;
+        collaborator_name: string | null;
+        client_uid: string;
+      };
     };
 
 export async function enqueue(op: QueuedOp) {
@@ -68,6 +83,28 @@ export async function drainQueue(): Promise<{ ok: number; failed: number }> {
         if (op.kind === "audit") {
           const { error } = await supabase.from("audits").insert(op.payload);
           if (error && !error.message.includes("duplicate")) throw error;
+        } else if (op.kind === "inventory_count") {
+          if (op.payload.mode === "increment") {
+            const { error } = await supabase.rpc("inventory_scan", {
+              p_session_id: op.payload.session_id,
+              p_barcode: op.payload.barcode,
+              p_location: op.payload.location,
+              p_delta: op.payload.delta ?? 1,
+              p_collaborator_name: op.payload.collaborator_name,
+              p_client_uid: op.payload.client_uid,
+            });
+            if (error) throw error;
+          } else {
+            const { error } = await supabase.rpc("inventory_manual_set", {
+              p_session_id: op.payload.session_id,
+              p_barcode: op.payload.barcode,
+              p_location: op.payload.location,
+              p_quantity: op.payload.quantity ?? 0,
+              p_collaborator_name: op.payload.collaborator_name,
+              p_client_uid: op.payload.client_uid,
+            });
+            if (error) throw error;
+          }
         } else {
           const path = `${op.payload.client_uid}.${op.photo.ext}`;
           const up = await supabase.storage
