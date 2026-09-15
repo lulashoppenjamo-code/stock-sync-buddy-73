@@ -18,6 +18,12 @@ export function useRealtimeSync() {
         qc.invalidateQueries({ queryKey: ["transfers"] });
         qc.invalidateQueries({ queryKey: ["products"] });
       })
+      .on("postgres_changes", { event: "*", schema: "public", table: "inventory_sessions" }, () => {
+        qc.invalidateQueries({ queryKey: ["inventory-session"] });
+      })
+      .on("postgres_changes", { event: "*", schema: "public", table: "inventory_session_items" }, () => {
+        qc.invalidateQueries({ queryKey: ["inventory-session-items"] });
+      })
       .subscribe();
     return () => {
       supabase.removeChannel(channel);
