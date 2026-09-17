@@ -512,7 +512,9 @@ function AuditPage() {
     : false;
 
   const myBranchClosed = category ? (branch === "A" ? closedA : closedB) : false;
-  const branchLocked = alreadyCountedThisMonth || myBranchClosed;
+  // Si el reporte general ya está guardado este mes, bloquear para todos (incluyendo admin)
+  // para evitar guardar la misma categoría dos veces en el mismo mes.
+  const branchLocked = categoryHasSavedReport ? true : (alreadyCountedThisMonth || myBranchClosed);
 
   async function lookupProduct(barcode: string): Promise<Product | null> {
     const local = products.find((p) => p.barcode === barcode);
