@@ -103,9 +103,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               </span>
             )}
             {pending > 0 && (
-              <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-1 font-medium text-blue-900 dark:bg-blue-900/40 dark:text-blue-100">
+              <button type="button"
+                onClick={async () => {
+                  if (!online) {
+                    const { toast } = await import("sonner");
+                    toast.error("Sin internet — los conteos se sincronizarán automáticamente cuando vuelva la conexión.");
+                    return;
+                  }
+                  const { drainQueue } = await import("@/lib/offline-queue");
+                  const { toast } = await import("sonner");
+                  toast.info("Sincronizando…");
+                  const { ok, failed } = await drainQueue();
+                  if (ok > 0) toast.success(`${ok} conteo${ok === 1 ? "" : "s"} sincronizado${ok === 1 ? "" : "s"}`);
+                  if (failed > 0) toast.error(`${failed} no se pudieron sincronizar — intenta de nuevo`);
+                }}
+                className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-1 font-medium text-blue-900 hover:bg-blue-200 dark:bg-blue-900/40 dark:text-blue-100">
                 <CloudUpload className="h-3.5 w-3.5" /> {pending} pendiente{pending === 1 ? "" : "s"}
-              </span>
+              </button>
             )}
 
             <Button variant="ghost" size="sm" onClick={signOut} aria-label="Salir">
