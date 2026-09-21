@@ -586,6 +586,11 @@ function AuditPage() {
     const collab = getCollaborator();
     if (!collab) { toast.error("Sesión expirada"); return; }
     if (!category) return;
+    // Bloquear si el conteo general ya fue cerrado este mes (solo admin puede ajustar)
+    if (categoryHasSavedReport) {
+      toast.error(`"${category}" ya fue cerrado por el administrador este mes. Solo admin puede hacer ajustes desde "Reactivar categoría".`);
+      return;
+    }
     if (!online) {
       toast.error("Necesitás conexión a internet para cerrar el conteo.");
       return;
@@ -639,8 +644,7 @@ function AuditPage() {
             category: cat, branch, period: periodKey(),
             collaborator_id: collab.id, collaborator_name: collab.name,
             total_counted: total, products_counted: numProducts,
-            // Limpiar status por si venía de una reactivación previa
-            status: null,
+            status: "closed",
           },
           { onConflict: "category,branch,period" }
         );
