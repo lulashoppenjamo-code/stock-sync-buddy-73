@@ -125,7 +125,7 @@ function AuditPage() {
     return "A";
   }, [me, collabData, collabBranch]);
 
-  const [category, setCategory] = useState(_saved?.category ?? "");
+  const [category, setCategory] = useState((_saved?.category ?? "").trim());
   const branch: "A" | "B" = myBranch;
 
   const [counts, setCounts] = useState<Map<string, CountEntry>>(
@@ -499,19 +499,24 @@ function AuditPage() {
     return map;
   }, [realtimeAudits]);
 
-  const closedA = category ? branchClosureMap.get(category)?.A ?? false : false;
-  const closedB = category ? branchClosureMap.get(category)?.B ?? false : false;
+  // Siempre normalizar categoría con trim para que coincida con las claves
+  // de branchClosureMap / categoryStatus / closedCountsCategories (todas usan .trim()).
+  // Sin esto, si localStorage o el select traen espacios, el candado verde/amarillo
+  // y el bloqueo de "ya guardado" fallan de forma intermitente.
+  const catKey = (category ?? "").trim();
+  const closedA = catKey ? branchClosureMap.get(catKey)?.A ?? false : false;
+  const closedB = catKey ? branchClosureMap.get(catKey)?.B ?? false : false;
 
   const minaDone = closedA;
   const morelosDone = closedB;
   const bothClosed = closedA && closedB;
 
-  const categoryHasSavedReport = category ? closedCountsCategories.has(category.trim()) : false;
-  const alreadyCountedThisMonth = category
-    ? categoryHasSavedReport || ((branch === "A" ? categoryStatus.get(category)?.hasA : categoryStatus.get(category)?.hasB) ?? false)
+  const categoryHasSavedReport = catKey ? closedCountsCategories.has(catKey) : false;
+  const alreadyCountedThisMonth = catKey
+    ? categoryHasSavedReport || ((branch === "A" ? categoryStatus.get(catKey)?.hasA : categoryStatus.get(catKey)?.hasB) ?? false)
     : false;
 
-  const myBranchClosed = category ? (branch === "A" ? closedA : closedB) : false;
+  const myBranchClosed = catKey ? (branch === "A" ? closedA : closedB) : false;
   // Si el reporte general ya está guardado este mes, bloquear para todos (incluyendo admin)
   // para evitar guardar la misma categoría dos veces en el mismo mes.
   const branchLocked = categoryHasSavedReport ? true : (alreadyCountedThisMonth || myBranchClosed);
@@ -564,12 +569,13 @@ function AuditPage() {
   }
 
   function changeCategory(newCat: string) {
-    if (counts.size > 0 && newCat !== category) {
+    const normalized = (newCat ?? "").trim();
+    if (counts.size > 0 && normalized !== category) {
       if (!confirm("¿Cambiar de categoría? Se perderá el conteo actual.")) return;
     }
-    setCategory(newCat);
+    setCategory(normalized);
     setCounts(new Map());
-    if (!newCat) clearCatState();
+    if (!normalized) clearCatState();
   }
 
   function getUnclosedForBranch(): Product[] {
@@ -733,16 +739,24 @@ function AuditPage() {
       }
 
       const { startIso, endIso } = monthRange();
-      const { count: existingCount, error: eCheck } = await supabase
+      // Comprobar por categoría normalizada (trim): en DB a veces hay espacios
+      // extra y un .eq exacto devolvía 0 aunque el cierre ya existiera, permitiendo
+      // guardar de nuevo y haciendo que el verde parpadee o se pierda el conteo.
+      const { data: existingRows, error: eCheck } = await supabase
         .from("closed_counts")
-        .select("id", { count: "exact", head: true })
-        .eq("category", cat)
+        .select("category")
         .gte("closed_at", startIso)
         .lte("closed_at", endIso);
       if (eCheck) throw eCheck;
-      if ((existingCount ?? 0) > 0) {
+      const alreadyClosed = (existingRows ?? []).some(
+        (r) => (r.category ?? "").trim() === cat
+      );
+      if (alreadyClosed) {
         toast.error(`"${cat}" ya fue cerrada este mes — no se puede volver a cerrar.`);
         setCloseDialog(false);
+        // Refrescar el candado verde por si la UI estaba desfasada
+        qc.invalidateQueries({ queryKey: ["closed-counts-categories"], refetchType: "all" });
+        qc.invalidateQueries({ queryKey: ["closed_counts"], refetchType: "all" });
         return;
       }
 
@@ -826,14 +840,22 @@ function AuditPage() {
 
       // Insert obligatorio en closed_counts (esto es lo que pinta verde).
       // Si falla, no mostramos éxito.
-      const { error: e1 } = await supabase.from("closed_counts").insert(reportRows);
-      if (e1) throw e1;
       if (reportRows.length === 0) {
         throw new Error("No se generaron filas de cierre. Revisá los productos de la categoría.");
       }
+      const { error: e1 } = await supabase.from("closed_counts").insert(reportRows);
+      if (e1) throw e1;
+
+      // A partir de aquí el candado verde YA está en la DB. Los pasos siguientes
+      // son complementarios: si fallan, igual invalidamos queries para que la UI
+      // pinte verde y no se "pierda" el cierre del administrador.
+      let secondaryError: string | null = null;
 
       const { error: e2 } = await supabase.from("audit_history").insert([...historyRowsMina, ...historyRowsMorelos]);
-      if (e2) throw e2;
+      if (e2) {
+        console.warn("closed_counts OK pero audit_history falló:", e2.message);
+        secondaryError = e2.message;
+      }
 
       const { error: e3 } = await supabase
         .from("audit_comments")
@@ -849,18 +871,28 @@ function AuditPage() {
         .eq("category", cat)
         .eq("period", periodKey())
         .eq("status", "reactivated");
-      if (e4) consolewarn("No se pudo limpiar el estado 'reactivated':", e4.message);
+      if (e4) console.warn("No se pudo limpiar el estado 'reactivated':", e4.message);
 
-      toast.success(`Categoría "${cat}" cerrada ✓ — ya aparece en verde en el corte mensual`);
-      setCloseDialog(false);
+      // Invalidar SIEMPRE tras insert exitoso en closed_counts
       qc.invalidateQueries({ queryKey: ["closed_counts"], refetchType: "all" });
       qc.invalidateQueries({ queryKey: ["audit-history-month"], refetchType: "all" });
       qc.invalidateQueries({ queryKey: ["closed-counts-categories"], refetchType: "all" });
       qc.invalidateQueries({ queryKey: ["audits-realtime", category], refetchType: "all" });
       qc.invalidateQueries({ queryKey: ["branch-closures"], refetchType: "all" });
       qc.invalidateQueries({ queryKey: ["audit-comments"], refetchType: "all" });
+
+      setCloseDialog(false);
+      if (secondaryError) {
+        toast.success(`Categoría "${cat}" cerrada ✓ (verde OK). Historial parcial: ${secondaryError}`);
+      } else {
+        toast.success(`Categoría "${cat}" cerrada ✓ — ya aparece en verde en el corte mensual`);
+      }
     } catch (e) {
       toast.error("Error al finalizar: " + (e as Error).message);
+      // Por si el error ocurrió después de un insert parcial, refrescar candados
+      qc.invalidateQueries({ queryKey: ["closed-counts-categories"], refetchType: "all" });
+      qc.invalidateQueries({ queryKey: ["closed_counts"], refetchType: "all" });
+      qc.invalidateQueries({ queryKey: ["branch-closures"], refetchType: "all" });
     } finally {
       setClosing(false);
     }
@@ -906,22 +938,35 @@ function AuditPage() {
         toast.success("Cantidad actualizada");
       } else if (adminAction.type === "restoreClosure") {
         const { startIso, endIso } = monthRange();
-        const cat = adminAction.category;
+        const cat = (adminAction.category ?? "").trim();
 
-        const { data: catProds } = await supabase
-          .from("products").select("barcode").eq("category", cat);
-        const barcodes = (catProds ?? []).map((p) => p.barcode);
+        let { data: catProds } = await supabase
+          .from("products").select("barcode, category").eq("category", cat);
+        if (!(catProds ?? []).length) {
+          const { data: allP } = await supabase
+            .from("products").select("barcode, category")
+            .not("category", "is", null).not("category", "eq", "");
+          catProds = (allP ?? []).filter((p: any) => (p.category ?? "").trim() === cat);
+        }
+        const barcodes = (catProds ?? []).map((p: any) => p.barcode);
 
         // closed_counts es un resumen ya combinado de Mina + Morelos por
         // producto (no tiene columna 'branch'), así que siempre hay que
         // borrarlo completo al reactivar cualquiera de las dos sucursales.
         // El reporte general queda inválido hasta que el admin presione
         // "Volver a guardar conteo general".
-        await supabase.from("closed_counts")
-          .delete()
-          .eq("category", cat)
+        // Borrado tolerante a espacios: traemos filas del mes y filtramos por trim.
+        const { data: ccRows } = await supabase
+          .from("closed_counts")
+          .select("id, category")
           .gte("closed_at", startIso)
           .lte("closed_at", endIso);
+        const ccIds = (ccRows ?? [])
+          .filter((r) => (r.category ?? "").trim() === cat)
+          .map((r) => r.id);
+        if (ccIds.length) {
+          await supabase.from("closed_counts").delete().in("id", ccIds);
+        }
 
         if (barcodes.length) {
           // audit_history SÍ tiene 'branch': antes se borraban las filas de
@@ -929,12 +974,18 @@ function AuditPage() {
           // historial ya guardado de la sucursal que seguía cerrada
           // desaparecía sin motivo. Ahora solo se borra la sucursal que se
           // está reactivando.
-          await supabase.from("audit_history")
-            .delete()
-            .eq("category", cat)
+          const { data: histRows } = await supabase
+            .from("audit_history")
+            .select("id, category")
             .eq("branch", adminAction.branch)
             .gte("created_at", startIso)
             .lte("created_at", endIso);
+          const histIds = (histRows ?? [])
+            .filter((r) => (r.category ?? "").trim() === cat)
+            .map((r) => r.id);
+          if (histIds.length) {
+            await supabase.from("audit_history").delete().in("id", histIds);
+          }
         }
 
         // Antes esto marcaba A y B como "reactivated" sin importar cuál
@@ -1005,12 +1056,25 @@ function AuditPage() {
           detailsByBarcode.set(a.barcode, list);
         }
 
-        const { error: eDelCounts } = await supabase
-          .from("closed_counts").delete().eq("category", cat).gte("closed_at", startIso).lte("closed_at", endIso);
-        if (eDelCounts) throw eDelCounts;
-        const { error: eDelHist } = await supabase
-          .from("audit_history").delete().eq("category", cat).gte("created_at", startIso).lte("created_at", endIso);
-        if (eDelHist) throw eDelHist;
+        // Borrado tolerante a espacios en category (mismo criterio que el candado verde)
+        const { data: ccToDel, error: eFetchCc } = await supabase
+          .from("closed_counts").select("id, category")
+          .gte("closed_at", startIso).lte("closed_at", endIso);
+        if (eFetchCc) throw eFetchCc;
+        const ccDelIds = (ccToDel ?? []).filter((r) => (r.category ?? "").trim() === cat).map((r) => r.id);
+        if (ccDelIds.length) {
+          const { error: eDelCounts } = await supabase.from("closed_counts").delete().in("id", ccDelIds);
+          if (eDelCounts) throw eDelCounts;
+        }
+        const { data: histToDel, error: eFetchHist } = await supabase
+          .from("audit_history").select("id, category")
+          .gte("created_at", startIso).lte("created_at", endIso);
+        if (eFetchHist) throw eFetchHist;
+        const histDelIds = (histToDel ?? []).filter((r) => (r.category ?? "").trim() === cat).map((r) => r.id);
+        if (histDelIds.length) {
+          const { error: eDelHist } = await supabase.from("audit_history").delete().in("id", histDelIds);
+          if (eDelHist) throw eDelHist;
+        }
 
         const sessionId = crypto.randomUUID();
         const closedAt = new Date().toISOString();
@@ -1105,7 +1169,7 @@ function AuditPage() {
   }
 
   function buildCategoryReport(cat: string) {
-    const rows = monthlyHistory.filter((r) => r.category === cat);
+    const rows = monthlyHistory.filter((r) => (r.category ?? "").trim() === cat);
     const merged = new Map<string, { barcode: string; product_name: string; system_stock: number; counted: number }>();
     for (const r of rows) {
       const e = merged.get(r.barcode) ?? { barcode: r.barcode, product_name: r.product_name, system_stock: r.system_stock, counted: 0 };
@@ -1783,12 +1847,12 @@ function AuditPage() {
                     <div className="space-y-1.5">
                       <p className="text-[11px] font-medium text-muted-foreground">Registros individuales</p>
                       <div className="max-h-56 divide-y overflow-y-auto rounded-md border bg-background">
-                        {monthlyHistory.filter((h) => h.category === reportCategory).map((h) => (
+                        {monthlyHistory.filter((h) => (h.category ?? "").trim() === (reportCategory ?? "").trim()).map((h) => (
                           <AdminHistoryRow key={h.id} row={h}
                             onEdit={() => setAdminAction({ type: "editRow", row: h, newQty: h.counted_quantity })}
                             onDelete={() => setAdminAction({ type: "deleteRow", row: h })} />
                         ))}
-                        {monthlyHistory.filter((h) => h.category === reportCategory).length === 0 && (
+                        {monthlyHistory.filter((h) => (h.category ?? "").trim() === (reportCategory ?? "").trim()).length === 0 && (
                           <div className="p-2 text-[11px] text-muted-foreground">Sin registros individuales.</div>
                         )}
                       </div>
