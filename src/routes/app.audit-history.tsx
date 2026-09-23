@@ -227,7 +227,7 @@ function AuditHistoryPage() {
       faltanteVal: number; sobranteVal: number;
     }>();
     for (const r of rows) {
-      if (filterCat && r.category !== filterCat) continue;
+      if (filterCat && (r.category ?? "").trim() !== filterCat.trim()) continue;
       if (filterDate) {
         // Búsqueda por fecha específica: manda sobre el filtro de mes.
         if (!r.closed_at.startsWith(filterDate)) continue;
@@ -235,7 +235,7 @@ function AuditHistoryPage() {
         continue;
       }
       const e = map.get(r.session_id) ?? {
-        session_id: r.session_id, category: r.category, closed_at: r.closed_at,
+        session_id: r.session_id, category: (r.category ?? "").trim(), closed_at: r.closed_at,
         closed_by: r.closed_by, count: 0, sys: 0, mina: 0, morelos: 0, total: 0, diff: 0,
         faltanteVal: 0, sobranteVal: 0,
       };
@@ -249,7 +249,15 @@ function AuditHistoryPage() {
       if (v < 0) e.faltanteVal += -v; else e.sobranteVal += v;
       map.set(r.session_id, e);
     }
-    return Array.from(map.values()).sort((a, b) => b.closed_at.localeCompare(a.closed_at));
+    // Una sola entrada por categoría + mes: la sesión más reciente.
+    // Así no se listan cierres duplicados del mismo mes (p.ej. WAPIZIMA dos veces).
+    const byCatMonth = new Map<string, typeof map extends Map<string, infer V> ? V : never>();
+    for (const s of map.values()) {
+      const key = `${(s.category ?? "").trim()}|${monthKey(s.closed_at)}`;
+      const prev = byCatMonth.get(key);
+      if (!prev || s.closed_at > prev.closed_at) byCatMonth.set(key, s);
+    }
+    return Array.from(byCatMonth.values()).sort((a, b) => b.closed_at.localeCompare(a.closed_at));
   }, [rows, filterCat, filterDate, filterMonth]);
 
   const monthOptions = useMemo(() => {
