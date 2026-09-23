@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { Loader2, Save, ScanLine, Search, CheckCircle2, Minus, Plus, Trash2, ClipboardList, Flag, History, WifiOff, ShieldAlert, RotateCcw, Pencil, AlertTriangle, MessageSquare, Send } from "lucide-react";
+import { Loader2, Save, ScanLine, Search, CheckCircle2, Minus, Plus, Trash2, ClipboardList, Flag, History, WifiOff, ShieldAlert, RotateCcw, Pencil, AlertTriangle, MessageSquare, Send, Eye, EyeOff } from "lucide-react";
 import { toast } from "sonner";
 import { getCollaborator, useCollaborator } from "@/lib/session";
 import { BarcodeScanner } from "@/components/BarcodeScanner";
@@ -174,6 +174,9 @@ function AuditPage() {
   const [adminPin, setAdminPin] = useState("");
   const [adminBusy, setAdminBusy] = useState(false);
   const [reportCategory, setReportCategory] = useState<string | null>(null);
+  // Por defecto ocultamos categorías ya cerradas este mes (candado verde).
+  // Toggle "Mostrar cerradas" las vuelve a listar en verde para consulta.
+  const [showClosedCategories, setShowClosedCategories] = useState(false);
 
   const [productEditOpen, setProductEditOpen] = useState(false);
   const [productQuery, setProductQuery] = useState("");
@@ -882,6 +885,8 @@ function AuditPage() {
       qc.invalidateQueries({ queryKey: ["audit-comments"], refetchType: "all" });
 
       setCloseDialog(false);
+      // Normalizar estado local para que el candado verde/bloqueos usen la misma clave
+      if (category !== cat) setCategory(cat);
       if (secondaryError) {
         toast.success(`Categoría "${cat}" cerrada ✓ (verde OK). Historial parcial: ${secondaryError}`);
       } else {
@@ -1221,52 +1226,105 @@ function AuditPage() {
       )}
 
       {/* ── Corte mensual por categoría ── */}
+      {/* Por defecto solo pendientes: al cerrar el admin la categoría se oculta.
+          Toggle "Mostrar cerradas" las lista en verde. Cada mes nuevo vuelven todas. */}
       <Card>
         <CardContent className="p-3 space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-muted-foreground">Corte mensual por categoría</span>
-            <span className="text-[10px] text-muted-foreground">{monthLabel()}</span>
-          </div>
-          <div className="flex flex-wrap gap-1.5">
-            {categories.map((c) => {
-              const catTrimmed = c.trim();
-              const st = categoryStatus.get(catTrimmed) ?? categoryStatus.get(c);
-              const bc = branchClosureMap.get(catTrimmed) ?? branchClosureMap.get(c);
+          {(() => {
+            const pendingCats = categories.filter((c) => !closedCountsCategories.has(c.trim()));
+            const closedCount = categories.length - pendingCats.length;
+            const visibleCats = showClosedCategories ? categories : pendingCats;
+            return (
+              <>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-col gap-0.5">
+                    <span className="text-xs font-medium text-muted-foreground">Corte mensual por categoría</span>
+                    <span className="text-[10px] text-muted-foreground">
+                      {monthLabel()}
+                      {categories.length > 0 && (
+                        <> · {pendingCats.length} pendiente{pendingCats.length === 1 ? "" : "s"}
+                          {closedCount > 0 ? ` · ${closedCount} cerrada${closedCount === 1 ? "" : "s"}` : ""}
+                        </>
+                      )}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowClosedCategories((v) => !v)}
+                    className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[10px] font-medium transition-colors ${
+                      showClosedCategories
+                        ? "border-emerald-500 bg-emerald-50 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200"
+                        : "border-muted-foreground/30 text-muted-foreground hover:bg-muted"
+                    }`}
+                    title={showClosedCategories ? "Ocultar categorías ya cerradas este mes" : "Mostrar también las ya cerradas este mes"}
+                  >
+                    {showClosedCategories ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3" />}
+                    {showClosedCategories ? "Ocultar cerradas" : "Mostrar cerradas"}
+                  </button>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {visibleCats.map((c) => {
+                    const catTrimmed = c.trim();
+                    const st = categoryStatus.get(catTrimmed) ?? categoryStatus.get(c);
+                    const bc = branchClosureMap.get(catTrimmed) ?? branchClosureMap.get(c);
 
-              // CANDADO VERDE: solo se pinta en VERDE si existe registro en 'closed_counts'
-              // (cierre final del administrador). Así todas las categorías se comportan igual.
-              // El amarillo (partial) sigue dependiendo de branch_closures de cada sucursal.
-              const done = closedCountsCategories.has(catTrimmed);
+                    // done = cierre general del admin (closed_counts del mes)
+                    const done = closedCountsCategories.has(catTrimmed);
+                    const reactivated = !done && !!bc?.reactivated;
+                    const partial = !done && !reactivated && (!!bc?.A || !!bc?.B);
 
-              const reactivated = !done && !!bc?.reactivated;
-              const partial = !done && !reactivated && (!!bc?.A || !!bc?.B);
-
-              const total = categoryCounts.get(catTrimmed) ?? categoryCounts.get(c) ?? 0;
-              return (
-                <button
-                  key={c}
-                  type="button"
-                  onClick={() => setReportCategory(c)}
-                  disabled={!st && !bc && !closedCountsCategories.has(catTrimmed)}
-                  className={`flex flex-col items-center rounded-md border px-2.5 py-1 text-[11px] font-medium leading-tight transition-colors ${
-                    done
-                      ? "border-emerald-500 bg-emerald-500 text-white"
-                      : reactivated
-                      ? "border-orange-500 bg-orange-400 text-white"
-                      : partial
-                      ? "border-amber-500 bg-amber-400 text-amber-950"
-                      : "border-transparent bg-muted text-muted-foreground"
-                  }`}
-                >
-                  <span>{c}{done ? " ✓" : reactivated ? " 🔄" : partial ? " ⏳" : ""}</span>
-                  <span className={`text-[9px] font-normal ${done ? "text-emerald-50" : reactivated ? "text-orange-50" : partial ? "text-amber-900" : "opacity-70"}`}>
-                    {total} artículo{total === 1 ? "" : "s"}
-                  </span>
-                </button>
-              );
-            })}
-            {categories.length === 0 && <span className="text-xs text-muted-foreground">Sin categorías aún</span>}
-          </div>
+                    const total = categoryCounts.get(catTrimmed) ?? categoryCounts.get(c) ?? 0;
+                    return (
+                      <button
+                        key={c}
+                        type="button"
+                        onClick={() => setReportCategory(c)}
+                        disabled={!st && !bc && !done}
+                        className={`flex flex-col items-center rounded-md border px-2.5 py-1 text-[11px] font-medium leading-tight transition-colors ${
+                          done
+                            ? "border-emerald-500 bg-emerald-500 text-white"
+                            : reactivated
+                            ? "border-orange-500 bg-orange-400 text-white"
+                            : partial
+                            ? "border-amber-500 bg-amber-400 text-amber-950"
+                            : "border-transparent bg-muted text-muted-foreground"
+                        }`}
+                      >
+                        <span>{c}{done ? " ✓" : reactivated ? " 🔄" : partial ? " ⏳" : ""}</span>
+                        <span className={`text-[9px] font-normal ${done ? "text-emerald-50" : reactivated ? "text-orange-50" : partial ? "text-amber-900" : "opacity-70"}`}>
+                          {total} artículo{total === 1 ? "" : "s"}
+                        </span>
+                      </button>
+                    );
+                  })}
+                  {categories.length === 0 && (
+                    <span className="text-xs text-muted-foreground">Sin categorías aún</span>
+                  )}
+                  {categories.length > 0 && visibleCats.length === 0 && (
+                    <div className="w-full rounded-md border border-emerald-200 bg-emerald-50/80 dark:border-emerald-900 dark:bg-emerald-950/30 px-3 py-3 text-center">
+                      <p className="text-xs font-medium text-emerald-800 dark:text-emerald-200">
+                        No hay categorías pendientes este mes ✓
+                      </p>
+                      <p className="mt-1 text-[10px] text-muted-foreground">
+                        Todas las auditorías del mes ya están en el historial.
+                        {closedCount > 0 && (
+                          <>{" "}
+                            <button
+                              type="button"
+                              className="underline text-emerald-700 dark:text-emerald-300"
+                              onClick={() => setShowClosedCategories(true)}
+                            >
+                              Mostrar las {closedCount} cerradas
+                            </button>
+                          </>
+                        )}
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </>
+            );
+          })()}
         </CardContent>
       </Card>
 
