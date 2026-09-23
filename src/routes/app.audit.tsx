@@ -329,22 +329,32 @@ function AuditPage() {
     return map;
   }, [branchClosures]);
 
-  // ── CANDADO DE COLOR VERDE: solo closed_counts del mes actual ──
-  // Usa el mismo rango (monthRange) que el resto de la app para evitar
-  // desfaces de zona horaria que hacían que algunas categorías no se pintaran verde.
+  // ── CANDADO: categorías con cierre general este mes (closed_counts) ──
+  // PostgREST limita ~1000 filas por request. Hay una fila por producto, así que
+  // sin paginar se "pierden" categorías cerradas y siguen apareciendo como pendientes
+  // aunque el trigger ya impida volver a cerrarlas.
   const { data: closedCountsThisMonth = [] } = useQuery({
     queryKey: ["closed-counts-categories", periodKey()],
     staleTime: online ? 10_000 : Infinity,
     queryFn: async () => {
       const { startIso, endIso } = monthRange();
-      const { data, error } = await supabase
-        .from("closed_counts")
-        .select("category")
-        .gte("closed_at", startIso)
-        .lte("closed_at", endIso);
-
-      if (error) throw error;
-      return data as Array<{ category: string }>;
+      const PAGE = 1000;
+      const all: Array<{ category: string }> = [];
+      let from = 0;
+      while (true) {
+        const { data, error } = await supabase
+          .from("closed_counts")
+          .select("category")
+          .gte("closed_at", startIso)
+          .lte("closed_at", endIso)
+          .range(from, from + PAGE - 1);
+        if (error) throw error;
+        const page = (data ?? []) as Array<{ category: string }>;
+        all.push(...page);
+        if (page.length < PAGE) break;
+        from += PAGE;
+      }
+      return all;
     },
   });
 
