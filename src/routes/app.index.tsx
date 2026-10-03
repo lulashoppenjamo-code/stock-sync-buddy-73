@@ -15,7 +15,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Progress } from "@/components/ui/progress";
 import { Upload, Search, Loader2, FileSpreadsheet, Check, Plus, Trash2, FolderPlus, Lock, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
-import { parseCsv, buildDiff, applyImport, type ImportDiff, type ApplyProgress, type ApplyResult } from "@/lib/csv-utils";
+import { parseCsv, parseZobazeXlsx, buildDiff, applyImport, type ImportDiff, type ApplyProgress, type ApplyResult } from "@/lib/csv-utils";
 import { getCollaborator } from "@/lib/session";
 import { BRANCH_LABELS } from "@/lib/branches";
 
@@ -341,8 +341,9 @@ function ImportCsvButton() {
   async function onFile(file: File) {
     setBusy(true);
     try {
-      const rows = await parseCsv(file);
-      if (!rows.length) { toast.error("CSV vacío. Columnas: ProductName, Barcode, UoM, Category, StockA, StockB"); return; }
+      const isXlsx = /\.xlsx$/i.test(file.name);
+      const rows = isXlsx ? await parseZobazeXlsx(file) : await parseCsv(file);
+      if (!rows.length) { toast.error(isXlsx ? "Excel vacío o sin filas válidas (columnas: ITEM_NAME, BARCODE, ITEM_TYPE, CATEGORY, STOCK, PRICE)" : "CSV vacío. Columnas: ProductName, Barcode, UoM, Category, StockA, StockB"); return; }
       const d = await buildDiff(rows);
       setDiff(d); setFilename(file.name);
     } catch (e) { toast.error((e as Error).message); }
@@ -385,10 +386,10 @@ function ImportCsvButton() {
 
   return (
     <>
-      <input ref={inputRef} type="file" accept=".csv,text/csv" className="hidden"
+      <input ref={inputRef} type="file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" className="hidden"
         onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) onFile(f); }} />
       <Button onClick={() => inputRef.current?.click()} disabled={busy}>
-        {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />} Importar CSV
+        {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />} Importar CSV / Excel
       </Button>
       <Dialog open={!!diff} onOpenChange={(o) => !o && !isImporting && closeAll()}>
         <DialogContent className="max-w-lg">
