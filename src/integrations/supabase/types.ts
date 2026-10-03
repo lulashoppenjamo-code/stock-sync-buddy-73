@@ -46,6 +46,7 @@ export type Database = {
       }
       audit_comments: {
         Row: {
+          barcode: string | null
           branch: string | null
           category: string | null
           collaborator_id: string | null
@@ -53,9 +54,11 @@ export type Database = {
           comment: string
           created_at: string
           id: string
+          product_name: string | null
           session_id: string | null
         }
         Insert: {
+          barcode?: string | null
           branch?: string | null
           category?: string | null
           collaborator_id?: string | null
@@ -63,9 +66,11 @@ export type Database = {
           comment: string
           created_at?: string
           id?: string
+          product_name?: string | null
           session_id?: string | null
         }
         Update: {
+          barcode?: string | null
           branch?: string | null
           category?: string | null
           collaborator_id?: string | null
@@ -73,6 +78,7 @@ export type Database = {
           comment?: string
           created_at?: string
           id?: string
+          product_name?: string | null
           session_id?: string | null
         }
         Relationships: []
@@ -426,11 +432,11 @@ export type Database = {
           counted_at: string | null
           counted_by: string | null
           created_at: string
-          difference: number
+          difference: number | null
           id: string
           mina_count: number
           morelos_count: number
-          physical_count: number
+          physical_count: number | null
           product_name: string
           session_id: string
           system_stock_snapshot: number
@@ -443,11 +449,11 @@ export type Database = {
           counted_at?: string | null
           counted_by?: string | null
           created_at?: string
-          difference?: number
+          difference?: number | null
           id?: string
           mina_count?: number
           morelos_count?: number
-          physical_count?: number
+          physical_count?: number | null
           product_name: string
           session_id: string
           system_stock_snapshot?: number
@@ -460,11 +466,11 @@ export type Database = {
           counted_at?: string | null
           counted_by?: string | null
           created_at?: string
-          difference?: number
+          difference?: number | null
           id?: string
           mina_count?: number
           morelos_count?: number
-          physical_count?: number
+          physical_count?: number | null
           product_name?: string
           session_id?: string
           system_stock_snapshot?: number
@@ -519,6 +525,20 @@ export type Database = {
           total_products?: number
         }
         Relationships: [
+          {
+            foreignKeyName: "inventory_sessions_finished_by_id_fkey"
+            columns: ["finished_by_id"]
+            isOneToOne: false
+            referencedRelation: "collaborator_directory"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "inventory_sessions_finished_by_id_fkey"
+            columns: ["finished_by_id"]
+            isOneToOne: false
+            referencedRelation: "collaborators"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "inventory_sessions_started_by_id_fkey"
             columns: ["started_by_id"]
@@ -708,6 +728,16 @@ export type Database = {
           id?: string | null
           is_admin?: boolean | null
           name?: string | null
+        }
+        Relationships: []
+      }
+      v_categorias_cerradas_mes_actual: {
+        Row: {
+          category: string | null
+          primer_cierre: string | null
+          productos: number | null
+          sesiones: number | null
+          ultimo_cierre: string | null
         }
         Relationships: []
       }

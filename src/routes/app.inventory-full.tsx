@@ -356,7 +356,7 @@ function SessionScreen({ session }: { session: SessionRow }) {
     if (navigator.onLine) {
       const { error } = await supabase.rpc("inventory_scan", {
         p_session_id: session.id, p_barcode: barcode, p_location: location, p_delta: delta,
-        p_collaborator_name: collab?.name ?? null, p_client_uid: client_uid,
+        p_collaborator_name: collab?.name ?? "", p_client_uid: client_uid,
       });
       if (error) {
         await enqueue({ kind: "inventory_count", uid: client_uid, createdAt: Date.now(), payload });
@@ -401,7 +401,7 @@ function SessionScreen({ session }: { session: SessionRow }) {
     if (navigator.onLine) {
       const { error } = await supabase.rpc("inventory_manual_set", {
         p_session_id: session.id, p_barcode: barcode, p_location: location, p_quantity: quantity,
-        p_collaborator_name: collab?.name ?? null, p_client_uid: client_uid,
+        p_collaborator_name: collab?.name ?? "", p_client_uid: client_uid,
       });
       if (error) {
         await enqueue({ kind: "inventory_count", uid: client_uid, createdAt: Date.now(), payload });

@@ -1,4 +1,5 @@
 import Papa from "papaparse";
+import * as XLSX from "xlsx";
 import { supabase } from "@/integrations/supabase/client";
 
 export type ParsedRow = {
@@ -9,6 +10,7 @@ export type ParsedRow = {
   stock_a: number | null;
   stock_b: number | null;
   price: number | null;
+  cost_price?: number | null;
 };
 
 export type ImportDiff = {
@@ -82,6 +84,70 @@ export function parseCsv(file: File): Promise<ParsedRow[]> {
       },
       error: reject,
     });
+  });
+}
+
+function xlsxPick(row: Record<string, unknown>, keys: string[]): string {
+  for (const k of keys) {
+    const v = row[k];
+    if (v != null && String(v).trim() !== "") return String(v).trim();
+  }
+  return "";
+}
+
+function xlsxNum(v: unknown): number | null {
+  if (v == null || String(v).trim() === "") return null;
+  const n = Number(String(v).replace(",", "."));
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Lee un .xlsx exportado de Zobaze (primera hoja) y devuelve el mismo tipo
+ * ParsedRow[] que parseCsv. BARCODE se fuerza a texto para no perder ceros
+ * ni precisión.
+ */
+export function parseZobazeXlsx(file: File): Promise<ParsedRow[]> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("No se pudo leer el archivo .xlsx"));
+    reader.onload = () => {
+      try {
+        const wb = XLSX.read(reader.result, { type: "array" });
+        const sheet = wb.Sheets[wb.SheetNames[0]];
+        if (!sheet) { resolve([]); return; }
+        const json = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: "", raw: true });
+        const rows: ParsedRow[] = [];
+        for (const r of json) {
+          const base = xlsxPick(r, ["ITEM_NAME", "ItemName", "ProductName", "Product"]);
+          if (!base) continue;
+          const variant = xlsxPick(r, ["VARIANT_NAME", "VariantName", "Variant"]);
+          const product_name = variant ? `${base} ${variant}`.trim() : base;
+          // Barcode como texto, nunca como número
+          const barcodeRaw = r["BARCODE"] ?? r["Barcode"] ?? r["barcode"];
+          const barcode =
+            barcodeRaw == null || String(barcodeRaw).trim() === ""
+              ? ""
+              : typeof barcodeRaw === "number"
+                ? String(Math.trunc(barcodeRaw))
+                : String(barcodeRaw).trim();
+          const stockA = xlsxNum(r["STOCK"] ?? r["Stock"] ?? r["stock"]);
+          rows.push({
+            product_name,
+            barcode,
+            uom: xlsxPick(r, ["ITEM_TYPE", "ItemType", "UoM", "Uom"]) || null,
+            category: xlsxPick(r, ["CATEGORY", "Category", "category"]) || null,
+            stock_a: stockA != null ? Math.trunc(stockA) : null,
+            stock_b: null,
+            price: xlsxNum(r["PRICE"] ?? r["Price"] ?? r["price"]),
+            cost_price: xlsxNum(r["COST_PRICE"] ?? r["CostPrice"] ?? r["cost_price"]),
+          });
+        }
+        resolve(rows);
+      } catch (e) {
+        reject(e instanceof Error ? e : new Error("Error al procesar el archivo .xlsx"));
+      }
+    };
+    reader.readAsArrayBuffer(file);
   });
 }
 

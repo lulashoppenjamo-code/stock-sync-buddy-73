@@ -90,7 +90,7 @@ export async function drainQueue(): Promise<{ ok: number; failed: number }> {
               p_barcode: op.payload.barcode,
               p_location: op.payload.location,
               p_delta: op.payload.delta ?? 1,
-              p_collaborator_name: op.payload.collaborator_name,
+              p_collaborator_name: op.payload.collaborator_name ?? "",
               p_client_uid: op.payload.client_uid,
             });
             if (error) throw error;
@@ -100,7 +100,7 @@ export async function drainQueue(): Promise<{ ok: number; failed: number }> {
               p_barcode: op.payload.barcode,
               p_location: op.payload.location,
               p_quantity: op.payload.quantity ?? 0,
-              p_collaborator_name: op.payload.collaborator_name,
+              p_collaborator_name: op.payload.collaborator_name ?? "",
               p_client_uid: op.payload.client_uid,
             });
             if (error) throw error;

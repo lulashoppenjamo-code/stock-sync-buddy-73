@@ -14,6 +14,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as AppIndexRouteImport } from './routes/app.index'
 import { Route as AppTransferRouteImport } from './routes/app.transfer'
 import { Route as AppReceptionRouteImport } from './routes/app.reception'
+import { Route as AppInventoryFullRouteImport } from './routes/app.inventory-full'
 import { Route as AppHistoryRouteImport } from './routes/app.history'
 import { Route as AppAuditHistoryRouteImport } from './routes/app.audit-history'
 import { Route as AppAuditRouteImport } from './routes/app.audit'
@@ -44,6 +45,11 @@ const AppReceptionRoute = AppReceptionRouteImport.update({
   path: '/reception',
   getParentRoute: () => AppRoute,
 } as any)
+const AppInventoryFullRoute = AppInventoryFullRouteImport.update({
+  id: '/inventory-full',
+  path: '/inventory-full',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppHistoryRoute = AppHistoryRouteImport.update({
   id: '/history',
   path: '/history',
@@ -72,6 +78,7 @@ export interface FileRoutesByFullPath {
   '/app/audit': typeof AppAuditRoute
   '/app/audit-history': typeof AppAuditHistoryRoute
   '/app/history': typeof AppHistoryRoute
+  '/app/inventory-full': typeof AppInventoryFullRoute
   '/app/reception': typeof AppReceptionRoute
   '/app/transfer': typeof AppTransferRoute
   '/app/': typeof AppIndexRoute
@@ -82,6 +89,7 @@ export interface FileRoutesByTo {
   '/app/audit': typeof AppAuditRoute
   '/app/audit-history': typeof AppAuditHistoryRoute
   '/app/history': typeof AppHistoryRoute
+  '/app/inventory-full': typeof AppInventoryFullRoute
   '/app/reception': typeof AppReceptionRoute
   '/app/transfer': typeof AppTransferRoute
   '/app': typeof AppIndexRoute
@@ -94,6 +102,7 @@ export interface FileRoutesById {
   '/app/audit': typeof AppAuditRoute
   '/app/audit-history': typeof AppAuditHistoryRoute
   '/app/history': typeof AppHistoryRoute
+  '/app/inventory-full': typeof AppInventoryFullRoute
   '/app/reception': typeof AppReceptionRoute
   '/app/transfer': typeof AppTransferRoute
   '/app/': typeof AppIndexRoute
@@ -107,6 +116,7 @@ export interface FileRouteTypes {
     | '/app/audit'
     | '/app/audit-history'
     | '/app/history'
+    | '/app/inventory-full'
     | '/app/reception'
     | '/app/transfer'
     | '/app/'
@@ -117,6 +127,7 @@ export interface FileRouteTypes {
     | '/app/audit'
     | '/app/audit-history'
     | '/app/history'
+    | '/app/inventory-full'
     | '/app/reception'
     | '/app/transfer'
     | '/app'
@@ -128,6 +139,7 @@ export interface FileRouteTypes {
     | '/app/audit'
     | '/app/audit-history'
     | '/app/history'
+    | '/app/inventory-full'
     | '/app/reception'
     | '/app/transfer'
     | '/app/'
@@ -175,6 +187,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppReceptionRouteImport
       parentRoute: typeof AppRoute
     }
+    '/app/inventory-full': {
+      id: '/app/inventory-full'
+      path: '/inventory-full'
+      fullPath: '/app/inventory-full'
+      preLoaderRoute: typeof AppInventoryFullRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/app/history': {
       id: '/app/history'
       path: '/history'
@@ -211,6 +230,7 @@ interface AppRouteChildren {
   AppAuditRoute: typeof AppAuditRoute
   AppAuditHistoryRoute: typeof AppAuditHistoryRoute
   AppHistoryRoute: typeof AppHistoryRoute
+  AppInventoryFullRoute: typeof AppInventoryFullRoute
   AppReceptionRoute: typeof AppReceptionRoute
   AppTransferRoute: typeof AppTransferRoute
   AppIndexRoute: typeof AppIndexRoute
@@ -221,6 +241,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppAuditRoute: AppAuditRoute,
   AppAuditHistoryRoute: AppAuditHistoryRoute,
   AppHistoryRoute: AppHistoryRoute,
+  AppInventoryFullRoute: AppInventoryFullRoute,
   AppReceptionRoute: AppReceptionRoute,
   AppTransferRoute: AppTransferRoute,
   AppIndexRoute: AppIndexRoute,
