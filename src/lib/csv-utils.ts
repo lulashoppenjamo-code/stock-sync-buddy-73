@@ -1,4 +1,5 @@
 import Papa from "papaparse";
+import * as XLSX from "xlsx";
 import { supabase } from "@/integrations/supabase/client";
 
 export type ParsedRow = {
@@ -9,6 +10,7 @@ export type ParsedRow = {
   stock_a: number | null;
   stock_b: number | null;
   price: number | null;
+  cost_price?: number | null;
 };
 
 export type ImportDiff = {
