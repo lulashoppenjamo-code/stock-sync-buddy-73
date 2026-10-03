@@ -9,25 +9,25 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as IndexRouteImport } from './routes/index'
 import { Route as AppRouteImport } from './routes/app'
+import { Route as IndexRouteImport } from './routes/index'
 import { Route as AppIndexRouteImport } from './routes/app.index'
-import { Route as AppAdminRouteImport } from './routes/app.admin'
-import { Route as AppAuditRouteImport } from './routes/app.audit'
-import { Route as AppAuditHistoryRouteImport } from './routes/app.audit-history'
-import { Route as AppHistoryRouteImport } from './routes/app.history'
-import { Route as AppInventoryFullRouteImport } from './routes/app.inventory-full'
-import { Route as AppReceptionRouteImport } from './routes/app.reception'
 import { Route as AppTransferRouteImport } from './routes/app.transfer'
+import { Route as AppReceptionRouteImport } from './routes/app.reception'
+import { Route as AppInventoryFullRouteImport } from './routes/app.inventory-full'
+import { Route as AppHistoryRouteImport } from './routes/app.history'
+import { Route as AppAuditHistoryRouteImport } from './routes/app.audit-history'
+import { Route as AppAuditRouteImport } from './routes/app.audit'
+import { Route as AppAdminRouteImport } from './routes/app.admin'
 
-const IndexRoute = IndexRouteImport.update({
-  id: '/',
-  path: '/',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const AppRoute = AppRouteImport.update({
   id: '/app',
   path: '/app',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const IndexRoute = IndexRouteImport.update({
+  id: '/',
+  path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AppIndexRoute = AppIndexRouteImport.update({
@@ -35,29 +35,9 @@ const AppIndexRoute = AppIndexRouteImport.update({
   path: '/',
   getParentRoute: () => AppRoute,
 } as any)
-const AppAdminRoute = AppAdminRouteImport.update({
-  id: '/admin',
-  path: '/admin',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppAuditRoute = AppAuditRouteImport.update({
-  id: '/audit',
-  path: '/audit',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppAuditHistoryRoute = AppAuditHistoryRouteImport.update({
-  id: '/audit-history',
-  path: '/audit-history',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppHistoryRoute = AppHistoryRouteImport.update({
-  id: '/history',
-  path: '/history',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppInventoryFullRoute = AppInventoryFullRouteImport.update({
-  id: '/inventory-full',
-  path: '/inventory-full',
+const AppTransferRoute = AppTransferRouteImport.update({
+  id: '/transfer',
+  path: '/transfer',
   getParentRoute: () => AppRoute,
 } as any)
 const AppReceptionRoute = AppReceptionRouteImport.update({
@@ -65,9 +45,29 @@ const AppReceptionRoute = AppReceptionRouteImport.update({
   path: '/reception',
   getParentRoute: () => AppRoute,
 } as any)
-const AppTransferRoute = AppTransferRouteImport.update({
-  id: '/transfer',
-  path: '/transfer',
+const AppInventoryFullRoute = AppInventoryFullRouteImport.update({
+  id: '/inventory-full',
+  path: '/inventory-full',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppHistoryRoute = AppHistoryRouteImport.update({
+  id: '/history',
+  path: '/history',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppAuditHistoryRoute = AppAuditHistoryRouteImport.update({
+  id: '/audit-history',
+  path: '/audit-history',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppAuditRoute = AppAuditRouteImport.update({
+  id: '/audit',
+  path: '/audit',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppAdminRoute = AppAdminRouteImport.update({
+  id: '/admin',
+  path: '/admin',
   getParentRoute: () => AppRoute,
 } as any)
 
@@ -152,18 +152,18 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/': {
-      id: '/'
-      path: '/'
-      fullPath: '/'
-      preLoaderRoute: typeof IndexRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/app': {
       id: '/app'
       path: '/app'
       fullPath: '/app'
       preLoaderRoute: typeof AppRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/': {
+      id: '/'
+      path: '/'
+      fullPath: '/'
+      preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/app/': {
@@ -173,39 +173,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppIndexRouteImport
       parentRoute: typeof AppRoute
     }
-    '/app/admin': {
-      id: '/app/admin'
-      path: '/admin'
-      fullPath: '/app/admin'
-      preLoaderRoute: typeof AppAdminRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/app/audit': {
-      id: '/app/audit'
-      path: '/audit'
-      fullPath: '/app/audit'
-      preLoaderRoute: typeof AppAuditRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/app/audit-history': {
-      id: '/app/audit-history'
-      path: '/audit-history'
-      fullPath: '/app/audit-history'
-      preLoaderRoute: typeof AppAuditHistoryRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/app/history': {
-      id: '/app/history'
-      path: '/history'
-      fullPath: '/app/history'
-      preLoaderRoute: typeof AppHistoryRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/app/inventory-full': {
-      id: '/app/inventory-full'
-      path: '/inventory-full'
-      fullPath: '/app/inventory-full'
-      preLoaderRoute: typeof AppInventoryFullRouteImport
+    '/app/transfer': {
+      id: '/app/transfer'
+      path: '/transfer'
+      fullPath: '/app/transfer'
+      preLoaderRoute: typeof AppTransferRouteImport
       parentRoute: typeof AppRoute
     }
     '/app/reception': {
@@ -215,11 +187,39 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppReceptionRouteImport
       parentRoute: typeof AppRoute
     }
-    '/app/transfer': {
-      id: '/app/transfer'
-      path: '/transfer'
-      fullPath: '/app/transfer'
-      preLoaderRoute: typeof AppTransferRouteImport
+    '/app/inventory-full': {
+      id: '/app/inventory-full'
+      path: '/inventory-full'
+      fullPath: '/app/inventory-full'
+      preLoaderRoute: typeof AppInventoryFullRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/app/history': {
+      id: '/app/history'
+      path: '/history'
+      fullPath: '/app/history'
+      preLoaderRoute: typeof AppHistoryRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/app/audit-history': {
+      id: '/app/audit-history'
+      path: '/audit-history'
+      fullPath: '/app/audit-history'
+      preLoaderRoute: typeof AppAuditHistoryRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/app/audit': {
+      id: '/app/audit'
+      path: '/audit'
+      fullPath: '/app/audit'
+      preLoaderRoute: typeof AppAuditRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/app/admin': {
+      id: '/app/admin'
+      path: '/admin'
+      fullPath: '/app/admin'
+      preLoaderRoute: typeof AppAdminRouteImport
       parentRoute: typeof AppRoute
     }
   }
