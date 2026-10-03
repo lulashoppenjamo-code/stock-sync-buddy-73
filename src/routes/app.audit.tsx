@@ -44,6 +44,7 @@ type HistoryRow = {
   product_name: string;
   system_stock: number;
   counted_quantity: number;
+  collaborator_name: string | null;
   created_at: string;
 };
 
@@ -277,7 +278,7 @@ function AuditPage() {
       const { startIso, endIso } = monthRange();
       const { data, error } = await supabase
         .from("audit_history")
-        .select("id, category, branch, session_id, barcode, product_name, system_stock, counted_quantity, created_at")
+        .select("id, category, branch, session_id, barcode, product_name, system_stock, counted_quantity, collaborator_name, created_at")
         .gte("created_at", startIso)
         .lte("created_at", endIso)
         .order("created_at", { ascending: true });
@@ -1047,7 +1048,7 @@ function AuditPage() {
         }
         const barcodes = prods.map((p) => p.barcode);
 
-        let liveAudits: Array<{ barcode: string; physical_count: number; collaborator_name: string | null; branch: string; created_at: string }> = [];
+        let liveAudits: Array<{ barcode: string; physical_count: number; collaborator_name: string | null; branch: "A" | "B" | null; created_at: string }> = [];
         if (barcodes.length) {
           const { data: la, error: ea } = await supabase
             .from("audits")

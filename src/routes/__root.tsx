@@ -127,7 +127,7 @@ function ClientBoot() {
     window.addEventListener("popstate", handlePopState);
 
     return () => {
-      cleanup();
+      cleanup?.();
       window.removeEventListener("popstate", handlePopState);
     };
   }, []);
