@@ -148,6 +148,53 @@ function AuditPage() {
   const [closingBranch, setClosingBranch] = useState(false);
   const [commentText, setCommentText] = useState("");
 
+  // ── Comentarios inline por producto ──
+  type ProdCommentRow = { id: string; collaborator_name: string | null; comment: string; created_at: string };
+  const [prodComments, setProdComments] = useState<Map<string, { open: boolean; text: string; sending?: boolean }>>(new Map());
+  const [prodCommentRows, setProdCommentRows] = useState<Map<string, ProdCommentRow[]>>(new Map());
+
+  async function toggleProdComment(barcode: string, productName: string, cat: string | null) {
+    const cur = prodComments.get(barcode) ?? { open: false, text: "" };
+    const next = !cur.open;
+    setProdComments((m) => new Map(m).set(barcode, { ...cur, open: next }));
+    if (next && !prodCommentRows.has(barcode)) {
+      const startOfDay = new Date();
+      startOfDay.setHours(0, 0, 0, 0);
+      const { data, error } = await supabase
+        .from("audit_comments")
+        .select("id, collaborator_name, comment, created_at")
+        .eq("barcode", barcode)
+        .eq("branch", branch)
+        .eq("product_name", productName)
+        .gte("created_at", startOfDay.toISOString())
+        .order("created_at", { ascending: true });
+      if (!error && data) setProdCommentRows((m) => new Map(m).set(barcode, data as ProdCommentRow[]));
+    }
+  }
+
+  async function sendProdComment(barcode: string, productName: string, cat: string | null) {
+    const cur = prodComments.get(barcode);
+    const text = (cur?.text ?? "").trim();
+    if (!text) return;
+    setProdComments((m) => new Map(m).set(barcode, { ...(cur ?? { open: true, text: "" }), sending: true }));
+    try {
+      const { data, error } = await supabase.from("audit_comments").insert({
+        barcode,
+        product_name: productName,
+        category: cat || category || null,
+        branch,
+        collaborator_name: me?.name || "Anónimo",
+        comment: text,
+      }).select("id, collaborator_name, comment, created_at").single();
+      if (error) throw error;
+      setProdCommentRows((m) => new Map(m).set(barcode, [...(m.get(barcode) ?? []), data as ProdCommentRow]));
+      setProdComments((m) => new Map(m).set(barcode, { open: true, text: "" }));
+    } catch (e) {
+      toast.error("No se pudo enviar: " + (e as Error).message);
+      setProdComments((m) => new Map(m).set(barcode, { open: true, text, sending: false }));
+    }
+  }
+
   const prevCategoryBranchRef = useRef<string>("");
   useEffect(() => {
     const key = `${category}|${branch}`;
@@ -1581,6 +1628,53 @@ function AuditPage() {
                         </button>
                       </div>
                     </div>
+
+                    {/* Comentario inline por producto */}
+                    {(() => {
+                      const pc = prodComments.get(p.barcode) ?? { open: false, text: "" };
+                      const rows = prodCommentRows.get(p.barcode) ?? [];
+                      return (
+                        <div className="mt-1.5">
+                          <button
+                            type="button"
+                            onClick={() => toggleProdComment(p.barcode, p.product_name, p.category)}
+                            className="text-[11px] text-muted-foreground hover:text-primary transition-colors"
+                          >
+                            💬 {pc.open ? "Ocultar comentario" : rows.length > 0 ? `Comentario (${rows.length})` : "Comentar"}
+                          </button>
+                          {pc.open && (
+                            <div className="mt-1 space-y-1 rounded-md border bg-muted/20 p-2">
+                              {rows.map((c) => (
+                                <div key={c.id} className="text-[10px]">
+                                  <span className="font-medium text-foreground">{c.collaborator_name ?? "—"}</span>
+                                  <span className="text-muted-foreground ml-1">
+                                    · {new Date(c.created_at).toLocaleDateString("es-MX", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+                                  </span>
+                                  <p className="text-foreground mt-0.5">{c.comment}</p>
+                                </div>
+                              ))}
+                              <div className="flex gap-1.5 pt-1">
+                                <input
+                                  type="text"
+                                  value={pc.text}
+                                  onChange={(e) => setProdComments((m) => new Map(m).set(p.barcode, { ...(m.get(p.barcode) ?? { open: true, text: "" }), open: true, text: e.target.value }))}
+                                  placeholder="Comentario sobre este producto…"
+                                  className="flex-1 rounded border bg-background px-2 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-primary"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => sendProdComment(p.barcode, p.product_name, p.category)}
+                                  disabled={pc.sending || !pc.text.trim()}
+                                  className="rounded bg-primary px-2 py-1 text-[11px] text-primary-foreground disabled:opacity-40"
+                                >
+                                  {pc.sending ? <Loader2 className="h-3 w-3 animate-spin" /> : "Enviar"}
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
                 );
               })}
