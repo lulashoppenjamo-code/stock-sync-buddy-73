@@ -1628,6 +1628,53 @@ function AuditPage() {
                         </button>
                       </div>
                     </div>
+
+                    {/* Comentario inline por producto */}
+                    {(() => {
+                      const pc = prodComments.get(p.barcode) ?? { open: false, text: "" };
+                      const rows = prodCommentRows.get(p.barcode) ?? [];
+                      return (
+                        <div className="mt-1.5">
+                          <button
+                            type="button"
+                            onClick={() => toggleProdComment(p.barcode, p.product_name, p.category)}
+                            className="text-[11px] text-muted-foreground hover:text-primary transition-colors"
+                          >
+                            💬 {pc.open ? "Ocultar comentario" : rows.length > 0 ? `Comentario (${rows.length})` : "Comentar"}
+                          </button>
+                          {pc.open && (
+                            <div className="mt-1 space-y-1 rounded-md border bg-muted/20 p-2">
+                              {rows.map((c) => (
+                                <div key={c.id} className="text-[10px]">
+                                  <span className="font-medium text-foreground">{c.collaborator_name ?? "—"}</span>
+                                  <span className="text-muted-foreground ml-1">
+                                    · {new Date(c.created_at).toLocaleDateString("es-MX", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+                                  </span>
+                                  <p className="text-foreground mt-0.5">{c.comment}</p>
+                                </div>
+                              ))}
+                              <div className="flex gap-1.5 pt-1">
+                                <input
+                                  type="text"
+                                  value={pc.text}
+                                  onChange={(e) => setProdComments((m) => new Map(m).set(p.barcode, { ...(m.get(p.barcode) ?? { open: true, text: "" }), open: true, text: e.target.value }))}
+                                  placeholder="Comentario sobre este producto…"
+                                  className="flex-1 rounded border bg-background px-2 py-1 text-[11px] focus:outline-none focus:ring-1 focus:ring-primary"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => sendProdComment(p.barcode, p.product_name, p.category)}
+                                  disabled={pc.sending || !pc.text.trim()}
+                                  className="rounded bg-primary px-2 py-1 text-[11px] text-primary-foreground disabled:opacity-40"
+                                >
+                                  {pc.sending ? <Loader2 className="h-3 w-3 animate-spin" /> : "Enviar"}
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
                 );
               })}
