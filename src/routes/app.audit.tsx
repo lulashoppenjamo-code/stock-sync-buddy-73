@@ -148,6 +148,53 @@ function AuditPage() {
   const [closingBranch, setClosingBranch] = useState(false);
   const [commentText, setCommentText] = useState("");
 
+  // ── Comentarios inline por producto ──
+  type ProdCommentRow = { id: string; collaborator_name: string | null; comment: string; created_at: string };
+  const [prodComments, setProdComments] = useState<Map<string, { open: boolean; text: string; sending?: boolean }>>(new Map());
+  const [prodCommentRows, setProdCommentRows] = useState<Map<string, ProdCommentRow[]>>(new Map());
+
+  async function toggleProdComment(barcode: string, productName: string, cat: string | null) {
+    const cur = prodComments.get(barcode) ?? { open: false, text: "" };
+    const next = !cur.open;
+    setProdComments((m) => new Map(m).set(barcode, { ...cur, open: next }));
+    if (next && !prodCommentRows.has(barcode)) {
+      const startOfDay = new Date();
+      startOfDay.setHours(0, 0, 0, 0);
+      const { data, error } = await supabase
+        .from("audit_comments")
+        .select("id, collaborator_name, comment, created_at")
+        .eq("barcode", barcode)
+        .eq("branch", branch)
+        .eq("product_name", productName)
+        .gte("created_at", startOfDay.toISOString())
+        .order("created_at", { ascending: true });
+      if (!error && data) setProdCommentRows((m) => new Map(m).set(barcode, data as ProdCommentRow[]));
+    }
+  }
+
+  async function sendProdComment(barcode: string, productName: string, cat: string | null) {
+    const cur = prodComments.get(barcode);
+    const text = (cur?.text ?? "").trim();
+    if (!text) return;
+    setProdComments((m) => new Map(m).set(barcode, { ...(cur ?? { open: true, text: "" }), sending: true }));
+    try {
+      const { data, error } = await supabase.from("audit_comments").insert({
+        barcode,
+        product_name: productName,
+        category: cat || category || null,
+        branch,
+        collaborator_name: me?.name || "Anónimo",
+        comment: text,
+      }).select("id, collaborator_name, comment, created_at").single();
+      if (error) throw error;
+      setProdCommentRows((m) => new Map(m).set(barcode, [...(m.get(barcode) ?? []), data as ProdCommentRow]));
+      setProdComments((m) => new Map(m).set(barcode, { open: true, text: "" }));
+    } catch (e) {
+      toast.error("No se pudo enviar: " + (e as Error).message);
+      setProdComments((m) => new Map(m).set(barcode, { open: true, text, sending: false }));
+    }
+  }
+
   const prevCategoryBranchRef = useRef<string>("");
   useEffect(() => {
     const key = `${category}|${branch}`;
