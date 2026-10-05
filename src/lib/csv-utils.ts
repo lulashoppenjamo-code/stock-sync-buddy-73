@@ -72,7 +72,7 @@ export function parseCsv(file: File): Promise<ParsedRow[]> {
             barcode = "";
           }
           const uom = pick(r, ["UoM", "Uom", "Unidad", "Unit", "ITEM_TYPE"]) || null;
-          const category = pick(r, ["Category", "Categoria", "Categoría", "category", "CATEGORY"]) || null;
+          const category = (pick(r, ["Category", "Categoria", "Categoría", "category", "CATEGORY"]) || null)?.toUpperCase() || null;
           const stock_a = parseNum(pick(r, ["StockA", "Stock_A", "Stock A", "Mina", "StockMina", "Stock Mina", "STOCK"]));
           const stock_b = parseNum(pick(r, ["StockB", "Stock_B", "Stock B", "Morelos", "StockMorelos", "Stock Morelos"]));
           const price = parseNum(pick(r, ["Price", "Precio", "price", "PRICE", "PrecioUnitario", "UnitPrice", "Precio_Unitario"]));
@@ -135,7 +135,7 @@ export function parseZobazeXlsx(file: File): Promise<ParsedRow[]> {
             product_name,
             barcode,
             uom: xlsxPick(r, ["ITEM_TYPE", "ItemType", "UoM", "Uom"]) || null,
-            category: xlsxPick(r, ["CATEGORY", "Category", "category"]) || null,
+            category: (xlsxPick(r, ["CATEGORY", "Category", "category"]) || null)?.toUpperCase() || null,
             stock_a: stockA != null ? Math.trunc(stockA) : null,
             stock_b: null,
             price: xlsxNum(r["PRICE"] ?? r["Price"] ?? r["price"]),
