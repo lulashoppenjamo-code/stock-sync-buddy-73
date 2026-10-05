@@ -98,6 +98,54 @@ function stockColor(stock: number): string {
   return "";
 }
 
+/** Beeps locales con Web Audio API (sin librerías externas). */
+function playSound(type: "match" | "error") {
+  try {
+    const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    if (!Ctx) return;
+    const ctx = new Ctx();
+    const now = ctx.currentTime;
+
+    if (type === "match") {
+      // Dos beeps cortos ascendentes: 440 Hz → 880 Hz, 80 ms cada uno
+      const beep = (freq: number, start: number) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0.15, start);
+        gain.gain.exponentialRampToValueAtTime(0.001, start + 0.08);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(start);
+        osc.stop(start + 0.08);
+      };
+      beep(440, now);
+      beep(880, now + 0.09);
+    } else {
+      // Beep grave descendente: 300 Hz → 150 Hz, 200 ms
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(300, now);
+      osc.frequency.linearRampToValueAtTime(150, now + 0.2);
+      gain.gain.setValueAtTime(0.2, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.2);
+    }
+
+    // Cerrar el contexto después de que terminen los beeps
+    setTimeout(() => {
+      try { ctx.close(); } catch { /* ignore */ }
+    }, type === "match" ? 250 : 300);
+  } catch {
+    // Silenciar errores de audio (navegadores bloqueando autoplay, etc.)
+  }
+}
+
 function AuditPage() {
   const online = useOnline();
   const _saved = useMemo(() => loadCatState(), []);
@@ -585,11 +633,19 @@ function AuditPage() {
   async function lookupProduct(barcode: string): Promise<Product | null> {
     const local = products.find((p) => p.barcode === barcode);
     if (local) return local;
-    if (!online) { toast.error(`Producto no encontrado localmente: ${barcode}`); return null; }
+    if (!online) {
+      playSound("error");
+      toast.error(`Producto no encontrado localmente: ${barcode}`);
+      return null;
+    }
     const { data, error } = await supabase
       .from("products").select("barcode, product_name, category, stock_a, stock_b, price")
       .eq("barcode", barcode).maybeSingle();
-    if (error || !data) { toast.error(`Producto no encontrado: ${barcode}`); return null; }
+    if (error || !data) {
+      playSound("error");
+      toast.error(`Producto no encontrado: ${barcode}`);
+      return null;
+    }
     return data as Product;
   }
 
@@ -606,16 +662,25 @@ function AuditPage() {
       return;
     }
     const sys = Number(prod.stock_a) + Number(prod.stock_b);
+    const existingCount = counts.get(code)?.count ?? 0;
+    const newLocalCount = existingCount + 1;
+    const savedToday = realtimeSums.get(code)?.total ?? 0;
+    const grandTotal = newLocalCount + savedToday;
+
     setCounts((prev) => {
-      const existing = prev.get(code);
       const newMap = new Map(prev);
-      newMap.set(code, { barcode: code, product_name: prod.product_name, count: (existing?.count ?? 0) + 1, system_stock: sys });
+      newMap.set(code, { barcode: code, product_name: prod.product_name, count: newLocalCount, system_stock: sys });
       return newMap;
     });
+
+    if (grandTotal === sys) {
+      playSound("match");
+    }
+
     toast.success(`+1 · ${prod.product_name}`);
     scanRef.current?.focus();
     flashProduct(code);
-  }, [products, category, online]);
+  }, [products, category, online, counts, realtimeSums]);
 
   function setCount(barcode: string, val: number) {
     const prod = products.find((p) => p.barcode === barcode);
