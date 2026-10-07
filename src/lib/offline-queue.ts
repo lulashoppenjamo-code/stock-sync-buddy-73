@@ -67,14 +67,30 @@ export async function enqueue(op: QueuedOp) {
   notify();
 }
 
-export async function pendingCount(): Promise<number> {
-  return (await keys(store)).length;
-}
-
 export async function listPending(): Promise<QueuedOp[]> {
   const ks = await keys(store);
-  const items = await Promise.all(ks.map((k) => get<QueuedOp>(k as string, store)));
-  return items.filter(Boolean).sort((a, b) => a!.createdAt - b!.createdAt) as QueuedOp[];
+  const pairs = await Promise.all(
+    ks.map(async (k) => {
+      const v = await get<QueuedOp>(k as string, store);
+      return { key: k as string, value: v };
+    }),
+  );
+  // Limpiar claves huérfanas (sin valor válido) para que el contador no se quede trabado
+  for (const p of pairs) {
+    if (!p.value || typeof p.value !== "object" || !("kind" in p.value)) {
+      try { await del(p.key, store); } catch { /* ignore */ }
+    }
+  }
+  return pairs
+    .filter((p): p is { key: string; value: QueuedOp } => !!p.value && typeof p.value === "object" && "kind" in p.value)
+    .map((p) => p.value)
+    .sort((a, b) => a.createdAt - b.createdAt);
+}
+
+export async function pendingCount(): Promise<number> {
+  // Contar solo operaciones válidas (no claves basura)
+  const items = await listPending();
+  return items.length;
 }
 
 /** Descarta todas las operaciones pendientes (solo si el usuario lo pide). */
@@ -208,21 +224,31 @@ export type DrainResult = {
 };
 
 export async function drainQueue(): Promise<DrainResult> {
-  const empty: DrainResult = { ok: 0, failed: 0, remaining: 0, errors: [], unreachable: false };
+  const withRemaining = async (partial: Omit<DrainResult, "remaining">): Promise<DrainResult> => ({
+    ...partial,
+    remaining: await pendingCount(),
+  });
 
-  if (typeof navigator === "undefined") return empty;
+  if (typeof navigator === "undefined") {
+    return { ok: 0, failed: 0, remaining: 0, errors: [], unreachable: false };
+  }
 
   // Si un drain anterior quedó colgado > 60s, liberar el candado
   if (draining && Date.now() - drainStartedAt > 60_000) {
     console.warn("[queue] unlocking stuck drain");
     draining = false;
   }
-  if (draining) return empty;
-  if (!navigator.onLine) return { ...empty, unreachable: true };
+  // Ya hay un sync en curso: NO mentir con remaining 0
+  if (draining) {
+    return withRemaining({ ok: 0, failed: 0, errors: ["Sincronización en curso"], unreachable: false });
+  }
+  if (!navigator.onLine) {
+    return withRemaining({ ok: 0, failed: 0, errors: [], unreachable: true });
+  }
 
   const reachable = await canReachServer();
   if (!reachable) {
-    return { ...empty, unreachable: true, remaining: await pendingCount() };
+    return withRemaining({ ok: 0, failed: 0, errors: [], unreachable: true });
   }
 
   draining = true;
