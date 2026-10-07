@@ -112,6 +112,27 @@ function isDuplicateError(msg: string | undefined): boolean {
   );
 }
 
+/** Errores de inventario físico que NO tiene sentido reintentar. */
+function isPermanentInventoryError(msg: string | undefined): boolean {
+  if (!msg) return false;
+  const m = msg.toLowerCase();
+  return (
+    m.includes("sesión de inventario no encontrada") ||
+    m.includes("sesion de inventario no encontrada") ||
+    m.includes("ya fue finalizado") ||
+    m.includes("no se pueden registrar más conteos") ||
+    m.includes("producto no encontrado") ||
+    m.includes("could not find the function") ||
+    m.includes("function public.inventory_scan") ||
+    m.includes("function public.inventory_manual_set")
+  );
+}
+
+function isNetworkError(msg: string | undefined): boolean {
+  if (!msg) return false;
+  return /failed to fetch|network|timeout|load failed|fetch failed|offline|err_internet/i.test(msg);
+}
+
 function errMsg(e: unknown): string {
   if (!e) return "Error desconocido";
   if (typeof e === "string") return e;
@@ -142,8 +163,10 @@ async function processOne(op: QueuedOp): Promise<void> {
   }
 
   if (op.kind === "inventory_count") {
+    // Inventario físico completo: RPC inventory_scan / inventory_manual_set
+    let error: { message: string } | null = null;
     if (op.payload.mode === "increment") {
-      const { error } = await supabase.rpc("inventory_scan", {
+      const res = await supabase.rpc("inventory_scan", {
         p_session_id: op.payload.session_id,
         p_barcode: op.payload.barcode,
         p_location: op.payload.location,
@@ -151,9 +174,9 @@ async function processOne(op: QueuedOp): Promise<void> {
         p_collaborator_name: op.payload.collaborator_name ?? "",
         p_client_uid: op.payload.client_uid,
       });
-      if (error && !isDuplicateError(error.message)) throw error;
+      error = res.error;
     } else {
-      const { error } = await supabase.rpc("inventory_manual_set", {
+      const res = await supabase.rpc("inventory_manual_set", {
         p_session_id: op.payload.session_id,
         p_barcode: op.payload.barcode,
         p_location: op.payload.location,
@@ -161,9 +184,16 @@ async function processOne(op: QueuedOp): Promise<void> {
         p_collaborator_name: op.payload.collaborator_name ?? "",
         p_client_uid: op.payload.client_uid,
       });
-      if (error && !isDuplicateError(error.message)) throw error;
+      error = res.error;
     }
-    return;
+    if (!error || isDuplicateError(error.message)) return;
+    // Sesión cerrada / no existe / producto inválido → no reintentar eternamente
+    if (isPermanentInventoryError(error.message)) {
+      const e = new Error(`DESCARTAR: ${error.message}`);
+      (e as Error & { permanent?: boolean }).permanent = true;
+      throw e;
+    }
+    throw error;
   }
 
   // transfer
@@ -275,17 +305,27 @@ export async function drainQueue(): Promise<DrainResult> {
       }
       if (lastErr) {
         const msg = errMsg(lastErr);
-        console.warn("[queue] op failed:", op.kind, op.uid, msg);
-        errors.push(`${op.kind}: ${msg}`);
-        // Guardar intento / error para diagnóstico (no borra la op)
-        try {
-          await set(
-            op.uid,
-            { ...op, attempts: (op.attempts ?? 0) + 1, lastError: msg },
-            store,
-          );
-        } catch { /* ignore */ }
-        failed++;
+        const permanent =
+          (lastErr as Error & { permanent?: boolean }).permanent === true ||
+          msg.startsWith("DESCARTAR:") ||
+          (op.kind === "inventory_count" && isPermanentInventoryError(msg));
+        console.warn("[queue] op failed:", op.kind, op.uid, msg, permanent ? "(permanent→discard)" : "");
+        if (permanent) {
+          // Quitar de la cola: no tiene sentido reintentar (sesión cerrada, etc.)
+          try { await del(op.uid, store); } catch { /* ignore */ }
+          ok++; // resuelto (descartado)
+          errors.push(`descartado ${op.kind}: ${msg.replace(/^DESCARTAR:\s*/, "")}`);
+        } else {
+          errors.push(`${op.kind}: ${msg}`);
+          try {
+            await set(
+              op.uid,
+              { ...op, attempts: (op.attempts ?? 0) + 1, lastError: msg },
+              store,
+            );
+          } catch { /* ignore */ }
+          failed++;
+        }
       }
     }
   } finally {
