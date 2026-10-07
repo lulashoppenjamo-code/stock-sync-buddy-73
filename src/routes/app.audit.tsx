@@ -553,34 +553,59 @@ function AuditPage() {
   });
 
   const { data: products = [] } = useQuery({
-    queryKey: ["cat-products", category],
+    queryKey: ["cat-products", category, online],
     enabled: !!category,
     staleTime: online ? 30_000 : Infinity,
     queryFn: async () => {
       const cat = (category ?? "").trim();
       if (!cat) return [];
 
-      // 1) Match exacto (caso normal)
-      const { data, error } = await supabase
-        .from("products")
-        .select("barcode, product_name, category, stock_a, stock_b, price")
-        .eq("category", cat)
-        .order("product_name");
-      if (error) throw error;
-      if ((data ?? []).length > 0) return data as Product[];
+      // Sin internet: catálogo local
+      if (!online) {
+        const { getCachedProductsByCategory } = await import("@/lib/offline-cache");
+        const rows = await getCachedProductsByCategory(cat);
+        return rows.map((p) => ({
+          barcode: p.barcode,
+          product_name: p.product_name,
+          category: p.category,
+          stock_a: p.stock_a,
+          stock_b: p.stock_b,
+          price: p.price ?? 0,
+        })) as Product[];
+      }
 
-      // 2) Fallback: en la DB algunas filas tienen espacios extra en category.
-      //    El listado de categorías usa .trim(), así que el select puede no
-      //    coincidir con .eq exacto. Filtramos en cliente solo si el exacto falló.
-      const { data: all, error: e2 } = await supabase
-        .from("products")
-        .select("barcode, product_name, category, stock_a, stock_b, price")
-        .not("category", "is", null)
-        .not("category", "eq", "");
-      if (e2) throw e2;
-      return ((all ?? []) as Product[])
-        .filter((p) => (p.category ?? "").trim() === cat)
-        .sort((a, b) => a.product_name.localeCompare(b.product_name, "es"));
+      try {
+        // 1) Match exacto (caso normal)
+        const { data, error } = await supabase
+          .from("products")
+          .select("barcode, product_name, category, stock_a, stock_b, price")
+          .eq("category", cat)
+          .order("product_name");
+        if (error) throw error;
+        if ((data ?? []).length > 0) return data as Product[];
+
+        // 2) Fallback: espacios extra en category
+        const { data: all, error: e2 } = await supabase
+          .from("products")
+          .select("barcode, product_name, category, stock_a, stock_b, price")
+          .not("category", "is", null)
+          .not("category", "eq", "");
+        if (e2) throw e2;
+        return ((all ?? []) as Product[])
+          .filter((p) => (p.category ?? "").trim() === cat)
+          .sort((a, b) => a.product_name.localeCompare(b.product_name, "es"));
+      } catch {
+        const { getCachedProductsByCategory } = await import("@/lib/offline-cache");
+        const rows = await getCachedProductsByCategory(cat);
+        return rows.map((p) => ({
+          barcode: p.barcode,
+          product_name: p.product_name,
+          category: p.category,
+          stock_a: p.stock_a,
+          stock_b: p.stock_b,
+          price: p.price ?? 0,
+        })) as Product[];
+      }
     },
   });
 
