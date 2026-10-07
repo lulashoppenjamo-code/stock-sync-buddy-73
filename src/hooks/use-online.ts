@@ -21,15 +21,25 @@ export function usePendingCount() {
   const [count, setCount] = useState(0);
   useEffect(() => {
     let mounted = true;
+    let refreshing = false;
     const refresh = async () => {
-      const { pendingCount } = await import("@/lib/offline-queue");
-      const c = await pendingCount();
-      if (mounted) setCount(c);
+      if (refreshing) return;
+      refreshing = true;
+      try {
+        const { pendingCount } = await import("@/lib/offline-queue");
+        const c = await pendingCount();
+        if (mounted) setCount(c);
+      } catch {
+        // ignore
+      } finally {
+        refreshing = false;
+      }
     };
     refresh();
-    const handler = () => refresh();
+    const handler = () => { void refresh(); };
     window.addEventListener("inv:queue-changed", handler);
-    const i = window.setInterval(refresh, 10_000);
+    // Refresco más frecuente mientras haya pendientes
+    const i = window.setInterval(refresh, 5_000);
     return () => {
       mounted = false;
       window.removeEventListener("inv:queue-changed", handler);
