@@ -189,25 +189,14 @@ function TransferPage() {
     },
   });
 
-  // Historial de traspasos del producto consultado (código o nombre)
+  // Historial de traspasos: solo se abre cuando el usuario lo solicita (no automático)
   const [historyBarcode, setHistoryBarcode] = useState<string | null>(null);
   const [historyName, setHistoryName] = useState<string | null>(null);
-
-  const debouncedBarcode = useDebounce(barcode.trim(), 400);
-
-  // Si el usuario escribe un código completo, mostrar historial sin agregarlo aún
-  useEffect(() => {
-    if (debouncedBarcode.length >= 6 && online) {
-      setHistoryBarcode(debouncedBarcode);
-      setHistoryName(null);
-    } else if (!debouncedBarcode) {
-      // no limpiar si hay historial por nombre
-    }
-  }, [debouncedBarcode, online]);
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   const { data: productTransfers = [], isFetching: loadingTransfers } = useQuery({
     queryKey: ["product-transfer-history", historyBarcode],
-    enabled: !!historyBarcode && online,
+    enabled: !!historyBarcode && historyOpen && online,
     staleTime: 15_000,
     queryFn: async () => {
       if (!historyBarcode) return [];
@@ -222,9 +211,16 @@ function TransferPage() {
     },
   });
 
-  async function showProductHistory(bc: string, name?: string) {
+  function showProductHistory(bc: string, name?: string) {
     setHistoryBarcode(bc);
     setHistoryName(name ?? null);
+    setHistoryOpen(true);
+  }
+
+  function closeProductHistory() {
+    setHistoryOpen(false);
+    setHistoryBarcode(null);
+    setHistoryName(null);
   }
 
   async function addBarcode(code: string) {
@@ -257,9 +253,7 @@ function TransferPage() {
       }
       return [...prev, { barcode: data.barcode, product_name: data.product_name, uom: data.uom, total_stock: total, quantity: 1 }];
     });
-    // Mostrar historial de traspasos de este producto
-    setHistoryBarcode(data.barcode);
-    setHistoryName(data.product_name);
+    // No abrir historial automáticamente: priorizar pantalla de productos del traspaso
     toast.success(`+1 · ${data.product_name}`);
     setBarcode(""); setNameSearch("");
     barcodeRef.current?.focus();
@@ -515,9 +509,104 @@ function TransferPage() {
         </CardContent>
       </Card>
 
-      {/* Historial de traspasos del producto consultado */}
-      {historyBarcode && (
-        <Card>
+      <Card>
+        <CardContent className="space-y-2 p-4">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold">Productos en el traspaso ({cart.length})</h2>
+            {cart.length > 0 && (
+              <span className="text-xs text-muted-foreground tabular-nums">Total: {totalItems} unidades</span>
+            )}
+          </div>
+          {cart.length === 0 ? (
+            <p className="py-6 text-center text-xs text-muted-foreground">Pistoleá productos para empezar.</p>
+          ) : (
+            <div className="divide-y rounded-md border">
+              {cart.map((c) => (
+                <div key={c.barcode} className="flex items-center gap-2 p-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-medium">{c.product_name}</div>
+                    <div className="font-mono text-xs text-muted-foreground">{c.barcode} · stock: {c.total_stock}</div>
+                  </div>
+                  <button
+                    type="button"
+                    title="Ver movimientos de traspaso"
+                    onClick={() => showProductHistory(c.barcode, c.product_name)}
+                    className="shrink-0 rounded border px-1.5 py-1 text-[11px] text-muted-foreground hover:bg-muted hover:text-primary"
+                  >
+                    📋
+                  </button>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button type="button" onClick={() => updateCartQty(c.barcode, c.quantity - 1)}
+                      disabled={c.quantity <= 1}
+                      className="flex h-7 w-7 items-center justify-center rounded-full border text-lg font-bold disabled:opacity-30 hover:bg-muted">
+                      −
+                    </button>
+                    <span className="w-8 text-center tabular-nums font-semibold">{c.quantity}</span>
+                    <button type="button" onClick={() => updateCartQty(c.barcode, c.quantity + 1)}
+                      className="flex h-7 w-7 items-center justify-center rounded-full border text-lg font-bold hover:bg-muted">
+                      +
+                    </button>
+                  </div>
+                  <Button type="button" size="icon" variant="ghost" onClick={() => removeFromCart(c.barcode)}>
+                    <Trash2 className="h-4 w-4 text-red-500" />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="space-y-4 p-4">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div>
+              <Label>Envía</Label>
+              <Input value={sender} readOnly className="bg-muted" />
+              <p className="mt-1 text-xs text-muted-foreground">Tu sesión actual.</p>
+            </div>
+            <div>
+              <Label>Recibe</Label>
+              <Select value={receiver} onValueChange={setReceiver}>
+                <SelectTrigger><SelectValue placeholder="Seleccionar…" /></SelectTrigger>
+                <SelectContent>
+                  {collaborators.map((c) => <SelectItem key={c.id} value={c.name}>{c.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          <div>
+            <Label>Foto evidencia</Label>
+            <div className="flex flex-wrap items-center gap-2">
+              <input ref={photoRef} type="file" accept="image/*" capture="environment" className="hidden"
+                onChange={(e) => setPhoto(e.target.files?.[0] ?? null)} />
+              <input ref={galleryRef} type="file" accept="image/*" className="hidden"
+                onChange={(e) => setPhoto(e.target.files?.[0] ?? null)} />
+              <Button type="button" variant="outline" onClick={() => photoRef.current?.click()}>
+                <Camera className="h-4 w-4" /> Tomar foto
+              </Button>
+              <Button type="button" variant="outline" onClick={() => galleryRef.current?.click()}>
+                Elegir archivo
+              </Button>
+              {photo && <span className="text-xs text-muted-foreground">{photo.name} ({Math.round(photo.size / 1024)} KB)</span>}
+            </div>
+            {photo && <img src={URL.createObjectURL(photo)} alt="Evidencia" className="mt-2 h-32 w-32 rounded-md border object-cover" />}
+          </div>
+
+          <Button type="button" onClick={submitAll} disabled={busy || cart.length === 0 || origin === destination} className="w-full">
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+            {online
+              ? `Confirmar ${cart.length > 0 ? `${cart.length} producto${cart.length === 1 ? "" : "s"} · ${totalItems} unidades` : "traspaso"}`
+              : `Guardar offline (${cart.length} producto${cart.length === 1 ? "" : "s"})`
+            }
+          </Button>
+        </CardContent>
+      </Card>
+
+      {/* Historial de movimientos: oculto por defecto; solo se despliega si el usuario lo pide (📋) */}
+      {historyOpen && historyBarcode && (
+        <Card className="border-blue-200 dark:border-blue-900">
           <CardContent className="space-y-2 p-4">
             <div className="flex items-center justify-between gap-2">
               <h2 className="text-sm font-semibold">
@@ -526,7 +615,7 @@ function TransferPage() {
               </h2>
               <button
                 type="button"
-                onClick={() => { setHistoryBarcode(null); setHistoryName(null); }}
+                onClick={closeProductHistory}
                 className="text-xs text-muted-foreground hover:text-foreground"
               >
                 Cerrar
@@ -600,93 +689,6 @@ function TransferPage() {
           </CardContent>
         </Card>
       )}
-
-      <Card>
-        <CardContent className="space-y-2 p-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold">Productos en el traspaso ({cart.length})</h2>
-            {cart.length > 0 && (
-              <span className="text-xs text-muted-foreground tabular-nums">Total: {totalItems} unidades</span>
-            )}
-          </div>
-          {cart.length === 0 ? (
-            <p className="py-6 text-center text-xs text-muted-foreground">Pistoleá productos para empezar.</p>
-          ) : (
-            <div className="divide-y rounded-md border">
-              {cart.map((c) => (
-                <div key={c.barcode} className="flex items-center gap-2 p-2">
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-sm font-medium">{c.product_name}</div>
-                    <div className="font-mono text-xs text-muted-foreground">{c.barcode} · stock: {c.total_stock}</div>
-                  </div>
-                  <div className="flex items-center gap-1 shrink-0">
-                    <button type="button" onClick={() => updateCartQty(c.barcode, c.quantity - 1)}
-                      disabled={c.quantity <= 1}
-                      className="flex h-7 w-7 items-center justify-center rounded-full border text-lg font-bold disabled:opacity-30 hover:bg-muted">
-                      −
-                    </button>
-                    <span className="w-8 text-center tabular-nums font-semibold">{c.quantity}</span>
-                    <button type="button" onClick={() => updateCartQty(c.barcode, c.quantity + 1)}
-                      className="flex h-7 w-7 items-center justify-center rounded-full border text-lg font-bold hover:bg-muted">
-                      +
-                    </button>
-                  </div>
-                  <Button type="button" size="icon" variant="ghost" onClick={() => removeFromCart(c.barcode)}>
-                    <Trash2 className="h-4 w-4 text-red-500" />
-                  </Button>
-                </div>
-              ))}
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardContent className="space-y-4 p-4">
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <div>
-              <Label>Envía</Label>
-              <Input value={sender} readOnly className="bg-muted" />
-              <p className="mt-1 text-xs text-muted-foreground">Tu sesión actual.</p>
-            </div>
-            <div>
-              <Label>Recibe</Label>
-              <Select value={receiver} onValueChange={setReceiver}>
-                <SelectTrigger><SelectValue placeholder="Seleccionar…" /></SelectTrigger>
-                <SelectContent>
-                  {collaborators.map((c) => <SelectItem key={c.id} value={c.name}>{c.name}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-
-          <div>
-            <Label>Foto evidencia</Label>
-            <div className="flex flex-wrap items-center gap-2">
-              <input ref={photoRef} type="file" accept="image/*" capture="environment" className="hidden"
-                onChange={(e) => setPhoto(e.target.files?.[0] ?? null)} />
-              <input ref={galleryRef} type="file" accept="image/*" className="hidden"
-                onChange={(e) => setPhoto(e.target.files?.[0] ?? null)} />
-              <Button type="button" variant="outline" onClick={() => photoRef.current?.click()}>
-                <Camera className="h-4 w-4" /> Tomar foto
-              </Button>
-              <Button type="button" variant="outline" onClick={() => galleryRef.current?.click()}>
-                Elegir archivo
-              </Button>
-              {photo && <span className="text-xs text-muted-foreground">{photo.name} ({Math.round(photo.size / 1024)} KB)</span>}
-            </div>
-            {photo && <img src={URL.createObjectURL(photo)} alt="Evidencia" className="mt-2 h-32 w-32 rounded-md border object-cover" />}
-          </div>
-
-          <Button type="button" onClick={submitAll} disabled={busy || cart.length === 0 || origin === destination} className="w-full">
-            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-            {online
-              ? `Confirmar ${cart.length > 0 ? `${cart.length} producto${cart.length === 1 ? "" : "s"} · ${totalItems} unidades` : "traspaso"}`
-              : `Guardar offline (${cart.length} producto${cart.length === 1 ? "" : "s"})`
-            }
-          </Button>
-        </CardContent>
-      </Card>
 
       <BarcodeScanner open={scannerOpen} onClose={() => setScannerOpen(false)}
         continuous onDetected={(code) => addBarcode(code)} />
