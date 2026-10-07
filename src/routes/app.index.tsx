@@ -712,3 +712,4 @@ function DeleteAllProductsButton({ hasProducts }: { hasProducts: boolean }) {
     </AlertDialog>
   );
 }
+ 
