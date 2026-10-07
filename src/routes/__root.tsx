@@ -15,6 +15,7 @@ import { reportLovableError } from "../lib/lovable-error-reporting";
 import { Toaster } from "@/components/ui/sonner";
 import { registerPwa } from "@/lib/pwa-register";
 import { startQueueAutoDrain } from "@/lib/offline-queue";
+import { startOfflineCacheAutoWarm } from "@/lib/offline-cache";
 import { useRealtimeSync } from "@/hooks/use-realtime";
 
 function NotFoundComponent() {
@@ -114,23 +115,34 @@ function ClientBoot() {
   useRealtimeSync();
   useEffect(() => {
     registerPwa();
-    const cleanup = startQueueAutoDrain();
+    const cleanupQueue = startQueueAutoDrain();
+    const cleanupCache = startOfflineCacheAutoWarm();
+
+    // Aviso cuando se sincronizan pendientes
+    const onSynced = (ev: Event) => {
+      const n = (ev as CustomEvent<{ ok: number }>).detail?.ok ?? 0;
+      if (n > 0) {
+        import("sonner").then(({ toast }) => {
+          toast.success(`${n} operación${n === 1 ? "" : "es"} sincronizada${n === 1 ? "" : "s"}`);
+        });
+      }
+    };
+    window.addEventListener("inv:queue-synced", onSynced);
 
     // ── Bloquear botón físico "Atrás" del teléfono ──
-    // Agrega una entrada falsa al historial y al detectar popstate la repone,
-    // evitando que el botón de atrás saque al usuario de la app.
     function pushDummy() {
       window.history.pushState({ locked: true }, "");
     }
     function handlePopState() {
-      // Reponer la entrada para que el próximo "atrás" también quede bloqueado
       pushDummy();
     }
     pushDummy();
     window.addEventListener("popstate", handlePopState);
 
     return () => {
-      cleanup?.();
+      cleanupQueue?.();
+      cleanupCache?.();
+      window.removeEventListener("inv:queue-synced", onSynced);
       window.removeEventListener("popstate", handlePopState);
     };
   }, []);
