@@ -12,7 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Loader2, ArrowLeft, History, BarChart3, ShieldAlert, Pencil, CheckCircle2, PackageCheck, TrendingDown, Trash2 } from "lucide-react";
 import { toast } from "sonner";
-import { BRANCH_LABELS } from "@/lib/branches";
+import { BRANCH_LABELS, branchLabel } from "@/lib/branches";
 import { useCollaborator } from "@/lib/session";
 import { AuditAIChat } from "@/components/AuditAIChat";
 
@@ -180,6 +180,62 @@ function AuditHistoryPage() {
     for (const c of corrections) if (c.corrected) map.set(c.session_id, c);
     return map;
   }, [corrections]);
+
+  // Comentarios del corte seleccionado (por session_id o por categoría + fechas del corte)
+  const selectedCategory = useMemo(() => {
+    if (!selected) return null;
+    const first = rows.find((r) => r.session_id === selected);
+    return first?.category ?? null;
+  }, [selected, rows]);
+
+  const selectedClosedAt = useMemo(() => {
+    if (!selected) return null;
+    const first = rows.find((r) => r.session_id === selected);
+    return first?.closed_at ?? null;
+  }, [selected, rows]);
+
+  const { data: sessionComments = [] } = useQuery({
+    queryKey: ["session-comments", selected, selectedCategory],
+    enabled: !!selected && !!selectedCategory,
+    staleTime: 10_000,
+    queryFn: async () => {
+      if (!selected || !selectedCategory) return [];
+      // Preferir comentarios ligados al session_id; también traer los del mes del corte por categoría
+      const { data: bySession, error: e1 } = await supabase
+        .from("audit_comments")
+        .select("id, barcode, product_name, branch, collaborator_name, comment, created_at, session_id")
+        .eq("session_id", selected)
+        .order("created_at", { ascending: true })
+        .limit(200);
+      if (e1) throw e1;
+
+      // Ampliar con comentarios de la categoría en la ventana del mes del cierre
+      let monthStart = new Date();
+      if (selectedClosedAt) {
+        monthStart = new Date(selectedClosedAt);
+        monthStart.setDate(1);
+        monthStart.setHours(0, 0, 0, 0);
+      }
+      const monthEnd = new Date(monthStart);
+      monthEnd.setMonth(monthEnd.getMonth() + 1);
+
+      const { data: byCat, error: e2 } = await supabase
+        .from("audit_comments")
+        .select("id, barcode, product_name, branch, collaborator_name, comment, created_at, session_id")
+        .eq("category", selectedCategory)
+        .gte("created_at", monthStart.toISOString())
+        .lt("created_at", monthEnd.toISOString())
+        .order("created_at", { ascending: true })
+        .limit(200);
+      if (e2) throw e2;
+
+      const map = new Map<string, NonNullable<typeof bySession>[number]>();
+      for (const c of [...(bySession ?? []), ...(byCat ?? [])]) {
+        map.set(c.id, c);
+      }
+      return Array.from(map.values()).sort((a, b) => a.created_at.localeCompare(b.created_at));
+    },
+  });
 
   function openEdit(r: ClosedRow) {
     setEditRow(r);
@@ -453,6 +509,27 @@ function AuditHistoryPage() {
               % de faltante: <span className="font-semibold">{pct(t.faltante, t.sys).toFixed(2)}%</span>
               {t.faltanteVal > 0 && <> · Faltante: <span className="font-semibold text-red-600">{money(t.faltanteVal)}</span></>}
             </div>
+            {sessionComments.length > 0 && (
+              <div className="mt-2 rounded-md border border-blue-200 bg-blue-50/60 p-2 dark:border-blue-900 dark:bg-blue-950/20">
+                <p className="text-[11px] font-medium text-blue-700 dark:text-blue-300 mb-1">
+                  Comentarios del corte ({sessionComments.length})
+                </p>
+                <div className="max-h-32 space-y-1 overflow-y-auto">
+                  {sessionComments.map((c) => (
+                    <div key={c.id} className="text-[10px]">
+                      <span className="font-medium text-foreground">{c.collaborator_name ?? "—"}</span>
+                      {c.branch && <span className="text-muted-foreground"> · {branchLabel(c.branch)}</span>}
+                      {c.product_name && <span className="text-muted-foreground"> · {c.product_name}</span>}
+                      <span className="text-muted-foreground">
+                        {" · "}
+                        {new Date(c.created_at).toLocaleDateString("es-MX", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+                      </span>
+                      <p className="text-foreground mt-0.5">{c.comment}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </CardContent>
         </Card>
 
@@ -469,6 +546,9 @@ function AuditHistoryPage() {
             const d = Number(r.difference);
             const v = rowValue(r);
             const contributors = (r.count_details ?? []) as CountDetail[];
+            const prodComments = sessionComments.filter(
+              (c) => c.barcode === r.barcode || (!!c.product_name && c.product_name === r.product_name)
+            );
             return (
               <div key={r.id}
                 className={`px-3 py-2 text-xs ${d === 0 ? "" : d < 0 ? "bg-red-50 dark:bg-red-950/20" : "bg-amber-50 dark:bg-amber-950/20"}`}>
@@ -487,7 +567,7 @@ function AuditHistoryPage() {
                   </div>
                   {me?.is_admin && (
                     <button type="button" onClick={() => openEdit(r)}
-                      className="shrink-0 rounded p-1 hover:bg-muted" title="Corregir conteo">
+                      className="shrink-0 rounded p-1 hover:bg-muted" title="Corregir conteo / ajustar total">
                       <Pencil className="h-3.5 w-3.5" />
                     </button>
                   )}
@@ -504,6 +584,21 @@ function AuditHistoryPage() {
                       : <span>Últ. contado por {r.last_counted_by}{r.last_counted_at && ` · ${new Date(r.last_counted_at).toLocaleString("es-MX", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}`}</span>}
                   </div>
                 )}
+                {prodComments.length > 0 && (
+                  <div className="mt-1.5 space-y-1 rounded border border-blue-200/60 bg-blue-50/50 p-1.5 dark:border-blue-900 dark:bg-blue-950/20">
+                    {prodComments.map((c) => (
+                      <div key={c.id} className="text-[10px]">
+                        <span className="font-medium text-foreground">{c.collaborator_name ?? "—"}</span>
+                        {c.branch && <span className="text-muted-foreground"> · {branchLabel(c.branch)}</span>}
+                        <span className="text-muted-foreground">
+                          {" · "}
+                          {new Date(c.created_at).toLocaleDateString("es-MX", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+                        </span>
+                        <p className="text-foreground mt-0.5">{c.comment}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             );
           })}
@@ -514,12 +609,13 @@ function AuditHistoryPage() {
         <DialogContent className="max-w-sm">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-1.5 text-amber-700 dark:text-amber-300">
-              <ShieldAlert className="h-4 w-4" /> Corregir conteo
+              <ShieldAlert className="h-4 w-4" /> Corregir conteo / ajustar total
             </DialogTitle>
           </DialogHeader>
           {editRow && (
             <div className="space-y-3 text-sm">
               <p className="text-muted-foreground">{editRow.product_name}</p>
+              <p className="font-mono text-[10px] text-muted-foreground">{editRow.barcode}</p>
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="text-xs font-medium text-muted-foreground">{MINA}</label>
@@ -532,17 +628,49 @@ function AuditHistoryPage() {
                     onChange={(e) => setEditMorelos(Math.max(0, parseInt(e.target.value, 10) || 0))} />
                 </div>
               </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">
+                  Total contado (ajustá aquí si solo querés cambiar el total)
+                </label>
+                <Input
+                  type="number"
+                  min={0}
+                  value={editMina + editMorelos}
+                  onChange={(e) => {
+                    const newTotal = Math.max(0, parseInt(e.target.value, 10) || 0);
+                    const currentTotal = editMina + editMorelos;
+                    if (newTotal === currentTotal) return;
+                    // Preferir ajustar la sucursal que ya tiene conteo; si ambas tienen, ajustar la mayor
+                    if (editMina === 0 && editMorelos === 0) {
+                      setEditMina(newTotal);
+                    } else if (editMina >= editMorelos) {
+                      setEditMina(Math.max(0, newTotal - editMorelos));
+                    } else {
+                      setEditMorelos(Math.max(0, newTotal - editMina));
+                    }
+                  }}
+                  className="mt-1"
+                />
+              </div>
               <p className="text-[11px] text-muted-foreground">
-                Sistema: {editRow.system_stock} · Nueva diferencia: {(editMina + editMorelos) - editRow.system_stock}
+                Sistema: {editRow.system_stock} · Total actual: {editRow.total_counted} · Nueva diferencia:{" "}
+                <span className={`font-semibold ${(editMina + editMorelos) - editRow.system_stock === 0 ? "text-emerald-600" : (editMina + editMorelos) - editRow.system_stock < 0 ? "text-red-600" : "text-amber-600"}`}>
+                  {(editMina + editMorelos) - editRow.system_stock > 0
+                    ? `+${(editMina + editMorelos) - editRow.system_stock}`
+                    : (editMina + editMorelos) - editRow.system_stock}
+                </span>
               </p>
-              {!me?.is_admin || adminPin.length < 4 ? (
+              <p className="text-[10px] text-muted-foreground">
+                Ejemplo: si el sistema marcó 5 y en realidad había 6, subí el total a 6. Si marcó 5 y había 4, bajalo a 4.
+              </p>
+              {(!me?.is_admin || adminPin.length < 4) && (
                 <div>
                   <label className="text-xs font-medium text-muted-foreground">Tu PIN de administrador</label>
                   <Input type="password" inputMode="numeric" autoFocus value={adminPin}
                     onChange={(e) => setAdminPin(e.target.value.replace(/\D/g, ""))}
                     placeholder="PIN" className="mt-1" />
                 </div>
-              ) : null}
+              )}
             </div>
           )}
           <DialogFooter>
@@ -786,3 +914,4 @@ function AuditHistoryPage() {
     </div>
   );
 }
+
