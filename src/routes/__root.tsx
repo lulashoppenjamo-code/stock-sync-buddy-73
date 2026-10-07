@@ -118,12 +118,18 @@ function ClientBoot() {
     const cleanupQueue = startQueueAutoDrain();
     const cleanupCache = startOfflineCacheAutoWarm();
 
-    // Aviso cuando se sincronizan pendientes
+    // Aviso cuando se sincronizan pendientes (auto)
     const onSynced = (ev: Event) => {
-      const n = (ev as CustomEvent<{ ok: number }>).detail?.ok ?? 0;
+      const detail = (ev as CustomEvent<{ ok: number; remaining?: number }>).detail;
+      const n = detail?.ok ?? 0;
       if (n > 0) {
         import("sonner").then(({ toast }) => {
-          toast.success(`${n} operación${n === 1 ? "" : "es"} sincronizada${n === 1 ? "" : "s"}`);
+          const left = detail?.remaining ?? 0;
+          toast.success(
+            left > 0
+              ? `${n} sincronizado${n === 1 ? "" : "s"} · quedan ${left}`
+              : `${n} sincronizado${n === 1 ? "" : "s"} ✓`
+          );
         });
       }
     };
