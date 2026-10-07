@@ -20,7 +20,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import {
-  PackageSearch, PlayCircle, Loader2, Camera, Keyboard, ScanLine,
+  PackageSearch, PlayCircle, Loader2, Camera, Keyboard, ScanLine, Search,
   CheckCircle2, CircleDashed, TrendingDown, TrendingUp, DownloadCloud,
   Flag, History as HistoryIcon, MapPin,
 } from "lucide-react";
@@ -232,6 +232,8 @@ function SessionScreen({ session }: { session: SessionRow }) {
 
   const readerInputRef = useRef<HTMLInputElement>(null);
   const [readerBuffer, setReaderBuffer] = useState("");
+  const [nameSearch, setNameSearch] = useState("");
+  const [nameSearchFocused, setNameSearchFocused] = useState(false);
   const lastScanRef = useRef<{ code: string; time: number } | null>(null);
   const persistTimeoutRef = useRef<number | null>(null);
   // Espejo de itemsMap en un ref: así applyDelta puede leer el estado más
@@ -287,12 +289,12 @@ function SessionScreen({ session }: { session: SessionRow }) {
 
   // Mantener el input del lector físico siempre enfocado (mientras no haya un diálogo abierto).
   useEffect(() => {
-    if (scanMode !== "reader" || cameraOpen || finalizeOpen) return;
+    if (scanMode !== "reader" || cameraOpen || finalizeOpen || nameSearchFocused || nameSearch.trim().length >= 2) return;
     const focusInput = () => readerInputRef.current?.focus();
     focusInput();
     const interval = window.setInterval(focusInput, 1500);
     return () => window.clearInterval(interval);
-  }, [scanMode, cameraOpen, finalizeOpen]);
+  }, [scanMode, cameraOpen, finalizeOpen, nameSearchFocused, nameSearch]);
 
   function shouldAcceptScan(code: string) {
     const now = Date.now();
@@ -359,8 +361,19 @@ function SessionScreen({ session }: { session: SessionRow }) {
         p_collaborator_name: collab?.name ?? "", p_client_uid: client_uid,
       });
       if (error) {
-        await enqueue({ kind: "inventory_count", uid: client_uid, createdAt: Date.now(), payload });
-        toast.error(`No se sincronizó "${barcode}" — se reintentará.`);
+        const msg = (error.message || "").toLowerCase();
+        const permanent =
+          msg.includes("finalizado") ||
+          msg.includes("no encontrada") ||
+          msg.includes("producto no encontrado") ||
+          msg.includes("could not find the function");
+        if (permanent) {
+          toast.error(`No se pudo registrar "${barcode}": ${error.message}`);
+        } else {
+          // Error de red u otro temporal → cola offline
+          await enqueue({ kind: "inventory_count", uid: client_uid, createdAt: Date.now(), payload });
+          toast.error(`No se sincronizó "${barcode}" — se reintentará al volver la conexión.`);
+        }
       }
     } else {
       await enqueue({ kind: "inventory_count", uid: client_uid, createdAt: Date.now(), payload });
@@ -404,8 +417,18 @@ function SessionScreen({ session }: { session: SessionRow }) {
         p_collaborator_name: collab?.name ?? "", p_client_uid: client_uid,
       });
       if (error) {
-        await enqueue({ kind: "inventory_count", uid: client_uid, createdAt: Date.now(), payload });
-        toast.error(`No se sincronizó "${barcode}" — se reintentará.`);
+        const msg = (error.message || "").toLowerCase();
+        const permanent =
+          msg.includes("finalizado") ||
+          msg.includes("no encontrada") ||
+          msg.includes("producto no encontrado") ||
+          msg.includes("could not find the function");
+        if (permanent) {
+          toast.error(`No se pudo registrar "${barcode}": ${error.message}`);
+        } else {
+          await enqueue({ kind: "inventory_count", uid: client_uid, createdAt: Date.now(), payload });
+          toast.error(`No se sincronizó "${barcode}" — se reintentará al volver la conexión.`);
+        }
       } else {
         toast.success(`${item.product_name}: ${quantity} u.`);
       }
@@ -437,6 +460,17 @@ function SessionScreen({ session }: { session: SessionRow }) {
 
   // ── Progreso ─────────────────────────────────────────────────────
   const items = useMemo(() => Array.from(itemsMap.values()), [itemsMap]);
+  const nameResults = useMemo(() => {
+    const q = nameSearch.trim().toLowerCase();
+    if (q.length < 2) return [] as ItemRow[];
+    return items
+      .filter((i) =>
+        i.product_name.toLowerCase().includes(q) ||
+        i.barcode.includes(q) ||
+        (i.category ?? "").toLowerCase().includes(q)
+      )
+      .slice(0, 25);
+  }, [items, nameSearch]);
   const total = items.length || session.total_products;
   const countedN = items.filter((i) => i.touched).length;
   const pendingN = total - countedN;
@@ -576,6 +610,60 @@ function SessionScreen({ session }: { session: SessionRow }) {
             onDetected={handleScan}
             continuous
           />
+
+          {/* Buscar por nombre (sin pistola) */}
+          <Card>
+            <CardContent className="space-y-2 p-4">
+              <Label className="text-xs text-muted-foreground">O buscar por nombre / código</Label>
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={nameSearch}
+                  onChange={(e) => setNameSearch(e.target.value)}
+                  onFocus={() => setNameSearchFocused(true)}
+                  onBlur={() => window.setTimeout(() => setNameSearchFocused(false), 200)}
+                  placeholder="Escribí al menos 2 letras…"
+                  className="pl-9"
+                />
+              </div>
+              {nameSearch.trim().length >= 2 && nameResults.length === 0 && (
+                <p className="text-xs text-muted-foreground">Sin resultados en este inventario.</p>
+              )}
+              {nameResults.length > 0 && (
+                <div className="max-h-56 divide-y overflow-y-auto rounded-md border">
+                  {nameResults.map((r) => {
+                    const qtyHere = location === "A" ? r.mina_count : r.morelos_count;
+                    return (
+                      <button
+                        key={r.barcode}
+                        type="button"
+                        onClick={() => {
+                          void applyDelta(r.barcode, 1);
+                          setNameSearch("");
+                        }}
+                        className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm hover:bg-muted"
+                      >
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate font-medium">{r.product_name}</span>
+                          <span className="font-mono text-[10px] text-muted-foreground">{r.barcode}</span>
+                          {r.category && (
+                            <span className="ml-1 text-[10px] text-muted-foreground">· {r.category}</span>
+                          )}
+                        </span>
+                        <span className="shrink-0 text-right text-xs tabular-nums text-muted-foreground">
+                          <span className="block font-semibold text-foreground">+1</span>
+                          {LOCATION_LABEL[location]}: {qtyHere}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+              <p className="text-[10px] text-muted-foreground">
+                Tocá un producto para sumar 1 en {LOCATION_LABEL[location]}. Después podés ajustar la cantidad en la tarjeta de abajo.
+              </p>
+            </CardContent>
+          </Card>
 
           {/* Último producto escaneado */}
           {lastResult && (
