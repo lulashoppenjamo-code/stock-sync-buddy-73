@@ -255,11 +255,17 @@ function AuditPage() {
 
   const rowRefs = useRef<Map<string, HTMLDivElement | null>>(new Map());
   const [highlightBarcode, setHighlightBarcode] = useState<string | null>(null);
-  function flashProduct(barcode: string) {
+  // Mientras se edita cantidad a mano, bloquear pistoleo (evita sumar el código como +1 o pegar el barcode en el input)
+  const qtyEditingRef = useRef<string | null>(null);
+  const [qtyEditingBarcode, setQtyEditingBarcode] = useState<string | null>(null);
+
+  function flashProduct(barcode: string, scroll = true) {
     setHighlightBarcode(barcode);
-    setTimeout(() => {
-      rowRefs.current.get(barcode)?.scrollIntoView({ behavior: "smooth", block: "center" });
-    }, 80);
+    if (scroll) {
+      setTimeout(() => {
+        rowRefs.current.get(barcode)?.scrollIntoView({ behavior: "smooth", block: "center" });
+      }, 80);
+    }
   }
 
   useEffect(() => {
@@ -700,6 +706,12 @@ function AuditPage() {
     const code = barcode.trim();
     if (!code) return;
     setScanInput("");
+    // Si hay un input de cantidad manual enfocado, NO sumar por pistoleo
+    if (qtyEditingRef.current) {
+      toast.error("Estás editando una cantidad a mano. Terminá o tocá fuera antes de pistolear.");
+      scanRef.current?.focus();
+      return;
+    }
     if (!category) { toast.error("Seleccioná una categoría primero"); scanRef.current?.focus(); return; }
     const prod = await lookupProduct(code);
     if (!prod) { scanRef.current?.focus(); return; }
@@ -732,6 +744,11 @@ function AuditPage() {
   function setCount(barcode: string, val: number) {
     const prod = products.find((p) => p.barcode === barcode);
     if (!prod) return;
+    // Evitar que un pistoleo pegado en el input de cantidad genere un número enorme
+    if (val > 9_999) {
+      toast.error("Cantidad inválida (parece un código de barras). Escribí solo el número contado.");
+      return;
+    }
     const sys = Number(prod.stock_a) + Number(prod.stock_b);
     setCounts((prev) => {
       const newMap = new Map(prev);
@@ -739,6 +756,8 @@ function AuditPage() {
       newMap.set(barcode, { barcode, product_name: prod.product_name, count: val, system_stock: sys });
       return newMap;
     });
+    // Marco azul también en cambio manual (+ / − / teclear)
+    flashProduct(barcode, false);
   }
 
   function changeCategory(newCat: string) {
@@ -1724,15 +1743,38 @@ function AuditPage() {
                         </button>
                         <input type="number" inputMode="numeric" min={0}
                           value={myCount === 0 ? "" : myCount} placeholder="0"
-                          onFocus={(e) => e.target.select()}
+                          onFocus={(e) => {
+                            e.target.select();
+                            qtyEditingRef.current = p.barcode;
+                            setQtyEditingBarcode(p.barcode);
+                          }}
                           onChange={(e) => {
                             const raw = e.target.value;
+                            // Pistola suele pegar muchos dígitos de golpe → no tratarlo como cantidad
+                            if (raw.length >= 6) {
+                              toast.error("Se detectó un código de barras. Salí del campo de cantidad antes de pistolear.");
+                              return;
+                            }
                             const n = raw === "" ? 0 : Math.max(0, parseInt(raw, 10) || 0);
                             setCount(p.barcode, n);
                           }}
-                          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); scanRef.current?.focus(); } }}
-                          onBlur={() => scanRef.current?.focus()}
-                          className={`w-9 rounded border border-input bg-transparent text-center text-sm tabular-nums font-bold focus:outline-none focus:ring-2 focus:ring-primary ${isCounted ? "text-emerald-700" : "text-muted-foreground"}`}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              qtyEditingRef.current = null;
+                              setQtyEditingBarcode(null);
+                              scanRef.current?.focus();
+                            }
+                          }}
+                          onBlur={() => {
+                            qtyEditingRef.current = null;
+                            setQtyEditingBarcode(null);
+                            // No robar foco si el usuario tocó otro control
+                            window.setTimeout(() => {
+                              if (!qtyEditingRef.current) scanRef.current?.focus();
+                            }, 50);
+                          }}
+                          className={`w-9 rounded border border-input bg-transparent text-center text-sm tabular-nums font-bold focus:outline-none focus:ring-2 focus:ring-primary ${isCounted ? "text-emerald-700" : "text-muted-foreground"} ${qtyEditingBarcode === p.barcode ? "ring-2 ring-amber-400" : ""}`}
                         />
                         <button type="button" onClick={() => addCount(p.barcode)}
                           className="flex h-7 w-7 items-center justify-center rounded-full border font-bold hover:bg-muted active:scale-95">
@@ -2410,4 +2452,3 @@ function AdminHistoryRow({ row, onEdit, onDelete }: { row: HistoryRow; onEdit: (
     </div>
   );
 }
- 
