@@ -189,6 +189,44 @@ function TransferPage() {
     },
   });
 
+  // Historial de traspasos del producto consultado (código o nombre)
+  const [historyBarcode, setHistoryBarcode] = useState<string | null>(null);
+  const [historyName, setHistoryName] = useState<string | null>(null);
+
+  const debouncedBarcode = useDebounce(barcode.trim(), 400);
+
+  // Si el usuario escribe un código completo, mostrar historial sin agregarlo aún
+  useEffect(() => {
+    if (debouncedBarcode.length >= 6 && online) {
+      setHistoryBarcode(debouncedBarcode);
+      setHistoryName(null);
+    } else if (!debouncedBarcode) {
+      // no limpiar si hay historial por nombre
+    }
+  }, [debouncedBarcode, online]);
+
+  const { data: productTransfers = [], isFetching: loadingTransfers } = useQuery({
+    queryKey: ["product-transfer-history", historyBarcode],
+    enabled: !!historyBarcode && online,
+    staleTime: 15_000,
+    queryFn: async () => {
+      if (!historyBarcode) return [];
+      const { data, error } = await supabase
+        .from("transfers")
+        .select("id, barcode, product_name, quantity, origin, destination, sender_name, receiver_name, created_at, received_at, received_by_name, received_quantity, received_sender_name, received_receiver_name")
+        .eq("barcode", historyBarcode)
+        .order("created_at", { ascending: false })
+        .limit(30);
+      if (error) throw error;
+      return data ?? [];
+    },
+  });
+
+  async function showProductHistory(bc: string, name?: string) {
+    setHistoryBarcode(bc);
+    setHistoryName(name ?? null);
+  }
+
   async function addBarcode(code: string) {
     const c = code.trim();
     if (!c) return;
@@ -219,6 +257,9 @@ function TransferPage() {
       }
       return [...prev, { barcode: data.barcode, product_name: data.product_name, uom: data.uom, total_stock: total, quantity: 1 }];
     });
+    // Mostrar historial de traspasos de este producto
+    setHistoryBarcode(data.barcode);
+    setHistoryName(data.product_name);
     toast.success(`+1 · ${data.product_name}`);
     setBarcode(""); setNameSearch("");
     barcodeRef.current?.focus();
@@ -444,16 +485,26 @@ function TransferPage() {
             {online && debouncedNameSearch.trim().length >= 2 && nameResults.length > 0 && (
               <div className="mt-1 max-h-56 overflow-auto rounded-md border bg-card">
                 {nameResults.map((r) => (
-                  <button key={r.barcode} type="button" onClick={() => addBarcode(r.barcode)}
-                    className="flex w-full items-center justify-between gap-2 border-b px-3 py-2 text-left text-sm last:border-b-0 hover:bg-muted">
-                    <span className="min-w-0 truncate">
-                      <span className="font-medium">{r.product_name}</span>{" "}
-                      <span className="text-xs text-muted-foreground">{r.uom ?? ""}</span>
-                    </span>
-                    <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
-                      Stock: {Number(r.stock_a) + Number(r.stock_b)}
-                    </span>
-                  </button>
+                  <div key={r.barcode} className="flex items-stretch border-b last:border-b-0">
+                    <button type="button" onClick={() => addBarcode(r.barcode)}
+                      className="flex min-w-0 flex-1 items-center justify-between gap-2 px-3 py-2 text-left text-sm hover:bg-muted">
+                      <span className="min-w-0 truncate">
+                        <span className="font-medium">{r.product_name}</span>{" "}
+                        <span className="text-xs text-muted-foreground">{r.uom ?? ""}</span>
+                      </span>
+                      <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+                        Stock: {Number(r.stock_a) + Number(r.stock_b)}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      title="Ver historial de traspasos"
+                      onClick={() => showProductHistory(r.barcode, r.product_name)}
+                      className="shrink-0 border-l px-2 text-[11px] text-muted-foreground hover:bg-muted hover:text-primary"
+                    >
+                      📋
+                    </button>
+                  </div>
                 ))}
               </div>
             )}
@@ -463,6 +514,92 @@ function TransferPage() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Historial de traspasos del producto consultado */}
+      {historyBarcode && (
+        <Card>
+          <CardContent className="space-y-2 p-4">
+            <div className="flex items-center justify-between gap-2">
+              <h2 className="text-sm font-semibold">
+                Movimientos de traspaso
+                {historyName ? ` · ${historyName}` : ""}
+              </h2>
+              <button
+                type="button"
+                onClick={() => { setHistoryBarcode(null); setHistoryName(null); }}
+                className="text-xs text-muted-foreground hover:text-foreground"
+              >
+                Cerrar
+              </button>
+            </div>
+            <p className="font-mono text-[10px] text-muted-foreground">{historyBarcode}</p>
+            {loadingTransfers && (
+              <div className="flex items-center gap-2 py-3 text-xs text-muted-foreground">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" /> Cargando movimientos…
+              </div>
+            )}
+            {!loadingTransfers && productTransfers.length === 0 && (
+              <p className="py-3 text-center text-xs text-muted-foreground">
+                Este producto aún no tiene traspasos registrados.
+              </p>
+            )}
+            {!loadingTransfers && productTransfers.length > 0 && (
+              <div className="max-h-72 divide-y overflow-y-auto rounded-md border">
+                {productTransfers.map((t) => {
+                  const received = !!t.received_at;
+                  const sender = t.received_sender_name || t.sender_name;
+                  const receiver = t.received_receiver_name || t.receiver_name;
+                  const qty = t.received_quantity != null ? t.received_quantity : t.quantity;
+                  return (
+                    <div key={t.id} className="px-3 py-2 text-xs space-y-0.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-medium">
+                          {BRANCH_LABELS[t.origin as Branch] ?? t.origin}
+                          {" → "}
+                          {BRANCH_LABELS[t.destination as Branch] ?? t.destination}
+                        </span>
+                        <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                          received
+                            ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-200"
+                            : "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-200"
+                        }`}>
+                          {received ? "Recibido" : "Pendiente"}
+                        </span>
+                      </div>
+                      <div className="text-muted-foreground">
+                        Cantidad: <span className="font-semibold text-foreground">{qty}</span>
+                        {t.received_quantity != null && t.received_quantity !== t.quantity && (
+                          <span className="ml-1">(enviado: {t.quantity})</span>
+                        )}
+                      </div>
+                      <div className="text-muted-foreground">
+                        Envió: <span className="text-foreground">{sender || "—"}</span>
+                        {" · "}
+                        Recibió: <span className="text-foreground">{receiver || "—"}</span>
+                      </div>
+                      <div className="text-[10px] text-muted-foreground">
+                        Enviado: {new Date(t.created_at).toLocaleString("es-MX", {
+                          day: "numeric", month: "short", year: "numeric",
+                          hour: "2-digit", minute: "2-digit",
+                        })}
+                        {t.received_at && (
+                          <>
+                            {" · "}Recibido: {new Date(t.received_at).toLocaleString("es-MX", {
+                              day: "numeric", month: "short", year: "numeric",
+                              hour: "2-digit", minute: "2-digit",
+                            })}
+                            {t.received_by_name ? ` por ${t.received_by_name}` : ""}
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardContent className="space-y-2 p-4">
