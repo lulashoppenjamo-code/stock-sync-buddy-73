@@ -165,27 +165,47 @@ function TransferPage() {
   }, [online]);
 
   const { data: collaborators = [] } = useQuery({
-    queryKey: ["collaborators-active"],
+    queryKey: ["collaborators-active", online],
     staleTime: online ? 30_000 : Infinity,
     queryFn: async () => {
-      const { data, error } = await supabase.from("collaborators").select("id, name").eq("active", true).order("name");
-      if (error) throw error;
-      return data as Array<{ id: string; name: string }>;
+      if (!online) {
+        const { getCachedCollaborators } = await import("@/lib/offline-cache");
+        return (await getCachedCollaborators()).map((c) => ({ id: c.id, name: c.name }));
+      }
+      try {
+        const { data, error } = await supabase.from("collaborators").select("id, name").eq("active", true).order("name");
+        if (error) throw error;
+        return data as Array<{ id: string; name: string }>;
+      } catch {
+        const { getCachedCollaborators } = await import("@/lib/offline-cache");
+        return (await getCachedCollaborators()).map((c) => ({ id: c.id, name: c.name }));
+      }
     },
   });
 
   const { data: nameResults = [] } = useQuery({
-    queryKey: ["product-search-name", debouncedNameSearch],
-    enabled: debouncedNameSearch.trim().length >= 2 && online,
+    queryKey: ["product-search-name", debouncedNameSearch, online],
+    enabled: debouncedNameSearch.trim().length >= 2,
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from("products")
-        .select("barcode, product_name, uom, stock_a, stock_b")
-        .ilike("product_name", `%${debouncedNameSearch.trim()}%`)
-        .order("product_name")
-        .limit(15);
-      if (error) throw error;
-      return data as Array<{ barcode: string; product_name: string; uom: string | null; stock_a: number; stock_b: number }>;
+      type Row = { barcode: string; product_name: string; uom: string | null; stock_a: number; stock_b: number };
+      if (!online) {
+        const { searchCachedProducts } = await import("@/lib/offline-cache");
+        const rows = await searchCachedProducts(debouncedNameSearch.trim(), 15);
+        return rows as Row[];
+      }
+      try {
+        const { data, error } = await supabase
+          .from("products")
+          .select("barcode, product_name, uom, stock_a, stock_b")
+          .ilike("product_name", `%${debouncedNameSearch.trim()}%`)
+          .order("product_name")
+          .limit(15);
+        if (error) throw error;
+        return data as Row[];
+      } catch {
+        const { searchCachedProducts } = await import("@/lib/offline-cache");
+        return (await searchCachedProducts(debouncedNameSearch.trim(), 15)) as Row[];
+      }
     },
   });
 
@@ -226,35 +246,62 @@ function TransferPage() {
   async function addBarcode(code: string) {
     const c = code.trim();
     if (!c) return;
-    if (!online) {
-      // Check if product is already in cart
-      const existing = cart.find((x) => x.barcode === c);
-      if (existing) {
-        setCart((prev) => prev.map((x) => x.barcode === c ? { ...x, quantity: x.quantity + 1 } : x));
-        toast.success(`+1 · ${existing.product_name}`);
-        setBarcode(""); barcodeRef.current?.focus();
-        return;
-      }
-      toast.error("Sin internet — solo podés agregar productos que ya están en el carrito");
+
+    // Ya en el carrito → sumar 1 (funciona con o sin internet)
+    const existing = cart.find((x) => x.barcode === c);
+    if (existing) {
+      setCart((prev) => prev.map((x) => x.barcode === c ? { ...x, quantity: x.quantity + 1 } : x));
+      toast.success(`+1 · ${existing.product_name}`);
+      setBarcode(""); barcodeRef.current?.focus();
       return;
     }
-    const { data, error } = await supabase
-      .from("products").select("barcode, product_name, uom, stock_a, stock_b")
-      .eq("barcode", c).maybeSingle();
-    if (error) { toast.error(error.message); return; }
-    if (!data) { toast.error(`Producto no encontrado: ${c}`); return; }
+
+    type ProdRow = { barcode: string; product_name: string; uom: string | null; stock_a: number; stock_b: number };
+    let data: ProdRow | null = null;
+
+    if (online) {
+      const res = await supabase
+        .from("products").select("barcode, product_name, uom, stock_a, stock_b")
+        .eq("barcode", c).maybeSingle();
+      if (res.error) { toast.error(res.error.message); return; }
+      data = res.data as ProdRow | null;
+    }
+
+    // Sin internet o falló el servidor → caché local
+    if (!data) {
+      const { getCachedProductByBarcode } = await import("@/lib/offline-cache");
+      const cached = await getCachedProductByBarcode(c);
+      if (cached) {
+        data = {
+          barcode: cached.barcode,
+          product_name: cached.product_name,
+          uom: cached.uom,
+          stock_a: cached.stock_a,
+          stock_b: cached.stock_b,
+        };
+      }
+    }
+
+    if (!data) {
+      toast.error(
+        online
+          ? `Producto no encontrado: ${c}`
+          : `Sin internet y el producto ${c} no está en la caché local. Abrí la app con internet una vez para descargar el catálogo.`
+      );
+      return;
+    }
+
     const total = Number(data.stock_a) + Number(data.stock_b);
     setCart((prev) => {
-      const i = prev.findIndex((x) => x.barcode === data.barcode);
+      const i = prev.findIndex((x) => x.barcode === data!.barcode);
       if (i >= 0) {
         const copy = [...prev];
         copy[i] = { ...copy[i], quantity: copy[i].quantity + 1 };
         return copy;
       }
-      return [...prev, { barcode: data.barcode, product_name: data.product_name, uom: data.uom, total_stock: total, quantity: 1 }];
+      return [...prev, { barcode: data!.barcode, product_name: data!.product_name, uom: data!.uom, total_stock: total, quantity: 1 }];
     });
-    // No abrir historial automáticamente: priorizar pantalla de productos del traspaso
-    toast.success(`+1 · ${data.product_name}`);
+    toast.success(`+1 · ${data.product_name}${online ? "" : " (offline)"}`);
     setBarcode(""); setNameSearch("");
     barcodeRef.current?.focus();
   }
@@ -475,8 +522,11 @@ function TransferPage() {
           <div>
             <Label htmlFor="name-search">O buscar por nombre</Label>
             <Input id="name-search" value={nameSearch} onChange={(e) => setNameSearch(e.target.value)}
-              placeholder={online ? "Escribí al menos 2 letras…" : "No disponible sin internet"} disabled={!online} />
-            {online && debouncedNameSearch.trim().length >= 2 && nameResults.length > 0 && (
+              placeholder="Escribí al menos 2 letras…" />
+            {!online && (
+              <p className="mt-1 text-xs text-amber-600">Sin internet — buscando en catálogo guardado en este dispositivo</p>
+            )}
+            {debouncedNameSearch.trim().length >= 2 && nameResults.length > 0 && (
               <div className="mt-1 max-h-56 overflow-auto rounded-md border bg-card">
                 {nameResults.map((r) => (
                   <div key={r.barcode} className="flex items-stretch border-b last:border-b-0">
@@ -502,7 +552,7 @@ function TransferPage() {
                 ))}
               </div>
             )}
-            {online && debouncedNameSearch.trim().length >= 2 && nameResults.length === 0 && (
+            {debouncedNameSearch.trim().length >= 2 && nameResults.length === 0 && (
               <div className="mt-1 text-xs text-muted-foreground">Sin resultados</div>
             )}
           </div>
