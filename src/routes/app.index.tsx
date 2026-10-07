@@ -51,22 +51,40 @@ function ProductsPage() {
   const { data, isLoading } = useQuery({
     queryKey: ["products"],
     queryFn: async () => {
-      // Paginate to get ALL products, not just first 5000
-      const all: Product[] = [];
-      const pageSize = 1000;
-      let from = 0;
-      while (true) {
-        const { data, error } = await supabase
-          .from("products")
-          .select("barcode, product_name, uom, category, stock_a, stock_b, updated_at")
-          .order("product_name")
-          .range(from, from + pageSize - 1);
-        if (error) throw error;
-        all.push(...(data as Product[]));
-        if ((data ?? []).length < pageSize) break;
-        from += pageSize;
+      try {
+        // Paginate to get ALL products, not just first 5000
+        const all: Product[] = [];
+        const pageSize = 1000;
+        let from = 0;
+        while (true) {
+          const { data, error } = await supabase
+            .from("products")
+            .select("barcode, product_name, uom, category, stock_a, stock_b, updated_at")
+            .order("product_name")
+            .range(from, from + pageSize - 1);
+          if (error) throw error;
+          all.push(...(data as Product[]));
+          if ((data ?? []).length < pageSize) break;
+          from += pageSize;
+        }
+        // Actualizar caché offline en segundo plano
+        import("@/lib/offline-cache").then(({ refreshProductsCache }) => {
+          refreshProductsCache().catch(() => {});
+        });
+        return all;
+      } catch {
+        const { getCachedProducts } = await import("@/lib/offline-cache");
+        const cached = await getCachedProducts();
+        return cached.map((p) => ({
+          barcode: p.barcode,
+          product_name: p.product_name,
+          uom: p.uom,
+          category: p.category,
+          stock_a: p.stock_a,
+          stock_b: p.stock_b,
+          updated_at: p.updated_at ?? "",
+        })) as Product[];
       }
-      return all;
     },
   });
 
