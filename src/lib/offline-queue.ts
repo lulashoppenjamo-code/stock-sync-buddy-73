@@ -1,5 +1,5 @@
-// Simple FIFO offline queue backed by IndexedDB.
-// Drains automatically when navigator.onLine becomes true.
+// Cola offline FIFO en IndexedDB.
+// Se vacía automáticamente al volver internet y al tocar "pendientes".
 import { get, set, del, keys, createStore } from "idb-keyval";
 import { supabase } from "@/integrations/supabase/client";
 
@@ -10,6 +10,8 @@ export type QueuedOp =
       kind: "audit";
       uid: string;
       createdAt: number;
+      attempts?: number;
+      lastError?: string;
       payload: {
         branch: "A" | "B";
         barcode: string;
@@ -26,8 +28,11 @@ export type QueuedOp =
       kind: "transfer";
       uid: string;
       createdAt: number;
+      attempts?: number;
+      lastError?: string;
       payload: {
         barcode: string;
+        product_name?: string;
         quantity: number;
         origin: "A" | "B";
         destination: "A" | "B";
@@ -37,12 +42,14 @@ export type QueuedOp =
         collaborator_name: string;
         client_uid: string;
       };
-      photo: { blob: Blob; ext: string };
+      photo: { blob: Blob; ext: string; type?: string };
     }
   | {
       kind: "inventory_count";
       uid: string;
       createdAt: number;
+      attempts?: number;
+      lastError?: string;
       payload: {
         session_id: string;
         barcode: string;
@@ -70,17 +77,55 @@ export async function listPending(): Promise<QueuedOp[]> {
   return items.filter(Boolean).sort((a, b) => a!.createdAt - b!.createdAt) as QueuedOp[];
 }
 
+/** Descarta todas las operaciones pendientes (solo si el usuario lo pide). */
+export async function clearQueue(): Promise<number> {
+  const ks = await keys(store);
+  for (const k of ks) await del(k as string, store);
+  notify();
+  return ks.length;
+}
+
 function isDuplicateError(msg: string | undefined): boolean {
   if (!msg) return false;
   const m = msg.toLowerCase();
-  return m.includes("duplicate") || m.includes("unique") || m.includes("already exists");
+  return (
+    m.includes("duplicate") ||
+    m.includes("unique") ||
+    m.includes("already exists") ||
+    m.includes("conflict")
+  );
+}
+
+function errMsg(e: unknown): string {
+  if (!e) return "Error desconocido";
+  if (typeof e === "string") return e;
+  if (e instanceof Error) return e.message;
+  const any = e as { message?: string; error_description?: string };
+  return any.message || any.error_description || JSON.stringify(e);
+}
+
+/** Comprueba si realmente hay red hacia Supabase (navigator.onLine miente a veces). */
+async function canReachServer(): Promise<boolean> {
+  if (typeof navigator !== "undefined" && !navigator.onLine) return false;
+  try {
+    // HEAD liviano al REST de Supabase (usa el client ya configurado)
+    const { error } = await supabase.from("collaborators").select("id", { head: true, count: "exact" }).limit(1);
+    // error de red → false; error de auth/RLS igual implica que el servidor respondió
+    if (error && /failed to fetch|network|timeout|load failed/i.test(error.message)) return false;
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function processOne(op: QueuedOp): Promise<void> {
   if (op.kind === "audit") {
     const { error } = await supabase.from("audits").insert(op.payload);
     if (error && !isDuplicateError(error.message)) throw error;
-  } else if (op.kind === "inventory_count") {
+    return;
+  }
+
+  if (op.kind === "inventory_count") {
     if (op.payload.mode === "increment") {
       const { error } = await supabase.rpc("inventory_scan", {
         p_session_id: op.payload.session_id,
@@ -102,44 +147,95 @@ async function processOne(op: QueuedOp): Promise<void> {
       });
       if (error && !isDuplicateError(error.message)) throw error;
     }
-  } else {
-    // transfer
-    const path = `${op.payload.client_uid}.${op.photo.ext}`;
-    const up = await supabase.storage
-      .from("transfer-photos")
-      .upload(path, op.photo.blob, { contentType: op.photo.blob.type, upsert: true });
-    if (up.error && !isDuplicateError(up.error.message)) throw up.error;
-    const { data: signed } = await supabase.storage.from("transfer-photos").createSignedUrl(path, 60 * 60 * 24 * 365);
-    const photo_url = signed?.signedUrl ?? path;
-    // Prefer RPC si existe; si no, insert directo en transfers
-    const { error } = await supabase.rpc("apply_transfer", {
-      p_barcode: op.payload.barcode,
-      p_quantity: op.payload.quantity,
-      p_origin: op.payload.origin,
-      p_destination: op.payload.destination,
-      p_sender_name: op.payload.sender_name,
-      p_receiver_name: op.payload.receiver_name,
-      p_photo_url: photo_url,
-      p_collaborator_id: op.payload.collaborator_id,
-      p_collaborator_name: op.payload.collaborator_name,
-      p_client_uid: op.payload.client_uid,
+    return;
+  }
+
+  // transfer
+  const blob = op.photo?.blob;
+  if (!blob || !(blob instanceof Blob) || blob.size === 0) {
+    throw new Error("Foto de traspaso no disponible en este dispositivo");
+  }
+  const ext = op.photo.ext || "jpg";
+  const path = `${op.payload.client_uid}.${ext}`;
+  const contentType = op.photo.type || blob.type || "image/jpeg";
+  const up = await supabase.storage
+    .from("transfer-photos")
+    .upload(path, blob, { contentType, upsert: true });
+  if (up.error && !isDuplicateError(up.error.message)) throw up.error;
+  const { data: signed } = await supabase.storage.from("transfer-photos").createSignedUrl(path, 60 * 60 * 24 * 365);
+  const photo_url = signed?.signedUrl ?? path;
+
+  const rpc = await supabase.rpc("apply_transfer", {
+    p_barcode: op.payload.barcode,
+    p_quantity: op.payload.quantity,
+    p_origin: op.payload.origin,
+    p_destination: op.payload.destination,
+    p_sender_name: op.payload.sender_name,
+    p_receiver_name: op.payload.receiver_name,
+    p_photo_url: photo_url,
+    p_collaborator_id: op.payload.collaborator_id,
+    p_collaborator_name: op.payload.collaborator_name,
+    p_client_uid: op.payload.client_uid,
+  });
+  if (rpc.error && !isDuplicateError(rpc.error.message)) {
+    // Fallback: insert directo (misma tabla que usa la pantalla de traspaso)
+    const { error } = await supabase.from("transfers").insert({
+      barcode: op.payload.barcode,
+      product_name: op.payload.product_name || op.payload.barcode,
+      quantity: op.payload.quantity,
+      origin: op.payload.origin,
+      destination: op.payload.destination,
+      sender_name: op.payload.sender_name,
+      receiver_name: op.payload.receiver_name,
+      photo_url,
+      collaborator_id: op.payload.collaborator_id,
+      collaborator_name: op.payload.collaborator_name,
+      client_uid: op.payload.client_uid,
     });
     if (error && !isDuplicateError(error.message)) throw error;
   }
 }
 
 let draining = false;
-export async function drainQueue(): Promise<{ ok: number; failed: number }> {
-  if (draining || typeof navigator === "undefined" || !navigator.onLine) return { ok: 0, failed: 0 };
+let drainStartedAt = 0;
+
+export type DrainResult = {
+  ok: number;
+  failed: number;
+  remaining: number;
+  errors: string[];
+  unreachable: boolean;
+};
+
+export async function drainQueue(): Promise<DrainResult> {
+  const empty: DrainResult = { ok: 0, failed: 0, remaining: 0, errors: [], unreachable: false };
+
+  if (typeof navigator === "undefined") return empty;
+
+  // Si un drain anterior quedó colgado > 60s, liberar el candado
+  if (draining && Date.now() - drainStartedAt > 60_000) {
+    console.warn("[queue] unlocking stuck drain");
+    draining = false;
+  }
+  if (draining) return empty;
+  if (!navigator.onLine) return { ...empty, unreachable: true };
+
+  const reachable = await canReachServer();
+  if (!reachable) {
+    return { ...empty, unreachable: true, remaining: await pendingCount() };
+  }
+
   draining = true;
+  drainStartedAt = Date.now();
   let ok = 0;
   let failed = 0;
+  const errors: string[] = [];
+
   try {
     const items = await listPending();
     for (const op of items) {
-      // Reintento simple: hasta 2 intentos por operación en este ciclo
       let lastErr: unknown = null;
-      for (let attempt = 0; attempt < 2; attempt++) {
+      for (let attempt = 0; attempt < 3; attempt++) {
         try {
           await processOne(op);
           await del(op.uid, store);
@@ -148,11 +244,21 @@ export async function drainQueue(): Promise<{ ok: number; failed: number }> {
           break;
         } catch (e) {
           lastErr = e;
-          await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
+          await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
         }
       }
       if (lastErr) {
-        console.warn("[queue] op failed, keeping for retry:", lastErr);
+        const msg = errMsg(lastErr);
+        console.warn("[queue] op failed:", op.kind, op.uid, msg);
+        errors.push(`${op.kind}: ${msg}`);
+        // Guardar intento / error para diagnóstico (no borra la op)
+        try {
+          await set(
+            op.uid,
+            { ...op, attempts: (op.attempts ?? 0) + 1, lastError: msg },
+            store,
+          );
+        } catch { /* ignore */ }
         failed++;
       }
     }
@@ -160,7 +266,9 @@ export async function drainQueue(): Promise<{ ok: number; failed: number }> {
     draining = false;
     notify();
   }
-  return { ok, failed };
+
+  const remaining = await pendingCount();
+  return { ok, failed, remaining, errors, unreachable: false };
 }
 
 function notify() {
@@ -169,28 +277,37 @@ function notify() {
 
 export function startQueueAutoDrain() {
   if (typeof window === "undefined") return () => {};
-  const tryDrain = () => {
+
+  let running = false;
+  const tryDrain = async () => {
+    if (running) return;
     if (!navigator.onLine) return;
-    drainQueue()
-      .then(({ ok }) => {
-        if (ok > 0) {
-          window.dispatchEvent(new CustomEvent("inv:queue-synced", { detail: { ok } }));
-        }
-      })
-      .catch(() => {});
+    running = true;
+    try {
+      const result = await drainQueue();
+      if (result.ok > 0) {
+        window.dispatchEvent(new CustomEvent("inv:queue-synced", { detail: result }));
+      }
+    } catch (e) {
+      console.warn("[queue] auto-drain error:", e);
+    } finally {
+      running = false;
+    }
   };
-  window.addEventListener("online", tryDrain);
-  window.addEventListener("focus", tryDrain);
-  // Al recuperar visibilidad (vuelve de otra app)
-  document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") tryDrain();
+
+  window.addEventListener("online", () => {
+    // Esperar un momento a que la red se estabilice
+    setTimeout(() => { void tryDrain(); }, 1500);
   });
-  // Más frecuente: cada 15 s
-  const interval = window.setInterval(tryDrain, 15_000);
-  tryDrain();
+  window.addEventListener("focus", () => { void tryDrain(); });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") void tryDrain();
+  });
+  const interval = window.setInterval(() => { void tryDrain(); }, 20_000);
+  // Primer intento al arrancar
+  setTimeout(() => { void tryDrain(); }, 2000);
+
   return () => {
-    window.removeEventListener("online", tryDrain);
-    window.removeEventListener("focus", tryDrain);
     window.clearInterval(interval);
   };
 }
