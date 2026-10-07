@@ -105,17 +105,33 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             {pending > 0 && (
               <button type="button"
                 onClick={async () => {
+                  const { toast } = await import("sonner");
                   if (!online) {
-                    const { toast } = await import("sonner");
-                    toast.error("Sin internet — los conteos se sincronizarán automáticamente cuando vuelva la conexión.");
+                    toast.error("Sin internet — los datos se sincronizarán cuando vuelva la conexión.");
                     return;
                   }
                   const { drainQueue } = await import("@/lib/offline-queue");
-                  const { toast } = await import("sonner");
                   toast.info("Sincronizando…");
-                  const { ok, failed } = await drainQueue();
-                  if (ok > 0) toast.success(`${ok} conteo${ok === 1 ? "" : "s"} sincronizado${ok === 1 ? "" : "s"}`);
-                  if (failed > 0) toast.error(`${failed} no se pudieron sincronizar — intenta de nuevo`);
+                  const result = await drainQueue();
+                  // Forzar refresco del contador
+                  window.dispatchEvent(new Event("inv:queue-changed"));
+                  if (result.unreachable) {
+                    toast.error("Hay señal pero no se pudo conectar al servidor. Probá de nuevo en unos segundos.");
+                    return;
+                  }
+                  if (result.ok > 0) {
+                    toast.success(`${result.ok} sincronizado${result.ok === 1 ? "" : "s"} · quedan ${result.remaining}`);
+                  }
+                  if (result.failed > 0) {
+                    const detail = result.errors[0] ? ` (${result.errors[0].slice(0, 80)})` : "";
+                    toast.error(`${result.failed} fallaron${detail}. Tocá de nuevo para reintentar.`);
+                  }
+                  if (result.ok === 0 && result.failed === 0 && result.remaining > 0) {
+                    toast.message("Sincronización en curso o sin cambios. Tocá de nuevo.");
+                  }
+                  if (result.remaining === 0) {
+                    toast.success("Todo sincronizado ✓");
+                  }
                 }}
                 className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-1 font-medium text-blue-900 hover:bg-blue-200 dark:bg-blue-900/40 dark:text-blue-100">
                 <CloudUpload className="h-3.5 w-3.5" /> {pending} pendiente{pending === 1 ? "" : "s"}
