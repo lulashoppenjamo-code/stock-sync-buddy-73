@@ -7,12 +7,12 @@ import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
 
 const navItems = [
-  { to: "/app", label: "Productos", icon: Boxes, exact: true },
-  { to: "/app/audit", label: "Auditoría", icon: ClipboardCheck },
-  { to: "/app/transfer", label: "Traspaso", icon: ArrowLeftRight },
-  { to: "/app/reception", label: "Recepción", icon: PackageCheck, badge: true as const },
-  { to: "/app/inventory-full", label: "Inventario físico", icon: ScanBarcode },
-  { to: "/app/history", label: "Historial", icon: History },
+  { to: "/app", label: "Productos", shortLabel: "Productos", icon: Boxes, exact: true },
+  { to: "/app/audit", label: "Auditoría", shortLabel: "Auditoría", icon: ClipboardCheck },
+  { to: "/app/transfer", label: "Traspaso", shortLabel: "Traspaso", icon: ArrowLeftRight },
+  { to: "/app/reception", label: "Recepción", shortLabel: "Recepción", icon: PackageCheck, badge: true as const },
+  { to: "/app/inventory-full", label: "Inventario físico", shortLabel: "Inv. físico", icon: ScanBarcode },
+  { to: "/app/history", label: "Historial", shortLabel: "Historial", icon: History },
 ];
 
 function usePendingTransfersCount() {
@@ -131,25 +131,25 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-4 pb-24 md:pb-6">{children}</main>
 
-      {/* Mobile bottom nav */}
+      {/* Mobile bottom nav — scroll horizontal para que ningún ítem quede oculto */}
       <nav className="fixed inset-x-0 bottom-0 z-30 border-t bg-card/95 backdrop-blur md:hidden">
-        <ul className="mx-auto flex max-w-6xl">
+        <ul className="mx-auto flex max-w-6xl overflow-x-auto scrollbar-none">
           {navItems.map((item) => {
             const Icon = item.icon;
             const active = item.exact ? loc.pathname === item.to : loc.pathname.startsWith(item.to);
             const showBadge = item.badge && pendingReceptions > 0;
             return (
-              <li key={item.to} className="flex-1">
+              <li key={item.to} className="min-w-[4.25rem] flex-1">
                 <Link
                   to={item.to}
-                  className={`relative flex flex-col items-center gap-0.5 px-2 py-2 text-[11px] ${
+                  className={`relative flex flex-col items-center gap-0.5 px-1.5 py-2 text-[10px] leading-tight ${
                     active ? "text-primary" : "text-muted-foreground"
                   }`}
                 >
-                  <Icon className="h-5 w-5" />
-                  {item.label}
+                  <Icon className="h-5 w-5 shrink-0" />
+                  <span className="max-w-[4.5rem] truncate text-center">{item.shortLabel}</span>
                   {showBadge && (
-                    <span className="absolute right-2 top-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-amber-500 px-1 text-[9px] font-bold text-white">
+                    <span className="absolute right-1 top-1 inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-amber-500 px-1 text-[9px] font-bold text-white">
                       {pendingReceptions}
                     </span>
                   )}
@@ -158,15 +158,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             );
           })}
           {collab?.is_admin ? (
-            <li className="flex-1">
+            <li className="min-w-[4.25rem] flex-1">
               <Link
                 to="/app/admin"
-                className={`flex flex-col items-center gap-0.5 px-2 py-2 text-[11px] ${
+                className={`flex flex-col items-center gap-0.5 px-1.5 py-2 text-[10px] leading-tight ${
                   loc.pathname.startsWith("/app/admin") ? "text-primary" : "text-muted-foreground"
                 }`}
               >
-                <Settings className="h-5 w-5" />
-                Admin
+                <Settings className="h-5 w-5 shrink-0" />
+                <span className="text-center">Admin</span>
               </Link>
             </li>
           ) : null}
