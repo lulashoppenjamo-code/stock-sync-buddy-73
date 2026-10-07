@@ -520,13 +520,35 @@ function AuditPage() {
       if (!category) return [];
       const { data, error } = await supabase
         .from("audit_comments")
-        .select("id, category, branch, collaborator_name, comment, created_at")
+        .select("id, category, branch, collaborator_name, comment, created_at, barcode, product_name")
         .eq("category", category)
         .eq("branch", branch)
         .order("created_at", { ascending: false })
         .limit(20);
       if (error) throw error;
       return data;
+    },
+  });
+
+  // Comentarios de todos los productos de la categoría del reporte (ambas sucursales)
+  const { data: reportComments = [] } = useQuery({
+    queryKey: ["report-comments", reportCategory],
+    enabled: !!reportCategory,
+    staleTime: 10_000,
+    queryFn: async () => {
+      if (!reportCategory) return [];
+      const start = new Date();
+      start.setDate(1);
+      start.setHours(0, 0, 0, 0);
+      const { data, error } = await supabase
+        .from("audit_comments")
+        .select("id, category, branch, collaborator_name, comment, created_at, barcode, product_name")
+        .eq("category", reportCategory)
+        .gte("created_at", start.toISOString())
+        .order("created_at", { ascending: false })
+        .limit(200);
+      if (error) throw error;
+      return data ?? [];
     },
   });
 
@@ -1990,24 +2012,66 @@ function AuditPage() {
                 <div className="divide-y rounded-md border">
                   {rows.sort((a, b) => (a.counted - a.system_stock) - (b.counted - b.system_stock)).map((r) => {
                     const diff = r.counted - r.system_stock;
+                    const prodComments = reportComments.filter(
+                      (c) => c.barcode === r.barcode || (!c.barcode && c.product_name === r.product_name)
+                    );
                     return (
                       <div key={r.barcode}
-                        className={`flex items-center gap-2 px-3 py-2.5 text-xs ${diff === 0 ? "bg-emerald-50 dark:bg-emerald-950/20" : diff < 0 ? "bg-red-50 dark:bg-red-950/20" : "bg-amber-50 dark:bg-amber-950/20"}`}>
-                        <div className="min-w-0 flex-1">
-                          <div className="font-medium truncate">{r.product_name}</div>
-                          <div className="font-mono text-muted-foreground">{r.barcode}</div>
-                        </div>
-                        <div className="shrink-0 text-right space-y-0.5">
-                          <div className="text-muted-foreground">Sys: {r.system_stock} · Contado: {r.counted}</div>
-                          <div className={`font-bold ${diff === 0 ? "text-emerald-600" : diff < 0 ? "text-red-600" : "text-amber-600"}`}>
-                            {diff === 0 ? "✓ Correcto" : diff > 0 ? `+${diff} SOBRA` : `${diff} FALTA`}
+                        className={`px-3 py-2.5 text-xs ${diff === 0 ? "bg-emerald-50 dark:bg-emerald-950/20" : diff < 0 ? "bg-red-50 dark:bg-red-950/20" : "bg-amber-50 dark:bg-amber-950/20"}`}>
+                        <div className="flex items-center gap-2">
+                          <div className="min-w-0 flex-1">
+                            <div className="font-medium truncate">{r.product_name}</div>
+                            <div className="font-mono text-muted-foreground">{r.barcode}</div>
+                          </div>
+                          <div className="shrink-0 text-right space-y-0.5">
+                            <div className="text-muted-foreground">Sys: {r.system_stock} · Contado: {r.counted}</div>
+                            <div className={`font-bold ${diff === 0 ? "text-emerald-600" : diff < 0 ? "text-red-600" : "text-amber-600"}`}>
+                              {diff === 0 ? "✓ Correcto" : diff > 0 ? `+${diff} SOBRA` : `${diff} FALTA`}
+                            </div>
                           </div>
                         </div>
+                        {prodComments.length > 0 && (
+                          <div className="mt-1.5 space-y-1 rounded border border-blue-200/60 bg-blue-50/50 p-1.5 dark:border-blue-900 dark:bg-blue-950/20">
+                            {prodComments.map((c) => (
+                              <div key={c.id} className="text-[10px]">
+                                <span className="font-medium text-foreground">{c.collaborator_name ?? "—"}</span>
+                                {c.branch && <span className="text-muted-foreground"> · {branchLabel(c.branch)}</span>}
+                                <span className="text-muted-foreground">
+                                  {" · "}
+                                  {new Date(c.created_at).toLocaleDateString("es-MX", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+                                </span>
+                                <p className="text-foreground mt-0.5">{c.comment}</p>
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     );
                   })}
                   {rows.length === 0 && <div className="p-3 text-xs text-muted-foreground">Sin conteos registrados este mes.</div>}
                 </div>
+
+                {/* Resumen de comentarios de la categoría (incluye genéricos sin producto) */}
+                {reportComments.length > 0 && (
+                  <div className="space-y-1.5">
+                    <p className="text-[11px] font-medium text-blue-700 dark:text-blue-300">
+                      Comentarios del corte ({reportComments.length})
+                    </p>
+                    <div className="max-h-40 space-y-1.5 overflow-y-auto rounded-md border bg-muted/30 p-2">
+                      {reportComments.map((c) => (
+                        <div key={c.id} className="text-[11px]">
+                          <div className="flex flex-wrap items-center gap-1 text-muted-foreground">
+                            <span className="font-medium text-foreground">{c.collaborator_name ?? "—"}</span>
+                            {c.branch && <span>· {branchLabel(c.branch)}</span>}
+                            {c.product_name && <span>· {c.product_name}</span>}
+                            <span>· {new Date(c.created_at).toLocaleDateString("es-MX", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</span>
+                          </div>
+                          <p className="text-foreground">{c.comment}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 {reportLiveRows.length > 0 && (
                   <div className="space-y-1.5">
