@@ -113,10 +113,21 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   const { drainQueue } = await import("@/lib/offline-queue");
                   toast.info("Sincronizando…");
                   const result = await drainQueue();
-                  // Forzar refresco del contador
+                  // Forzar refresco del contador (varias veces por si IndexedDB tarda)
                   window.dispatchEvent(new Event("inv:queue-changed"));
+                  setTimeout(() => window.dispatchEvent(new Event("inv:queue-changed")), 300);
+                  setTimeout(() => window.dispatchEvent(new Event("inv:queue-changed")), 1000);
+
                   if (result.unreachable) {
                     toast.error("Hay señal pero no se pudo conectar al servidor. Probá de nuevo en unos segundos.");
+                    return;
+                  }
+                  if (result.errors.includes("Sincronización en curso")) {
+                    toast.message("Ya hay una sincronización en curso. Esperá unos segundos y tocá de nuevo.");
+                    return;
+                  }
+                  if (result.remaining === 0 && result.failed === 0) {
+                    toast.success("Todo sincronizado ✓");
                     return;
                   }
                   if (result.ok > 0) {
@@ -127,10 +138,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                     toast.error(`${result.failed} fallaron${detail}. Tocá de nuevo para reintentar.`);
                   }
                   if (result.ok === 0 && result.failed === 0 && result.remaining > 0) {
-                    toast.message("Sincronización en curso o sin cambios. Tocá de nuevo.");
-                  }
-                  if (result.remaining === 0) {
-                    toast.success("Todo sincronizado ✓");
+                    toast.message(`Quedan ${result.remaining} pendientes. Tocá de nuevo para reintentar.`);
                   }
                 }}
                 className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-1 font-medium text-blue-900 hover:bg-blue-200 dark:bg-blue-900/40 dark:text-blue-100">
