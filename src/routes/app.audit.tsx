@@ -2410,3 +2410,4 @@ function AdminHistoryRow({ row, onEdit, onDelete }: { row: HistoryRow; onEdit: (
     </div>
   );
 }
+ 
