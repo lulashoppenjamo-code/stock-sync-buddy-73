@@ -1,4 +1,3 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import {
@@ -112,6 +111,9 @@ function AuditHistoryPage() {
   /** Borrador del total mientras el admin escribe (evita resetear Mina/Morelos a 0 al tipear). */
   const [editTotalDraft, setEditTotalDraft] = useState("");
   const [editSystemDraft, setEditSystemDraft] = useState("");
+  const [editSaveMode, setEditSaveMode] = useState<"audit" | "both">("audit");
+  const [editInventoryMina, setEditInventoryMina] = useState("");
+  const [editInventoryMorelos, setEditInventoryMorelos] = useState("");
   const [savingEdit, setSavingEdit] = useState(false);
   const [savingZobaze, setSavingZobaze] = useState(false);
   const [deletingSession, setDeletingSession] = useState<string | null>(null);
@@ -246,6 +248,9 @@ function AuditHistoryPage() {
     setEditMorelos(r.morelos_count);
     setEditTotalDraft(String(r.mina_count + r.morelos_count));
     setEditSystemDraft(String(r.system_stock));
+    setEditSaveMode("audit");
+    setEditInventoryMina("");
+    setEditInventoryMorelos("");
   }
 
   /** Aplica un nuevo total redistribuyendo solo el delta, sin borrar conteos existentes. */
@@ -268,31 +273,47 @@ function AuditHistoryPage() {
 
   async function saveEdit() {
     if (!editRow || !me) return;
+    if (!me.is_admin) { toast.error("Solo un administrador puede corregir este registro"); return; }
     if (adminPin.length < 4) { toast.error("Ingresá tu PIN de administrador"); return; }
-    // Asegurar que el total escrito se aplique aunque no hayan hecho blur
     let mina = editMina;
     let morelos = editMorelos;
     const draftN = parseInt(editTotalDraft, 10);
     const systemDraftN = Number(editSystemDraft);
     if (editSystemDraft.trim() === "" || !Number.isFinite(systemDraftN) || systemDraftN < 0 || !Number.isInteger(systemDraftN)) {
-      toast.error("El total general debe ser un número entero igual o mayor a cero");
-      return;
+      toast.error("El total general del historial debe ser un entero igual o mayor a cero"); return;
     }
-    if (Number.isFinite(draftN) && draftN !== mina + morelos) {
-      const safe = Math.max(0, Math.floor(draftN));
-      const delta = safe - (mina + morelos);
+    if (!Number.isFinite(draftN) || draftN < 0 || !Number.isInteger(draftN)) {
+      toast.error("El conteo físico debe ser un entero igual o mayor a cero"); return;
+    }
+    if (draftN !== mina + morelos) {
+      const delta = draftN - (mina + morelos);
       if (morelos > mina) morelos = Math.max(0, morelos + delta);
       else mina = Math.max(0, mina + delta);
     }
+    let inventoryMina: number | null = null;
+    let inventoryMorelos: number | null = null;
+    if (editSaveMode === "both") {
+      inventoryMina = Number(editInventoryMina);
+      inventoryMorelos = Number(editInventoryMorelos);
+      if (editInventoryMina.trim() === "" || !Number.isFinite(inventoryMina) || inventoryMina < 0 || !Number.isInteger(inventoryMina)) {
+        toast.error("La existencia real de Mina debe ser un entero igual o mayor a cero"); return;
+      }
+      if (editInventoryMorelos.trim() === "" || !Number.isFinite(inventoryMorelos) || inventoryMorelos < 0 || !Number.isInteger(inventoryMorelos)) {
+        toast.error("La existencia real de Morelos debe ser un entero igual o mayor a cero"); return;
+      }
+    }
     setSavingEdit(true);
     try {
-      const { error } = await supabase.rpc("admin_correct_closed_count_row", {
+      const { error } = await supabase.rpc("admin_correct_closed_count_row_v2", {
         p_admin_id: me.id, p_admin_pin: adminPin, p_row_id: editRow.id,
-        p_mina_count: mina, p_morelos_count: morelos,
-        p_system_stock: systemDraftN,
+        p_mina_count: mina, p_morelos_count: morelos, p_system_stock: systemDraftN,
+        p_update_inventory: editSaveMode === "both",
+        p_inventory_mina: inventoryMina, p_inventory_morelos: inventoryMorelos,
       });
       if (error) throw error;
-      toast.success("Total general y conteo guardados correctamente");
+      toast.success(editSaveMode === "both"
+        ? "Auditoría e inventario real corregidos correctamente"
+        : "Solo se corrigió el historial; el inventario real no cambió");
       setEditRow(null);
       qc.invalidateQueries({ queryKey: ["closed_counts"] });
       qc.invalidateQueries({ queryKey: ["products"] });
@@ -361,7 +382,7 @@ function AuditHistoryPage() {
   const monthOptions = useMemo(() => {
     const set = new Set<string>(rows.map((r) => monthKey(r.closed_at)));
     set.add(nowMonthKey());
-    return Array.from(set).sort((a, b) => b.localeCompare(a));
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
   }, [rows]);
 
   const categories = useMemo(
@@ -609,7 +630,7 @@ function AuditHistoryPage() {
                   </div>
                   {me?.is_admin && (
                     <button type="button" onClick={() => openEdit(r)}
-                      className="shrink-0 rounded p-1 hover:bg-muted" title="Corregir conteo / ajustar total">
+                      className="shrink-0 rounded p-1 hover:bg-muted" title="Corregir registro de auditoría">
                       <Pencil className="h-3.5 w-3.5" />
                     </button>
                   )}
@@ -663,7 +684,7 @@ function AuditHistoryPage() {
                 <Input type="number" min={0} step={1} value={editSystemDraft}
                   onChange={(e) => setEditSystemDraft(e.target.value.replace(/[^0-9]/g, ""))}
                   className="mt-1" />
-                <p className="mt-1 text-[10px] text-muted-foreground">Actualiza la existencia general del artículo en inventario y este registro del historial.</p>
+                <p className="mt-1 text-[10px] text-muted-foreground">Corrige la existencia del sistema guardada en este registro histórico. El inventario real solo cambia si eliges la segunda opción abajo.</p>
               </div>
               <div className="grid grid-cols-2 gap-2">
                 <div>
@@ -713,6 +734,28 @@ function AuditHistoryPage() {
                   }}
                   className="mt-1"
                 />
+              </div>
+              <div className="space-y-2 rounded-md border p-3">
+                <p className="text-xs font-semibold">¿Qué deseas corregir?</p>
+                <Button type="button" variant={editSaveMode === "audit" ? "default" : "outline"} className="w-full justify-start whitespace-normal text-left" onClick={() => setEditSaveMode("audit")}>
+                  Solo corregir auditoría
+                </Button>
+                <Button type="button" variant={editSaveMode === "both" ? "default" : "outline"} className="w-full justify-start whitespace-normal text-left" onClick={() => setEditSaveMode("both")}>
+                  Corregir auditoría e inventario real
+                </Button>
+                {editSaveMode === "both" && (
+                  <div className="space-y-2 rounded-md border border-amber-200 bg-amber-50/60 p-3 dark:border-amber-900 dark:bg-amber-950/20">
+                    <p className="text-[11px] text-muted-foreground">Introduce las existencias actuales reales de cada sucursal. Solo se cambiarán al guardar con esta opción.</p>
+                    <div>
+                      <label className="text-xs font-medium">Inventario real · {MINA}</label>
+                      <Input type="number" min={0} step={1} value={editInventoryMina} onChange={(e) => setEditInventoryMina(e.target.value.replace(/[^0-9]/g, ""))} placeholder="Cantidad actual de Mina" className="mt-1" />
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium">Inventario real · {MORELOS}</label>
+                      <Input type="number" min={0} step={1} value={editInventoryMorelos} onChange={(e) => setEditInventoryMorelos(e.target.value.replace(/[^0-9]/g, ""))} placeholder="Cantidad actual de Morelos" className="mt-1" />
+                    </div>
+                  </div>
+                )}
               </div>
               <p className="text-[11px] text-muted-foreground">
                 Sistema: {editSystemDraft || "0"} · Conteo físico: {editTotalDraft || "0"} · Nueva diferencia:{" "}
