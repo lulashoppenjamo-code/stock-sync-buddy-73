@@ -275,40 +275,53 @@ function AuditHistoryPage() {
     if (!editRow || !me) return;
     if (!me.is_admin) { toast.error("Solo un administrador puede corregir este registro"); return; }
     if (adminPin.length < 4) { toast.error("Ingresá tu PIN de administrador"); return; }
+
     let mina = editMina;
     let morelos = editMorelos;
-    const draftN = parseInt(editTotalDraft, 10);
+    const draftN = Number(editTotalDraft);
     const systemDraftN = Number(editSystemDraft);
+
     if (editSystemDraft.trim() === "" || !Number.isFinite(systemDraftN) || systemDraftN < 0 || !Number.isInteger(systemDraftN)) {
-      toast.error("El total general del historial debe ser un entero igual o mayor a cero"); return;
+      toast.error("El total general del historial debe ser un entero igual o mayor a cero");
+      return;
     }
-    if (!Number.isFinite(draftN) || draftN < 0 || !Number.isInteger(draftN)) {
-      toast.error("El conteo físico debe ser un entero igual o mayor a cero"); return;
+    if (editTotalDraft.trim() === "" || !Number.isFinite(draftN) || draftN < 0 || !Number.isInteger(draftN)) {
+      toast.error("El conteo físico debe ser un entero igual o mayor a cero");
+      return;
     }
     if (draftN !== mina + morelos) {
       const delta = draftN - (mina + morelos);
       if (morelos > mina) morelos = Math.max(0, morelos + delta);
       else mina = Math.max(0, mina + delta);
     }
+
     let inventoryMina: number | null = null;
     let inventoryMorelos: number | null = null;
     if (editSaveMode === "both") {
       inventoryMina = Number(editInventoryMina);
       inventoryMorelos = Number(editInventoryMorelos);
       if (editInventoryMina.trim() === "" || !Number.isFinite(inventoryMina) || inventoryMina < 0 || !Number.isInteger(inventoryMina)) {
-        toast.error("La existencia real de Mina debe ser un entero igual o mayor a cero"); return;
+        toast.error(`La existencia real de ${MINA} debe ser un entero igual o mayor a cero`);
+        return;
       }
       if (editInventoryMorelos.trim() === "" || !Number.isFinite(inventoryMorelos) || inventoryMorelos < 0 || !Number.isInteger(inventoryMorelos)) {
-        toast.error("La existencia real de Morelos debe ser un entero igual o mayor a cero"); return;
+        toast.error(`La existencia real de ${MORELOS} debe ser un entero igual o mayor a cero`);
+        return;
       }
     }
+
     setSavingEdit(true);
     try {
       const { error } = await supabase.rpc("admin_correct_closed_count_row_v2", {
-        p_admin_id: me.id, p_admin_pin: adminPin, p_row_id: editRow.id,
-        p_mina_count: mina, p_morelos_count: morelos, p_system_stock: systemDraftN,
+        p_admin_id: me.id,
+        p_admin_pin: adminPin,
+        p_row_id: editRow.id,
+        p_mina_count: mina,
+        p_morelos_count: morelos,
+        p_system_stock: systemDraftN,
         p_update_inventory: editSaveMode === "both",
-        p_inventory_mina: inventoryMina, p_inventory_morelos: inventoryMorelos,
+        p_inventory_mina: inventoryMina,
+        p_inventory_morelos: inventoryMorelos,
       });
       if (error) throw error;
       toast.success(editSaveMode === "both"
@@ -319,8 +332,11 @@ function AuditHistoryPage() {
       qc.invalidateQueries({ queryKey: ["products"] });
       qc.invalidateQueries({ queryKey: ["products-full"] });
       qc.invalidateQueries({ queryKey: ["audit-history-month"] });
-    } catch (e) { toast.error((e as Error).message); }
-    finally { setSavingEdit(false); }
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setSavingEdit(false);
+    }
   }
 
   async function toggleZobaze(sessionId: string, category: string, corrected: boolean) {
@@ -630,7 +646,7 @@ function AuditHistoryPage() {
                   </div>
                   {me?.is_admin && (
                     <button type="button" onClick={() => openEdit(r)}
-                      className="shrink-0 rounded p-1 hover:bg-muted" title="Corregir registro de auditoría">
+                      className="shrink-0 rounded p-1 hover:bg-muted" title="Corregir conteo / ajustar total">
                       <Pencil className="h-3.5 w-3.5" />
                     </button>
                   )}
@@ -684,7 +700,7 @@ function AuditHistoryPage() {
                 <Input type="number" min={0} step={1} value={editSystemDraft}
                   onChange={(e) => setEditSystemDraft(e.target.value.replace(/[^0-9]/g, ""))}
                   className="mt-1" />
-                <p className="mt-1 text-[10px] text-muted-foreground">Corrige la existencia del sistema guardada en este registro histórico. El inventario real solo cambia si eliges la segunda opción abajo.</p>
+                <p className="mt-1 text-[10px] text-muted-foreground">Corrige la existencia del sistema guardada en este registro histórico. El inventario real solo cambia si eliges la segunda opción.</p>
               </div>
               <div className="grid grid-cols-2 gap-2">
                 <div>
@@ -748,11 +764,11 @@ function AuditHistoryPage() {
                     <p className="text-[11px] text-muted-foreground">Introduce las existencias actuales reales de cada sucursal. Solo se cambiarán al guardar con esta opción.</p>
                     <div>
                       <label className="text-xs font-medium">Inventario real · {MINA}</label>
-                      <Input type="number" min={0} step={1} value={editInventoryMina} onChange={(e) => setEditInventoryMina(e.target.value.replace(/[^0-9]/g, ""))} placeholder="Cantidad actual de Mina" className="mt-1" />
+                      <Input type="number" min={0} step={1} value={editInventoryMina} onChange={(e) => setEditInventoryMina(e.target.value.replace(/[^0-9]/g, ""))} placeholder={`Cantidad actual de ${MINA}`} className="mt-1" />
                     </div>
                     <div>
                       <label className="text-xs font-medium">Inventario real · {MORELOS}</label>
-                      <Input type="number" min={0} step={1} value={editInventoryMorelos} onChange={(e) => setEditInventoryMorelos(e.target.value.replace(/[^0-9]/g, ""))} placeholder="Cantidad actual de Morelos" className="mt-1" />
+                      <Input type="number" min={0} step={1} value={editInventoryMorelos} onChange={(e) => setEditInventoryMorelos(e.target.value.replace(/[^0-9]/g, ""))} placeholder={`Cantidad actual de ${MORELOS}`} className="mt-1" />
                     </div>
                   </div>
                 )}
