@@ -1,182 +1,736 @@
--- Administrador: corregir por separado la existencia general del sistema
--- y el conteo físico guardado en el historial de auditorías.
--- No elimina ni reinicia auditorías existentes.
+  /** Aplica un nuevo total redistribuyendo solo el delta, sin borrar conteos existentes. */
+  function applyTotal(newTotal: number) {
+    const safe = Math.max(0, Math.floor(newTotal));
+    const current = editMina + editMorelos;
+    if (safe === current) {
+      setEditTotalDraft(String(safe));
+      return;
+    }
+    const delta = safe - current;
+    // Preferir ajustar la sucursal que ya tiene más cantidad; si empate o ambas 0, a Mina.
+    if (editMorelos > editMina) {
+      setEditMorelos(Math.max(0, editMorelos + delta));
+    } else {
+      setEditMina(Math.max(0, editMina + delta));
+    }
+    setEditTotalDraft(String(safe));
+  }
 
-BEGIN;
+  async function saveEdit() {
+    if (!editRow || !me) return;
+    if (adminPin.length < 4) { toast.error("Ingresá tu PIN de administrador"); return; }
+    // Asegurar que el total escrito se aplique aunque no hayan hecho blur
+    let mina = editMina;
+    let morelos = editMorelos;
+    const draftN = parseInt(editTotalDraft, 10);
+    const systemDraftN = Number(editSystemDraft);
+    if (editSystemDraft.trim() === "" || !Number.isFinite(systemDraftN) || systemDraftN < 0 || !Number.isInteger(systemDraftN)) {
+      toast.error("El total general debe ser un número entero igual o mayor a cero");
+      return;
+    }
+    if (Number.isFinite(draftN) && draftN !== mina + morelos) {
+      const safe = Math.max(0, Math.floor(draftN));
+      const delta = safe - (mina + morelos);
+      if (morelos > mina) morelos = Math.max(0, morelos + delta);
+      else mina = Math.max(0, mina + delta);
+    }
+    setSavingEdit(true);
+    try {
+      const { error } = await supabase.rpc("admin_correct_closed_count_row", {
+        p_admin_id: me.id, p_admin_pin: adminPin, p_row_id: editRow.id,
+        p_mina_count: mina, p_morelos_count: morelos,
+        p_system_stock: systemDraftN,
+      });
+      if (error) throw error;
+      toast.success("Total general y conteo guardados correctamente");
+      setEditRow(null);
+      qc.invalidateQueries({ queryKey: ["closed_counts"] });
+      qc.invalidateQueries({ queryKey: ["products"] });
+      qc.invalidateQueries({ queryKey: ["products-full"] });
+      qc.invalidateQueries({ queryKey: ["audit-history-month"] });
+    } catch (e) { toast.error((e as Error).message); }
+    finally { setSavingEdit(false); }
+  }
 
-CREATE TABLE IF NOT EXISTS public.closed_count_correction_log (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  closed_count_id uuid NOT NULL,
-  barcode text NOT NULL,
-  product_name text NOT NULL,
-  admin_id uuid,
-  admin_name text NOT NULL,
-  old_system_stock numeric NOT NULL,
-  new_system_stock numeric NOT NULL,
-  old_mina_count numeric NOT NULL,
-  new_mina_count numeric NOT NULL,
-  old_morelos_count numeric NOT NULL,
-  new_morelos_count numeric NOT NULL,
-  corrected_at timestamptz NOT NULL DEFAULT now()
-);
+  async function toggleZobaze(sessionId: string, category: string, corrected: boolean) {
+    if (!me) return;
+    if (adminPin.length < 4) { toast.error("Ingresá tu PIN de administrador arriba para marcar Zobaze"); return; }
+    setSavingZobaze(true);
+    try {
+      const { error } = await supabase.rpc("admin_set_zobaze_correction", {
+        p_admin_id: me.id, p_admin_pin: adminPin, p_session_id: sessionId,
+        p_category: category, p_corrected: corrected,
+      });
+      if (error) throw error;
+      toast.success(corrected ? "Marcado como corregido en Zobaze ✓" : "Marca de Zobaze quitada");
+      qc.invalidateQueries({ queryKey: ["zobaze_corrections"] });
+    } catch (e) { toast.error((e as Error).message); }
+    finally { setSavingZobaze(false); }
+  }
 
-ALTER TABLE public.closed_count_correction_log ENABLE ROW LEVEL SECURITY;
+  const sessions = useMemo(() => {
+    const map = new Map<string, {
+      session_id: string; category: string; closed_at: string; closed_by: string | null;
+      count: number; sys: number; mina: number; morelos: number; total: number; diff: number;
+      faltanteVal: number; sobranteVal: number;
+    }>();
+    for (const r of rows) {
+      if (filterCat && (r.category ?? "").trim() !== filterCat.trim()) continue;
+      if (filterDate) {
+        // Búsqueda por fecha específica: manda sobre el filtro de mes.
+        if (!r.closed_at.startsWith(filterDate)) continue;
+      } else if (filterMonth && monthKey(r.closed_at) !== filterMonth) {
+        continue;
+      }
+      const e = map.get(r.session_id) ?? {
+        session_id: r.session_id, category: (r.category ?? "").trim(), closed_at: r.closed_at,
+        closed_by: r.closed_by, count: 0, sys: 0, mina: 0, morelos: 0, total: 0, diff: 0,
+        faltanteVal: 0, sobranteVal: 0,
+      };
+      e.count++;
+      e.sys += Number(r.system_stock);
+      e.mina += Number(r.mina_count);
+      e.morelos += Number(r.morelos_count);
+      e.total += Number(r.total_counted);
+      e.diff += Number(r.difference);
+      const v = rowValue(r);
+      if (v < 0) e.faltanteVal += -v; else e.sobranteVal += v;
+      map.set(r.session_id, e);
+    }
+    // Una sola entrada por categoría + mes: la sesión más reciente.
+    // Así no se listan cierres duplicados del mismo mes (p.ej. WAPIZIMA dos veces).
+    const byCatMonth = new Map<string, typeof map extends Map<string, infer V> ? V : never>();
+    for (const s of map.values()) {
+      const key = `${(s.category ?? "").trim()}|${monthKey(s.closed_at)}`;
+      const prev = byCatMonth.get(key);
+      if (!prev || s.closed_at > prev.closed_at) byCatMonth.set(key, s);
+    }
+    return Array.from(byCatMonth.values()).sort((a, b) => b.closed_at.localeCompare(a.closed_at));
+  }, [rows, filterCat, filterDate, filterMonth]);
 
-REVOKE ALL ON TABLE public.closed_count_correction_log
-FROM PUBLIC, anon, authenticated;
+  const monthOptions = useMemo(() => {
+    const set = new Set<string>(rows.map((r) => monthKey(r.closed_at)));
+    set.add(nowMonthKey());
+    return Array.from(set).sort((a, b) => b.localeCompare(a));
+  }, [rows]);
 
-GRANT ALL ON TABLE public.closed_count_correction_log TO service_role;
-
-CREATE OR REPLACE FUNCTION public.admin_correct_closed_count_row(
-  p_admin_id uuid,
-  p_admin_pin text,
-  p_row_id uuid,
-  p_mina_count numeric,
-  p_morelos_count numeric,
-  p_system_stock numeric
-)
-RETURNS void
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public, extensions
-AS $$
-DECLARE
-  v_row public.closed_counts%ROWTYPE;
-  v_product public.products%ROWTYPE;
-  v_total_counted numeric;
-  v_difference numeric;
-  v_admin_name text;
-  v_new_stock_a numeric;
-  v_new_stock_b numeric;
-BEGIN
-  IF NOT public._check_admin_pin(p_admin_id, p_admin_pin) THEN
-    RAISE EXCEPTION 'PIN de administrador inválido';
-  END IF;
-
-  IF p_mina_count IS NULL
-     OR p_morelos_count IS NULL
-     OR p_system_stock IS NULL
-     OR p_mina_count < 0
-     OR p_morelos_count < 0
-     OR p_system_stock < 0
-     OR p_mina_count <> trunc(p_mina_count)
-     OR p_morelos_count <> trunc(p_morelos_count)
-     OR p_system_stock <> trunc(p_system_stock) THEN
-    RAISE EXCEPTION
-      'Las cantidades deben ser números enteros iguales o mayores a cero';
-  END IF;
-
-  SELECT *
-  INTO v_row
-  FROM public.closed_counts
-  WHERE id = p_row_id
-  FOR UPDATE;
-
-  IF NOT FOUND THEN
-    RAISE EXCEPTION 'Registro de auditoría no encontrado';
-  END IF;
-
-  SELECT *
-  INTO v_product
-  FROM public.products
-  WHERE barcode = v_row.barcode
-  FOR UPDATE;
-
-  IF NOT FOUND THEN
-    RAISE EXCEPTION
-      'No se encontró el artículo en el inventario; no se guardó ningún cambio';
-  END IF;
-
-  SELECT name
-  INTO v_admin_name
-  FROM public.collaborators
-  WHERE id = p_admin_id
-    AND is_admin = true
-    AND active = true;
-
-  IF v_admin_name IS NULL THEN
-    RAISE EXCEPTION
-      'El administrador no está activo o no tiene permisos';
-  END IF;
-
-  -- Mantener la cantidad de la sucursal A siempre que quepa en el nuevo
-  -- total. La diferencia se asigna a B; si el total nuevo es menor que A,
-  -- se reduce A y B queda en cero.
-  v_new_stock_a :=
-    LEAST(COALESCE(v_product.stock_a, 0), p_system_stock);
-
-  v_new_stock_b := p_system_stock - v_new_stock_a;
-
-  UPDATE public.products
-  SET stock_a = v_new_stock_a,
-      stock_b = v_new_stock_b,
-      updated_at = now()
-  WHERE barcode = v_row.barcode;
-
-  v_total_counted := p_mina_count + p_morelos_count;
-  v_difference := v_total_counted - p_system_stock;
-
-  INSERT INTO public.closed_count_correction_log (
-    closed_count_id,
-    barcode,
-    product_name,
-    admin_id,
-    admin_name,
-    old_system_stock,
-    new_system_stock,
-    old_mina_count,
-    new_mina_count,
-    old_morelos_count,
-    new_morelos_count
-  )
-  VALUES (
-    v_row.id,
-    v_row.barcode,
-    v_row.product_name,
-    p_admin_id,
-    v_admin_name,
-    v_row.system_stock,
-    p_system_stock,
-    v_row.mina_count,
-    p_mina_count,
-    v_row.morelos_count,
-    p_morelos_count
+  const categories = useMemo(
+    () => Array.from(new Set(rows.map((r) => r.category))).sort((a, b) => a.localeCompare(b, "es")),
+    [rows]
   );
 
-  UPDATE public.closed_counts
-  SET system_stock = p_system_stock,
-      mina_count = p_mina_count,
-      morelos_count = p_morelos_count,
-      total_counted = v_total_counted,
-      difference = v_difference,
-      difference_value =
-        v_difference * COALESCE(v_row.unit_price, 0),
-      scanned_mina = p_mina_count > 0,
-      scanned_morelos = p_morelos_count > 0,
-      count_details =
-        COALESCE(v_row.count_details, '[]'::jsonb)
-        || jsonb_build_array(
-          jsonb_build_object(
-            'name', v_admin_name,
-            'branch', 'corrección administrativa',
-            'qty', v_total_counted,
-            'at', now(),
-            'system_stock_before', v_row.system_stock,
-            'system_stock_after', p_system_stock
-          )
-        ),
-      last_counted_by = v_admin_name,
-      last_counted_at = now()
-  WHERE id = p_row_id;
-END;
-$$;
+  // ── Reporte general por mes ──────────────────────────────────────────
+  const monthly = useMemo(() => {
+    const map = new Map<string, {
+      key: string; sys: number; mina: number; morelos: number; total: number;
+      faltante: number; sobrante: number; faltanteVal: number; sobranteVal: number;
+      categories: Set<string>; sessions: Set<string>;
+    }>();
+    for (const r of rows) {
+      const k = monthKey(r.closed_at);
+      const e = map.get(k) ?? {
+        key: k, sys: 0, mina: 0, morelos: 0, total: 0, faltante: 0, sobrante: 0,
+        faltanteVal: 0, sobranteVal: 0,
+        categories: new Set<string>(), sessions: new Set<string>(),
+      };
+      e.sys += Number(r.system_stock);
+      e.mina += Number(r.mina_count);
+      e.morelos += Number(r.morelos_count);
+      e.total += Number(r.total_counted);
+      const d = Number(r.difference);
+      if (d < 0) e.faltante += -d;
+      else e.sobrante += d;
+      const v = rowValue(r);
+      if (v < 0) e.faltanteVal += -v; else e.sobranteVal += v;
+      e.categories.add(r.category);
+      e.sessions.add(r.session_id);
+      map.set(k, e);
+    }
+    return Array.from(map.values()).sort((a, b) => b.key.localeCompare(a.key));
+  }, [rows]);
 
-REVOKE ALL ON FUNCTION public.admin_correct_closed_count_row(
-  uuid, text, uuid, numeric, numeric, numeric
-) FROM PUBLIC;
+  // ── Datos para la gráfica de progreso mes con mes (orden cronológico ascendente) ──
+  const chartData = useMemo(() => {
+    return [...monthly]
+      .sort((a, b) => a.key.localeCompare(b.key))
+      .map((m) => ({
+        label: monthName(m.key).replace(/ de \d{4}$/, ""),
+        faltanteVal: m.faltanteVal,
+        pctFaltante: pct(m.faltante, m.sys),
+      }));
+  }, [monthly]);
 
-GRANT EXECUTE ON FUNCTION public.admin_correct_closed_count_row(
-  uuid, text, uuid, numeric, numeric, numeric
-) TO anon, authenticated;
+  // ── Detalle de un corte ──────────────────────────────────────────────
+  if (selected) {
+    const detail = rows.filter((r) => r.session_id === selected);
+    const s = sessions.find((x) => x.session_id === selected);
+    const t = detail.reduce((acc, r) => {
+      acc.sys += Number(r.system_stock);
+      acc.mina += Number(r.mina_count);
+      acc.morelos += Number(r.morelos_count);
+      acc.total += Number(r.total_counted);
+      const d = Number(r.difference);
+      if (d === 0) acc.ok++; else if (d < 0) { acc.faltan++; acc.faltante += -d; } else { acc.sobran++; acc.sobrante += d; }
+      const v = rowValue(r);
+      if (v < 0) acc.faltanteVal += -v; else acc.sobranteVal += v;
+      return acc;
+    }, { sys: 0, mina: 0, morelos: 0, total: 0, ok: 0, faltan: 0, sobran: 0, faltante: 0, sobrante: 0, faltanteVal: 0, sobranteVal: 0 });
 
-COMMIT;
+    const correction = correctionsMap.get(selected);
+
+    return (
+      <div className="space-y-4">
+        <button onClick={() => setSelected(null)} className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
+          <ArrowLeft className="h-4 w-4" /> Volver
+        </button>
+
+        {me?.is_admin && (
+          <Card>
+            <CardContent className="p-3 space-y-2">
+              <label className="text-xs font-medium text-muted-foreground">Tu PIN de administrador</label>
+              <Input type="password" inputMode="numeric" value={adminPin}
+                onChange={(e) => setAdminPin(e.target.value.replace(/\D/g, ""))}
+                placeholder="Necesario para corregir o marcar Zobaze" className="max-w-xs" />
+            </CardContent>
+          </Card>
+        )}
+
+        <Card>
+          <CardContent className="p-3 space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-sm font-semibold">{s?.category ?? detail[0]?.category}</div>
+              {correction && (
+                <span className="flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200">
+                  <PackageCheck className="h-3 w-3" /> Corregido en Zobaze
+                </span>
+              )}
+            </div>
+            <div className="text-xs text-muted-foreground">
+              {detail[0] && new Date(detail[0].closed_at).toLocaleString("es-MX")} · Cerrado por {detail[0]?.closed_by ?? "—"}
+            </div>
+            {correction && (
+              <div className="text-[11px] text-emerald-700 dark:text-emerald-300">
+                Corregido por {correction.corrected_by ?? "—"} · {new Date(correction.corrected_at).toLocaleString("es-MX")}
+              </div>
+            )}
+            {me?.is_admin && (
+              <Button size="sm" variant="outline" disabled={savingZobaze}
+                className={correction ? "border-red-300 text-red-700 hover:bg-red-50" : "border-emerald-400 text-emerald-700 hover:bg-emerald-50"}
+                onClick={() => toggleZobaze(selected, s?.category ?? detail[0]?.category ?? "", !correction)}>
+                {savingZobaze ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <PackageCheck className="h-3.5 w-3.5" />}
+                {correction ? "Quitar marca de Zobaze" : "Marcar como corregido en Zobaze"}
+              </Button>
+            )}
+            <p className="text-[11px] text-muted-foreground">
+              El conteo se conserva tal cual para llevar el registro; esta marca solo indica que ya ajustaste las existencias en Zobaze según este corte.
+            </p>
+
+            {/* Eliminar historial — solo admin */}
+            {me?.is_admin && (
+              <div className="pt-1 border-t">
+                {confirmDeleteSession === selected ? (
+                  <div className="space-y-2">
+                    <p className="text-xs text-red-600 font-medium">⚠ ¿Seguro que querés eliminar todo este historial? No se puede deshacer.</p>
+                    <div className="flex gap-2">
+                      <Button size="sm" variant="outline" onClick={() => setConfirmDeleteSession(null)}>Cancelar</Button>
+                      <Button size="sm" variant="destructive" disabled={!!deletingSession}
+                        onClick={() => deleteSession(selected)}>
+                        {deletingSession ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                        Sí, eliminar
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <Button size="sm" variant="outline"
+                    className="border-red-300 text-red-600 hover:bg-red-50"
+                    onClick={() => {
+                      if (adminPin.length < 4) { toast.error("Ingresá tu PIN de administrador primero"); return; }
+                      setConfirmDeleteSession(selected);
+                    }}>
+                    <Trash2 className="h-3.5 w-3.5" /> Eliminar historial de este corte
+
+                  </Button>
+                )}
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-2 pt-2 text-center">
+              <div className="rounded bg-muted p-2">
+                <div className="text-[10px] text-muted-foreground">{MINA}</div>
+                <div className="text-lg font-bold">{t.mina}</div>
+              </div>
+              <div className="rounded bg-muted p-2">
+                <div className="text-[10px] text-muted-foreground">{MORELOS}</div>
+                <div className="text-lg font-bold">{t.morelos}</div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-2 text-center">
+              <div className="rounded bg-muted p-2">
+                <div className="text-[10px] text-muted-foreground">Sistema</div>
+                <div className="text-lg font-bold">{t.sys}</div>
+              </div>
+              <div className="rounded bg-muted p-2">
+                <div className="text-[10px] text-muted-foreground">Contado</div>
+                <div className="text-lg font-bold">{t.total}</div>
+              </div>
+              <div className="rounded bg-muted p-2">
+                <div className="text-[10px] text-muted-foreground">Δ Total</div>
+                <div className={`text-lg font-bold ${t.total - t.sys === 0 ? "text-emerald-600" : t.total - t.sys < 0 ? "text-red-600" : "text-amber-600"}`}>
+                  {t.total - t.sys > 0 ? `+${t.total - t.sys}` : t.total - t.sys}
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-2 text-center">
+              <div className="rounded bg-emerald-50 dark:bg-emerald-950/20 p-2">
+                <div className="text-[10px] text-muted-foreground">Exactos</div>
+                <div className="text-base font-bold text-emerald-700">{t.ok}</div>
+              </div>
+              <div className="rounded bg-red-50 dark:bg-red-950/20 p-2">
+                <div className="text-[10px] text-muted-foreground">Faltantes</div>
+                <div className="text-base font-bold text-red-600">{t.faltan} · {t.faltante} pz</div>
+                <div className="text-[11px] font-semibold text-red-600">{money(t.faltanteVal)}</div>
+              </div>
+              <div className="rounded bg-amber-50 dark:bg-amber-950/20 p-2">
+                <div className="text-[10px] text-muted-foreground">Sobrantes</div>
+                <div className="text-base font-bold text-amber-600">{t.sobran} · {t.sobrante} pz</div>
+                <div className="text-[11px] font-semibold text-amber-600">{money(t.sobranteVal)}</div>
+              </div>
+            </div>
+            <div className="text-xs text-muted-foreground">
+              % de faltante: <span className="font-semibold">{pct(t.faltante, t.sys).toFixed(2)}%</span>
+              {t.faltanteVal > 0 && <> · Faltante: <span className="font-semibold text-red-600">{money(t.faltanteVal)}</span></>}
+            </div>
+            {sessionComments.length > 0 && (
+              <div className="mt-2 rounded-md border border-blue-200 bg-blue-50/60 p-2 dark:border-blue-900 dark:bg-blue-950/20">
+                <p className="text-[11px] font-medium text-blue-700 dark:text-blue-300 mb-1">
+                  Comentarios del corte ({sessionComments.length})
+                </p>
+                <div className="max-h-32 space-y-1 overflow-y-auto">
+                  {sessionComments.map((c) => (
+                    <div key={c.id} className="text-[10px]">
+                      <span className="font-medium text-foreground">{c.collaborator_name ?? "—"}</span>
+                      {c.branch && <span className="text-muted-foreground"> · {branchLabel(c.branch)}</span>}
+                      {c.product_name && <span className="text-muted-foreground"> · {c.product_name}</span>}
+                      <span className="text-muted-foreground">
+                        {" · "}
+                        {new Date(c.created_at).toLocaleDateString("es-MX", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+                      </span>
+                      <p className="text-foreground mt-0.5">{c.comment}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <div className="divide-y rounded-md border">
+          <div className="flex items-center gap-2 bg-muted/50 px-3 py-2 text-[10px] font-medium uppercase text-muted-foreground">
+            <div className="min-w-0 flex-1">Producto</div>
+            <div className="w-10 shrink-0 text-center">{MINA.slice(0, 4)}</div>
+            <div className="w-10 shrink-0 text-center">{MORELOS.slice(0, 4)}</div>
+            <div className="w-10 shrink-0 text-center">Tot</div>
+            <div className="w-10 shrink-0 text-center">Sys</div>
+            <div className="w-16 shrink-0 text-center">Δ</div>
+          </div>
+          {[...detail].sort((a, b) => Number(a.difference) - Number(b.difference)).map((r) => {
+            const d = Number(r.difference);
+            const v = rowValue(r);
+            const contributors = (r.count_details ?? []) as CountDetail[];
+            const prodComments = sessionComments.filter(
+              (c) => c.barcode === r.barcode || (!!c.product_name && c.product_name === r.product_name)
+            );
+            return (
+              <div key={r.id}
+                className={`px-3 py-2 text-xs ${d === 0 ? "" : d < 0 ? "bg-red-50 dark:bg-red-950/20" : "bg-amber-50 dark:bg-amber-950/20"}`}>
+                <div className="flex items-center gap-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="font-medium break-words leading-snug">{r.product_name}</div>
+                    <div className="font-mono text-[10px] text-muted-foreground">{r.barcode}</div>
+                  </div>
+                  <div className="w-10 shrink-0 text-center font-semibold">{r.mina_count}</div>
+                  <div className="w-10 shrink-0 text-center font-semibold">{r.morelos_count}</div>
+                  <div className="w-10 shrink-0 text-center font-semibold">{r.total_counted}</div>
+                  <div className="w-10 shrink-0 text-center text-muted-foreground">{r.system_stock}</div>
+                  <div className={`w-16 shrink-0 text-center font-bold ${d === 0 ? "text-emerald-600" : d < 0 ? "text-red-600" : "text-amber-600"}`}>
+                    <div>{d === 0 ? "✓" : d > 0 ? `+${d}` : d}</div>
+                    {v !== 0 && <div className="text-[10px] font-semibold">{money(v)}</div>}
+                  </div>
+                  {me?.is_admin && (
+                    <button type="button" onClick={() => openEdit(r)}
+                      className="shrink-0 rounded p-1 hover:bg-muted" title="Corregir conteo / ajustar total">
+                      <Pencil className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </div>
+                {(contributors.length > 0 || r.last_counted_by) && (
+                  <div className="mt-1 text-[10px] text-blue-600 dark:text-blue-400">
+                    {contributors.length > 0
+                      ? contributors.map((c, i) => (
+                          <span key={i}>
+                            {i > 0 && " · "}
+                            {c.name} ({c.branch}, {c.qty}) {new Date(c.at).toLocaleString("es-MX", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+                          </span>
+                        ))
+                      : <span>Últ. contado por {r.last_counted_by}{r.last_counted_at && ` · ${new Date(r.last_counted_at).toLocaleString("es-MX", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}`}</span>}
+                  </div>
+                )}
+                {prodComments.length > 0 && (
+                  <div className="mt-1.5 space-y-1 rounded border border-blue-200/60 bg-blue-50/50 p-1.5 dark:border-blue-900 dark:bg-blue-950/20">
+                    {prodComments.map((c) => (
+                      <div key={c.id} className="text-[10px]">
+                        <span className="font-medium text-foreground">{c.collaborator_name ?? "—"}</span>
+                        {c.branch && <span className="text-muted-foreground"> · {branchLabel(c.branch)}</span>}
+                        <span className="text-muted-foreground">
+                          {" · "}
+                          {new Date(c.created_at).toLocaleDateString("es-MX", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+                        </span>
+                        <p className="text-foreground mt-0.5">{c.comment}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+      {/* ── Dialog: corregir conteo (admin) ── */}
+      <Dialog open={!!editRow} onOpenChange={(o) => { if (!o) setEditRow(null); }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-1.5 text-amber-700 dark:text-amber-300">
+              <ShieldAlert className="h-4 w-4" /> Corregir conteo / ajustar total
+            </DialogTitle>
+          </DialogHeader>
+          {editRow && (
+            <div className="space-y-3 text-sm">
+              <p className="text-muted-foreground">{editRow.product_name}</p>
+              <p className="font-mono text-[10px] text-muted-foreground">{editRow.barcode}</p>
+              <div className="rounded-md border border-amber-200 bg-amber-50/60 p-3 dark:border-amber-900 dark:bg-amber-950/20">
+                <label className="text-xs font-semibold">Total general del sistema</label>
+                <Input type="number" min={0} step={1} value={editSystemDraft}
+                  onChange={(e) => setEditSystemDraft(e.target.value.replace(/[^0-9]/g, ""))}
+                  className="mt-1" />
+                <p className="mt-1 text-[10px] text-muted-foreground">Actualiza la existencia general del artículo en inventario y este registro del historial.</p>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground">{MINA}</label>
+                  <Input type="number" min={0} value={editMina}
+                    onChange={(e) => {
+                      const v = Math.max(0, parseInt(e.target.value, 10) || 0);
+                      setEditMina(v);
+                      setEditTotalDraft(String(v + editMorelos));
+                    }} />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground">{MORELOS}</label>
+                  <Input type="number" min={0} value={editMorelos}
+                    onChange={(e) => {
+                      const v = Math.max(0, parseInt(e.target.value, 10) || 0);
+                      setEditMorelos(v);
+                      setEditTotalDraft(String(editMina + v));
+                    }} />
+                </div>
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">
+                  Conteo físico de las colaboradoras
+                </label>
+                <Input
+                  type="number"
+                  min={0}
+                  value={editTotalDraft}
+                  onChange={(e) => {
+                    // Solo actualiza el borrador mientras escribe; no toca Mina/Morelos aún
+                    const raw = e.target.value.replace(/[^0-9]/g, "");
+                    setEditTotalDraft(raw);
+                  }}
+                  onBlur={() => {
+                    const n = parseInt(editTotalDraft, 10);
+                    if (!Number.isFinite(n)) {
+                      setEditTotalDraft(String(editMina + editMorelos));
+                      return;
+                    }
+                    applyTotal(n);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.currentTarget.blur();
+                    }
+                  }}
+                  className="mt-1"
+                />
+              </div>
+              <p className="text-[11px] text-muted-foreground">
+                Sistema: {editSystemDraft || "0"} · Conteo físico: {editTotalDraft || "0"} · Nueva diferencia:{" "}
+                {(() => {
+                  const liveTotal = Number.isFinite(parseInt(editTotalDraft, 10))
+                    ? parseInt(editTotalDraft, 10)
+                    : editMina + editMorelos;
+                  const systemTotal = Number.isFinite(Number(editSystemDraft)) ? Number(editSystemDraft) : editRow.system_stock;
+                  const d = liveTotal - systemTotal;
+                  return (
+                    <span className={`font-semibold ${d === 0 ? "text-emerald-600" : d < 0 ? "text-red-600" : "text-amber-600"}`}>
+                      {d > 0 ? `+${d}` : d}
+                    </span>
+                  );
+                })()}
+              </p>
+              <p className="text-[10px] text-muted-foreground">
+                Usa el campo superior para corregir la existencia general del sistema y el conteo físico para corregir lo que encontraron las colaboradoras. Puedes modificar uno solo o ambos.
+              </p>
+              {(!me?.is_admin || adminPin.length < 4) && (
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground">Tu PIN de administrador</label>
+                  <Input type="password" inputMode="numeric" autoFocus value={adminPin}
+                    onChange={(e) => setAdminPin(e.target.value.replace(/\D/g, ""))}
+                    placeholder="PIN" className="mt-1" />
+                </div>
+              )}
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditRow(null)}>Cancelar</Button>
+            <Button disabled={savingEdit} onClick={saveEdit}>
+              {savingEdit ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+              Guardar corrección
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2">
+        <History className="h-5 w-5" />
+        <h1 className="text-xl font-semibold">Historial de auditorías</h1>
+        <Link to="/app/audit" className="ml-auto text-sm text-muted-foreground hover:text-foreground">
+          Nuevo conteo →
+        </Link>
+      </div>
+
+      <div className="flex rounded-md border p-0.5 text-sm">
+        <button onClick={() => setTab("cortes")}
+          className={`flex-1 rounded px-3 py-1.5 ${tab === "cortes" ? "bg-primary text-primary-foreground" : "text-muted-foreground"}`}>
+          Cortes por categoría
+        </button>
+        <button onClick={() => setTab("general")}
+          className={`flex-1 rounded px-3 py-1.5 ${tab === "general" ? "bg-primary text-primary-foreground" : "text-muted-foreground"}`}>
+          Reporte general
+        </button>
+      </div>
+
+      {isLoading && (
+        <div className="py-8 text-center text-xs text-muted-foreground">
+          <Loader2 className="mx-auto mb-2 h-4 w-4 animate-spin" /> Cargando…
+        </div>
+      )}
+
+      {tab === "cortes" && (
+        <>
+          <Card>
+            <CardContent className="p-3 flex flex-wrap gap-2">
+              <div className="flex-1 min-w-[140px]">
+                <label className="text-xs font-medium text-muted-foreground">Categoría</label>
+                <select value={filterCat} onChange={(e) => setFilterCat(e.target.value)}
+                  className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm">
+                  <option value="">Todas</option>
+                  {categories.map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </div>
+              <div className="flex-1 min-w-[140px]">
+                <label className="text-xs font-medium text-muted-foreground">Mes</label>
+                <select value={filterMonth} disabled={!!filterDate}
+                  onChange={(e) => setFilterMonth(e.target.value)}
+                  className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm capitalize disabled:opacity-50">
+                  <option value="">Todos los meses</option>
+                  {monthOptions.map((k) => (
+                    <option key={k} value={k} className="capitalize">{monthName(k)}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex-1 min-w-[140px]">
+                <label className="text-xs font-medium text-muted-foreground">Buscar fecha específica</label>
+                <input type="date" value={filterDate}
+                  onChange={(e) => { setFilterDate(e.target.value); if (e.target.value) setFilterMonth(""); }}
+                  className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm" />
+                {filterDate && (
+                  <button type="button" onClick={() => { setFilterDate(""); setFilterMonth(nowMonthKey()); }}
+                    className="mt-1 text-[11px] text-muted-foreground underline">
+                    Quitar fecha y volver al mes en curso
+                  </button>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+
+          <div className="space-y-4">
+            {(() => {
+              const groups = new Map<string, typeof sessions>();
+              for (const s of sessions) {
+                const k = monthKey(s.closed_at);
+                const arr = groups.get(k) ?? [];
+                arr.push(s);
+                groups.set(k, arr);
+              }
+              const orderedKeys = Array.from(groups.keys()).sort((a, b) => b.localeCompare(a));
+              return orderedKeys.map((k) => {
+                const color = monthColor(k);
+                const group = groups.get(k)!;
+                return (
+                  <div key={k} className="space-y-1.5">
+                    <div className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold capitalize ${color.badge}`}>
+                      <span className={`h-2 w-2 rounded-full ${color.bar}`} />
+                      {monthName(k)}
+                    </div>
+                    <div className="divide-y rounded-md border overflow-hidden">
+                      {group.map((s) => {
+                        const corrected = correctionsMap.has(s.session_id);
+                        return (
+                          <button key={s.session_id} onClick={() => setSelected(s.session_id)}
+                            className={`flex w-full items-center gap-2 border-l-4 ${color.ring} px-3 py-2.5 text-left text-sm hover:bg-muted`}>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-1.5">
+                                <span className="font-medium truncate">{s.category}</span>
+                                {corrected && (
+                                  <span className="flex items-center gap-0.5 shrink-0 rounded-full bg-emerald-100 px-1.5 py-0.5 text-[9px] font-medium text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200">
+                                    <PackageCheck className="h-2.5 w-2.5" /> Zobaze
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-xs text-muted-foreground">
+                                {new Date(s.closed_at).toLocaleString("es-MX")} · {s.closed_by ?? "—"}
+                              </div>
+                              <div className="text-[11px] text-muted-foreground">
+                                {MINA}: <b>{s.mina}</b> · {MORELOS}: <b>{s.morelos}</b> · Sistema: {s.sys}
+                              </div>
+                            </div>
+                            <div className="shrink-0 text-right text-xs">
+                              <div className="text-muted-foreground">{s.count} prod.</div>
+                              <div className={`font-bold ${s.diff === 0 ? "text-emerald-600" : s.diff < 0 ? "text-red-600" : "text-amber-600"}`}>
+                                {s.diff === 0 ? "✓ exacto" : s.diff > 0 ? `+${s.diff}` : s.diff}
+                              </div>
+                              {s.faltanteVal > 0 && <div className="text-[11px] font-semibold text-red-600">−{money(s.faltanteVal)}</div>}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              });
+            })()}
+            {!isLoading && sessions.length === 0 && (
+              <div className="py-8 text-center text-xs text-muted-foreground rounded-md border space-y-1">
+                <p>Sin cortes cerrados{filterMonth ? ` en ${monthName(filterMonth)}` : ""}{filterDate ? ` para ${filterDate}` : ""}.</p>
+                {(filterMonth || filterDate) && (
+                  <button type="button" onClick={() => { setFilterDate(""); setFilterMonth(""); }} className="underline">
+                    Ver todos los meses
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
+      {tab === "general" && (
+        <div className="space-y-3">
+          {monthly.length > 0 && (
+            <Card>
+              <CardContent className="p-3 space-y-2">
+                <div className="flex items-center gap-2 text-sm font-semibold">
+                  <TrendingDown className="h-4 w-4 text-red-500" /> Progreso del faltante mes con mes
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  Barras: faltante en pesos · Línea: % de faltante sobre el stock del sistema. Si baja, vas mejorando.
+                </p>
+                <div className="h-56 w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <ComposedChart data={chartData} margin={{ top: 8, right: 8, left: -12, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                      <XAxis dataKey="label" tick={{ fontSize: 10 }} interval={0} angle={-20} textAnchor="end" height={44} />
+                      <YAxis yAxisId="val" tick={{ fontSize: 10 }} tickFormatter={(v: number) => `$${Math.round(v / 1000)}k`} />
+                      <YAxis yAxisId="pct" orientation="right" tick={{ fontSize: 10 }} tickFormatter={(v: number) => `${v}%`} />
+                      <RTooltip
+                        formatter={(value: number, name: string) =>
+                          name === "Faltante $" ? money(Number(value)) : `${Number(value).toFixed(2)}%`
+                        }
+                      />
+                      <Legend wrapperStyle={{ fontSize: 11 }} />
+                      <Bar yAxisId="val" dataKey="faltanteVal" name="Faltante $" fill="#ef4444" radius={[3, 3, 0, 0]} />
+                      <Line yAxisId="pct" type="monotone" dataKey="pctFaltante" name="% faltante" stroke="#7c3aed" strokeWidth={2} dot={{ r: 3 }} />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                </div>
+                {chartData.length >= 2 && (() => {
+                  const last = chartData[chartData.length - 1]!;
+                  const prev = chartData[chartData.length - 2]!;
+                  const delta = last.pctFaltante - prev.pctFaltante;
+                  return (
+                    <div className={`text-xs font-medium ${delta <= 0 ? "text-emerald-600" : "text-red-600"}`}>
+                      {delta <= 0 ? "▼ El faltante bajó" : "▲ El faltante subió"} {Math.abs(delta).toFixed(2)} pts en {last.label} vs {prev.label}
+                    </div>
+                  );
+                })()}
+              </CardContent>
+            </Card>
+          )}
+
+          <AuditAIChat />
+
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <BarChart3 className="h-4 w-4" /> Faltante por mes (todas las categorías cerradas)
+          </div>
+
+          {monthly.map((m, i) => {
+            const p = pct(m.faltante, m.sys);
+            const prev = monthly[i + 1];
+            const prevP = prev ? pct(prev.faltante, prev.sys) : null;
+            const delta = prevP === null ? null : p - prevP;
+            return (
+              <Card key={m.key}>
+                <CardContent className="p-3 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="text-sm font-semibold capitalize">{monthName(m.key)}</div>
+                    <div className={`text-lg font-bold ${p === 0 ? "text-emerald-600" : p < 2 ? "text-amber-600" : "text-red-600"}`}>
+                      {p.toFixed(2)}%
+                    </div>
+                  </div>
+                  <div className="h-2 w-full overflow-hidden rounded bg-muted">
+                    <div className="h-full bg-red-500" style={{ width: `${Math.min(100, p)}%` }} />
+                  </div>
+                  <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-muted-foreground sm:grid-cols-4">
+                    <div>Sistema: <b className="text-foreground">{m.sys}</b></div>
+                    <div>Contado: <b className="text-foreground">{m.total}</b></div>
+                    <div>{MINA}: <b className="text-foreground">{m.mina}</b></div>
+                    <div>{MORELOS}: <b className="text-foreground">{m.morelos}</b></div>
+                    <div>Faltante: <b className="text-red-600">{m.faltante} pz</b> <b className="text-red-600">· {money(m.faltanteVal)}</b></div>
+                    <div>Sobrante: <b className="text-amber-600">{m.sobrante} pz</b> <b className="text-amber-600">· {money(m.sobranteVal)}</b></div>
+                    <div>Categorías: <b className="text-foreground">{m.categories.size}</b></div>
+                    <div>Cortes: <b className="text-foreground">{m.sessions.size}</b></div>
+                  </div>
+                  {delta !== null && (
+                    <div className={`text-xs font-medium ${delta <= 0 ? "text-emerald-600" : "text-red-600"}`}>
+                      {delta <= 0 ? "▼ Mejoró" : "▲ Empeoró"} {Math.abs(delta).toFixed(2)} pts vs mes anterior
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            );
+          })}
+          {!isLoading && monthly.length === 0 && (
+            <div className="py-8 text-center text-xs text-muted-foreground">Aún no hay cortes cerrados</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
