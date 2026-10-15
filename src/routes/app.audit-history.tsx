@@ -1,3 +1,253 @@
+import { createFileRoute, Link } from "@tanstack/react-router";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMemo, useState } from "react";
+import {
+  ResponsiveContainer, ComposedChart, CartesianGrid, XAxis, YAxis,
+  Tooltip as RTooltip, Legend, Bar, Line,
+} from "recharts";
+import { supabase } from "@/integrations/supabase/client";
+import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Loader2, ArrowLeft, History, BarChart3, ShieldAlert, Pencil, CheckCircle2, PackageCheck, TrendingDown, Trash2 } from "lucide-react";
+import { toast } from "sonner";
+import { BRANCH_LABELS, branchLabel } from "@/lib/branches";
+import { useCollaborator } from "@/lib/session";
+import { AuditAIChat } from "@/components/AuditAIChat";
+
+export const Route = createFileRoute("/app/audit-history")({
+  component: AuditHistoryPage,
+});
+
+type CountDetail = { name: string; branch: string; qty: number; at: string };
+
+type ClosedRow = {
+  id: string;
+  session_id: string;
+  category: string;
+  barcode: string;
+  product_name: string;
+  system_stock: number;
+  mina_count: number;
+  morelos_count: number;
+  total_counted: number;
+  difference: number;
+  unit_price: number | null;
+  difference_value: number | null;
+  scanned_mina: boolean;
+  scanned_morelos: boolean;
+  closed_by: string | null;
+  closed_at: string;
+  count_details: CountDetail[] | null;
+  last_counted_by: string | null;
+  last_counted_at: string | null;
+};
+
+type ZobazeCorrection = {
+  session_id: string;
+  corrected: boolean;
+  corrected_by: string | null;
+  corrected_at: string;
+};
+
+const MINA = BRANCH_LABELS.A;
+const MORELOS = BRANCH_LABELS.B;
+
+// Paleta de colores para diferenciar visualmente cada mes en "Cortes por categoría"
+const MONTH_COLORS = [
+  { bar: "bg-violet-500", badge: "bg-violet-100 text-violet-800 dark:bg-violet-900/30 dark:text-violet-200", ring: "border-l-violet-500" },
+  { bar: "bg-sky-500", badge: "bg-sky-100 text-sky-800 dark:bg-sky-900/30 dark:text-sky-200", ring: "border-l-sky-500" },
+  { bar: "bg-emerald-500", badge: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-200", ring: "border-l-emerald-500" },
+  { bar: "bg-amber-500", badge: "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-200", ring: "border-l-amber-500" },
+  { bar: "bg-rose-500", badge: "bg-rose-100 text-rose-800 dark:bg-rose-900/30 dark:text-rose-200", ring: "border-l-rose-500" },
+  { bar: "bg-cyan-500", badge: "bg-cyan-100 text-cyan-800 dark:bg-cyan-900/30 dark:text-cyan-200", ring: "border-l-cyan-500" },
+];
+function monthColor(key: string) {
+  let hash = 0;
+  for (let i = 0; i < key.length; i++) hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
+  return MONTH_COLORS[hash % MONTH_COLORS.length];
+}
+
+function monthKey(iso: string) {
+  return iso.slice(0, 7);
+}
+function nowMonthKey() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+function monthName(key: string) {
+  const [y, m] = key.split("-").map(Number);
+  return new Date(y, m - 1, 1).toLocaleDateString("es-MX", { month: "long", year: "numeric" });
+}
+function pct(missing: number, sys: number) {
+  if (sys <= 0) return 0;
+  return (missing / sys) * 100;
+}
+function money(n: number) {
+  return n.toLocaleString("es-MX", { style: "currency", currency: "MXN", maximumFractionDigits: 2 });
+}
+// Valor en pesos de la diferencia; para cortes antiguos sin difference_value
+// se calcula como diferencia × precio unitario guardado.
+function rowValue(r: ClosedRow) {
+  const v = Number(r.difference_value ?? 0);
+  if (v !== 0) return v;
+  return Number(r.difference) * Number(r.unit_price ?? 0);
+}
+
+function AuditHistoryPage() {
+  const me = useCollaborator();
+  const qc = useQueryClient();
+  const [tab, setTab] = useState<"cortes" | "general">("cortes");
+  const [selected, setSelected] = useState<string | null>(null);
+  const [filterCat, setFilterCat] = useState("");
+  const [filterDate, setFilterDate] = useState("");
+  // Por defecto "Cortes por categoría" muestra el mes en curso.
+  // Al buscar una fecha específica, se ignora el filtro de mes.
+  const [filterMonth, setFilterMonth] = useState<string>(nowMonthKey());
+  const [adminPin, setAdminPin] = useState("");
+  const [editRow, setEditRow] = useState<ClosedRow | null>(null);
+  const [editMina, setEditMina] = useState(0);
+  const [editMorelos, setEditMorelos] = useState(0);
+  /** Borrador del total mientras el admin escribe (evita resetear Mina/Morelos a 0 al tipear). */
+  const [editTotalDraft, setEditTotalDraft] = useState("");
+  const [editSystemDraft, setEditSystemDraft] = useState("");
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [savingZobaze, setSavingZobaze] = useState(false);
+  const [deletingSession, setDeletingSession] = useState<string | null>(null);
+  const [confirmDeleteSession, setConfirmDeleteSession] = useState<string | null>(null);
+
+  async function deleteSession(sessionId: string) {
+    if (!me?.is_admin) return;
+    if (adminPin.length < 4) { toast.error("Ingresá tu PIN de administrador"); return; }
+    setDeletingSession(sessionId);
+    try {
+      // Delete from closed_counts
+      const { error: e1 } = await supabase
+        .from("closed_counts")
+        .delete()
+        .eq("session_id", sessionId);
+      if (e1) throw e1;
+      // Delete from audit_history (same session)
+      const { error: e2 } = await supabase
+        .from("audit_history")
+        .delete()
+        .eq("session_id", sessionId);
+      if (e2) throw e2;
+      toast.success("Historial eliminado");
+      setConfirmDeleteSession(null);
+      setSelected(null);
+      qc.invalidateQueries({ queryKey: ["closed_counts"] });
+      qc.invalidateQueries({ queryKey: ["audit-history-month"] });
+    } catch (e) { toast.error((e as Error).message); }
+    finally { setDeletingSession(null); }
+  }
+
+  const { data: rows = [], isLoading } = useQuery({
+    queryKey: ["closed_counts"],
+    queryFn: async () => {
+      // Supabase/PostgREST limita cada respuesta a un máximo de filas por
+      // defecto (típicamente 1000), sin importar el .limit() que pidamos
+      // desde el cliente. Como acá puede haber miles de filas (varios meses
+      // de cortes), traemos todo en páginas hasta agotar los resultados;
+      // así nunca se "pierden" silenciosamente los meses más viejos.
+      const PAGE_SIZE = 1000;
+      let all: ClosedRow[] = [];
+      let from = 0;
+      while (true) {
+        const { data, error } = await supabase
+          .from("closed_counts")
+          .select("*")
+          .order("closed_at", { ascending: false })
+          .range(from, from + PAGE_SIZE - 1);
+        if (error) throw error;
+        const page = (data ?? []) as unknown as ClosedRow[];
+        all = all.concat(page);
+        if (page.length < PAGE_SIZE) break;
+        from += PAGE_SIZE;
+      }
+      return all;
+    },
+  });
+
+  const { data: corrections = [] } = useQuery({
+    queryKey: ["zobaze_corrections"],
+    queryFn: async () => {
+      const { data, error } = await supabase.from("zobaze_corrections").select("*");
+      if (error) throw error;
+      return data as ZobazeCorrection[];
+    },
+  });
+  const correctionsMap = useMemo(() => {
+    const map = new Map<string, ZobazeCorrection>();
+    for (const c of corrections) if (c.corrected) map.set(c.session_id, c);
+    return map;
+  }, [corrections]);
+
+  // Comentarios del corte seleccionado (por session_id o por categoría + fechas del corte)
+  const selectedCategory = useMemo(() => {
+    if (!selected) return null;
+    const first = rows.find((r) => r.session_id === selected);
+    return first?.category ?? null;
+  }, [selected, rows]);
+
+  const selectedClosedAt = useMemo(() => {
+    if (!selected) return null;
+    const first = rows.find((r) => r.session_id === selected);
+    return first?.closed_at ?? null;
+  }, [selected, rows]);
+
+  const { data: sessionComments = [] } = useQuery({
+    queryKey: ["session-comments", selected, selectedCategory],
+    enabled: !!selected && !!selectedCategory,
+    staleTime: 10_000,
+    queryFn: async () => {
+      if (!selected || !selectedCategory) return [];
+      // Preferir comentarios ligados al session_id; también traer los del mes del corte por categoría
+      const { data: bySession, error: e1 } = await supabase
+        .from("audit_comments")
+        .select("id, barcode, product_name, branch, collaborator_name, comment, created_at, session_id")
+        .eq("session_id", selected)
+        .order("created_at", { ascending: true })
+        .limit(200);
+      if (e1) throw e1;
+
+      // Ampliar con comentarios de la categoría en la ventana del mes del cierre
+      let monthStart = new Date();
+      if (selectedClosedAt) {
+        monthStart = new Date(selectedClosedAt);
+        monthStart.setDate(1);
+        monthStart.setHours(0, 0, 0, 0);
+      }
+      const monthEnd = new Date(monthStart);
+      monthEnd.setMonth(monthEnd.getMonth() + 1);
+
+      const { data: byCat, error: e2 } = await supabase
+        .from("audit_comments")
+        .select("id, barcode, product_name, branch, collaborator_name, comment, created_at, session_id")
+        .eq("category", selectedCategory)
+        .gte("created_at", monthStart.toISOString())
+        .lt("created_at", monthEnd.toISOString())
+        .order("created_at", { ascending: true })
+        .limit(200);
+      if (e2) throw e2;
+
+      const map = new Map<string, NonNullable<typeof bySession>[number]>();
+      for (const c of [...(bySession ?? []), ...(byCat ?? [])]) {
+        map.set(c.id, c);
+      }
+      return Array.from(map.values()).sort((a, b) => a.created_at.localeCompare(b.created_at));
+    },
+  });
+
+  function openEdit(r: ClosedRow) {
+    setEditRow(r);
+    setEditMina(r.mina_count);
+    setEditMorelos(r.morelos_count);
+    setEditTotalDraft(String(r.mina_count + r.morelos_count));
+    setEditSystemDraft(String(r.system_stock));
+  }
+
   /** Aplica un nuevo total redistribuyendo solo el delta, sin borrar conteos existentes. */
   function applyTotal(newTotal: number) {
     const safe = Math.max(0, Math.floor(newTotal));
@@ -248,7 +498,6 @@
                       setConfirmDeleteSession(selected);
                     }}>
                     <Trash2 className="h-3.5 w-3.5" /> Eliminar historial de este corte
-
                   </Button>
                 )}
               </div>
