@@ -109,6 +109,8 @@ function AuditHistoryPage() {
   const [editRow, setEditRow] = useState<ClosedRow | null>(null);
   const [editMina, setEditMina] = useState(0);
   const [editMorelos, setEditMorelos] = useState(0);
+  /** Borrador del total mientras el admin escribe (evita resetear Mina/Morelos a 0 al tipear). */
+  const [editTotalDraft, setEditTotalDraft] = useState("");
   const [savingEdit, setSavingEdit] = useState(false);
   const [savingZobaze, setSavingZobaze] = useState(false);
   const [deletingSession, setDeletingSession] = useState<string | null>(null);
@@ -241,16 +243,45 @@ function AuditHistoryPage() {
     setEditRow(r);
     setEditMina(r.mina_count);
     setEditMorelos(r.morelos_count);
+    setEditTotalDraft(String(r.mina_count + r.morelos_count));
+  }
+
+  /** Aplica un nuevo total redistribuyendo solo el delta, sin borrar conteos existentes. */
+  function applyTotal(newTotal: number) {
+    const safe = Math.max(0, Math.floor(newTotal));
+    const current = editMina + editMorelos;
+    if (safe === current) {
+      setEditTotalDraft(String(safe));
+      return;
+    }
+    const delta = safe - current;
+    // Preferir ajustar la sucursal que ya tiene más cantidad; si empate o ambas 0, a Mina.
+    if (editMorelos > editMina) {
+      setEditMorelos(Math.max(0, editMorelos + delta));
+    } else {
+      setEditMina(Math.max(0, editMina + delta));
+    }
+    setEditTotalDraft(String(safe));
   }
 
   async function saveEdit() {
     if (!editRow || !me) return;
     if (adminPin.length < 4) { toast.error("Ingresá tu PIN de administrador"); return; }
+    // Asegurar que el total escrito se aplique aunque no hayan hecho blur
+    let mina = editMina;
+    let morelos = editMorelos;
+    const draftN = parseInt(editTotalDraft, 10);
+    if (Number.isFinite(draftN) && draftN !== mina + morelos) {
+      const safe = Math.max(0, Math.floor(draftN));
+      const delta = safe - (mina + morelos);
+      if (morelos > mina) morelos = Math.max(0, morelos + delta);
+      else mina = Math.max(0, mina + delta);
+    }
     setSavingEdit(true);
     try {
       const { error } = await supabase.rpc("admin_update_closed_count_row", {
         p_admin_id: me.id, p_admin_pin: adminPin, p_row_id: editRow.id,
-        p_mina_count: editMina, p_morelos_count: editMorelos,
+        p_mina_count: mina, p_morelos_count: morelos,
       });
       if (error) throw error;
       toast.success("Conteo corregido");
@@ -620,12 +651,20 @@ function AuditHistoryPage() {
                 <div>
                   <label className="text-xs font-medium text-muted-foreground">{MINA}</label>
                   <Input type="number" min={0} value={editMina}
-                    onChange={(e) => setEditMina(Math.max(0, parseInt(e.target.value, 10) || 0))} />
+                    onChange={(e) => {
+                      const v = Math.max(0, parseInt(e.target.value, 10) || 0);
+                      setEditMina(v);
+                      setEditTotalDraft(String(v + editMorelos));
+                    }} />
                 </div>
                 <div>
                   <label className="text-xs font-medium text-muted-foreground">{MORELOS}</label>
                   <Input type="number" min={0} value={editMorelos}
-                    onChange={(e) => setEditMorelos(Math.max(0, parseInt(e.target.value, 10) || 0))} />
+                    onChange={(e) => {
+                      const v = Math.max(0, parseInt(e.target.value, 10) || 0);
+                      setEditMorelos(v);
+                      setEditTotalDraft(String(editMina + v));
+                    }} />
                 </div>
               </div>
               <div>
@@ -635,18 +674,23 @@ function AuditHistoryPage() {
                 <Input
                   type="number"
                   min={0}
-                  value={editMina + editMorelos}
+                  value={editTotalDraft}
                   onChange={(e) => {
-                    const newTotal = Math.max(0, parseInt(e.target.value, 10) || 0);
-                    const currentTotal = editMina + editMorelos;
-                    if (newTotal === currentTotal) return;
-                    // Preferir ajustar la sucursal que ya tiene conteo; si ambas tienen, ajustar la mayor
-                    if (editMina === 0 && editMorelos === 0) {
-                      setEditMina(newTotal);
-                    } else if (editMina >= editMorelos) {
-                      setEditMina(Math.max(0, newTotal - editMorelos));
-                    } else {
-                      setEditMorelos(Math.max(0, newTotal - editMina));
+                    // Solo actualiza el borrador mientras escribe; no toca Mina/Morelos aún
+                    const raw = e.target.value.replace(/[^0-9]/g, "");
+                    setEditTotalDraft(raw);
+                  }}
+                  onBlur={() => {
+                    const n = parseInt(editTotalDraft, 10);
+                    if (!Number.isFinite(n)) {
+                      setEditTotalDraft(String(editMina + editMorelos));
+                      return;
+                    }
+                    applyTotal(n);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.currentTarget.blur();
                     }
                   }}
                   className="mt-1"
@@ -654,11 +698,17 @@ function AuditHistoryPage() {
               </div>
               <p className="text-[11px] text-muted-foreground">
                 Sistema: {editRow.system_stock} · Total actual: {editRow.total_counted} · Nueva diferencia:{" "}
-                <span className={`font-semibold ${(editMina + editMorelos) - editRow.system_stock === 0 ? "text-emerald-600" : (editMina + editMorelos) - editRow.system_stock < 0 ? "text-red-600" : "text-amber-600"}`}>
-                  {(editMina + editMorelos) - editRow.system_stock > 0
-                    ? `+${(editMina + editMorelos) - editRow.system_stock}`
-                    : (editMina + editMorelos) - editRow.system_stock}
-                </span>
+                {(() => {
+                  const liveTotal = Number.isFinite(parseInt(editTotalDraft, 10))
+                    ? parseInt(editTotalDraft, 10)
+                    : editMina + editMorelos;
+                  const d = liveTotal - editRow.system_stock;
+                  return (
+                    <span className={`font-semibold ${d === 0 ? "text-emerald-600" : d < 0 ? "text-red-600" : "text-amber-600"}`}>
+                      {d > 0 ? `+${d}` : d}
+                    </span>
+                  );
+                })()}
               </p>
               <p className="text-[10px] text-muted-foreground">
                 Ejemplo: si el sistema marcó 5 y en realidad había 6, subí el total a 6. Si marcó 5 y había 4, bajalo a 4.
