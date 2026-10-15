@@ -809,6 +809,17 @@ export type Database = {
         }
         Returns: undefined
       }
+      admin_correct_closed_count_row: {
+        Args: {
+          p_admin_id: string
+          p_admin_pin: string
+          p_mina_count: number
+          p_morelos_count: number
+          p_row_id: string
+          p_system_stock: number
+        }
+        Returns: undefined
+      }
       admin_update_collaborator: {
         Args: {
           p_active: boolean
