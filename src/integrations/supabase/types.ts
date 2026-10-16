@@ -847,6 +847,18 @@ export type Database = {
         }
         Returns: undefined
       }
+      admin_wipe_audit_category: {
+        Args: {
+          p_admin_id: string
+          p_admin_pin: string
+          p_category: string
+          p_period: string
+          p_since: string
+          p_until: string
+          p_zero_stock: boolean
+        }
+        Returns: number
+      }
       apply_transfer: {
         Args: {
           p_barcode: string
