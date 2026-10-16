@@ -322,8 +322,8 @@ function AuditHistoryPage() {
         p_morelos_count: morelos,
         p_system_stock: systemDraftN,
         p_update_inventory: editSaveMode === "both",
-        p_inventory_mina: inventoryMina,
-        p_inventory_morelos: inventoryMorelos,
+        p_inventory_mina: inventoryMina as number,
+        p_inventory_morelos: inventoryMorelos as number,
       });
       if (error) throw error;
       toast.success(editSaveMode === "both"
