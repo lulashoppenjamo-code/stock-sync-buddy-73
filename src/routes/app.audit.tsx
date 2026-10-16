@@ -1634,7 +1634,7 @@ function AuditPage() {
             {me?.is_admin && (
               <Button size="sm" variant="outline"
                 className="border-red-400 text-red-700 hover:bg-red-50 dark:text-red-300"
-                onClick={() => setAdminAction({ type: "wipeCategory", category, zeroStock: true })}>
+                onClick={() => setAdminAction({ type: "wipeCategory", category, zeroStock: false })}>
                 <Trash2 className="h-4 w-4" /> Dejar en ceros
               </Button>
             )}
@@ -1872,7 +1872,7 @@ function AuditPage() {
               {me?.is_admin && (
                 <Button variant="outline" size="sm"
                   className="mt-2 w-full border-red-400 text-red-700 hover:bg-red-50 dark:text-red-300"
-                  onClick={() => setAdminAction({ type: "wipeCategory", category, zeroStock: true })}>
+                  onClick={() => setAdminAction({ type: "wipeCategory", category, zeroStock: false })}>
                   <Trash2 className="h-4 w-4" /> Dejar categoría en ceros (admin)
                 </Button>
               )}
@@ -2222,7 +2222,7 @@ function AuditPage() {
                     </div>
                     <Button size="sm" variant="outline"
                       className="border-red-400 text-red-700 hover:bg-red-50 dark:text-red-300"
-                      onClick={() => setAdminAction({ type: "wipeCategory", category: reportCategory!, zeroStock: true })}>
+                      onClick={() => setAdminAction({ type: "wipeCategory", category: reportCategory!, zeroStock: false })}>
                       <Trash2 className="h-3.5 w-3.5" /> Dejar categoría en ceros
                     </Button>
                     <Button size="sm" variant="outline"
