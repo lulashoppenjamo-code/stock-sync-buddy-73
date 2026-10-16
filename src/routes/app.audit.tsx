@@ -55,6 +55,7 @@ type AdminAction =
   | { type: "editRow"; row: HistoryRow; newQty: number }
   | { type: "restoreClosure"; category: string; branch: "A" | "B" }
   | { type: "regenerateReport"; category: string }
+  | { type: "wipeCategory"; category: string; zeroStock: boolean }
   | {
       type: "editProduct";
       oldBarcode: string;
@@ -1117,6 +1118,18 @@ function AuditPage() {
         if (error) throw error;
         toast.success(`Conteos en vivo reiniciados — ${data ?? 0} registros eliminados.`);
         qc.invalidateQueries({ queryKey: ["audits-realtime", adminAction.category] });
+      } else if (adminAction.type === "wipeCategory") {
+        const cat = (adminAction.category ?? "").trim();
+        const { startIso, endIso } = monthRange();
+        const { data, error } = await supabase.rpc("admin_wipe_audit_category", {
+          p_admin_id: me.id, p_admin_pin: adminPin, p_category: cat,
+          p_since: startIso, p_until: endIso, p_period: periodKey(), p_zero_stock: adminAction.zeroStock,
+        });
+        if (error) throw error;
+        toast.success(`"${cat}" quedó en ceros — ${data ?? 0} registros eliminados. Ya puedes importar y contar de nuevo.`);
+        if ((category ?? "").trim() === cat) { setCounts(new Map()); clearCatState(); }
+        setReportCategory(null);
+        qc.invalidateQueries();
       } else if (adminAction.type === "deleteRow") {
         const { error } = await supabase.rpc("admin_delete_audit_history_row", {
           p_admin_id: me.id, p_admin_pin: adminPin, p_row_id: adminAction.row.id,
@@ -1618,6 +1631,13 @@ function AuditPage() {
                 <RotateCcw className="h-4 w-4" /> Reiniciar (admin)
               </Button>
             )}
+            {me?.is_admin && (
+              <Button size="sm" variant="outline"
+                className="border-red-400 text-red-700 hover:bg-red-50 dark:text-red-300"
+                onClick={() => setAdminAction({ type: "wipeCategory", category, zeroStock: true })}>
+                <Trash2 className="h-4 w-4" /> Dejar en ceros
+              </Button>
+            )}
             {me?.is_admin && myBranchClosed && !alreadyCountedThisMonth && (
               <Button size="sm" variant="outline"
                 className="border-blue-400 text-blue-700 hover:bg-blue-50 dark:text-blue-300"
@@ -1849,6 +1869,13 @@ function AuditPage() {
               <p className="mt-1 px-1 text-[11px] text-muted-foreground">
                 Se guardan tus {counts.size} producto{counts.size === 1 ? "" : "s"} contados y lo que no contaste queda en 0.
               </p>
+              {me?.is_admin && (
+                <Button variant="outline" size="sm"
+                  className="mt-2 w-full border-red-400 text-red-700 hover:bg-red-50 dark:text-red-300"
+                  onClick={() => setAdminAction({ type: "wipeCategory", category, zeroStock: true })}>
+                  <Trash2 className="h-4 w-4" /> Dejar categoría en ceros (admin)
+                </Button>
+              )}
             </div>
 
             {me?.is_admin && category && bothClosed && (
@@ -2194,6 +2221,11 @@ function AuditPage() {
                       ))}
                     </div>
                     <Button size="sm" variant="outline"
+                      className="border-red-400 text-red-700 hover:bg-red-50 dark:text-red-300"
+                      onClick={() => setAdminAction({ type: "wipeCategory", category: reportCategory!, zeroStock: true })}>
+                      <Trash2 className="h-3.5 w-3.5" /> Dejar categoría en ceros
+                    </Button>
+                    <Button size="sm" variant="outline"
                       className="w-full border-emerald-400 text-emerald-700 hover:bg-emerald-100 dark:text-emerald-300"
                       onClick={() => setAdminAction({ type: "regenerateReport", category: reportCategory! })}>
                       <Save className="h-3.5 w-3.5" /> Volver a guardar conteo general de "{reportCategory}"
@@ -2325,6 +2357,7 @@ function AuditPage() {
               {adminAction?.type === "editRow" && "Editar cantidad contada"}
               {adminAction?.type === "restoreClosure" && "Reactivar categoría"}
               {adminAction?.type === "regenerateReport" && "Volver a guardar conteo general"}
+              {adminAction?.type === "wipeCategory" && "Dejar categoría en ceros"}
               {adminAction?.type === "editProduct" && "Editar producto"}
             </DialogTitle>
           </DialogHeader>
@@ -2365,6 +2398,23 @@ function AuditPage() {
                 Se borrará y se volverá a guardar el reporte general y el historial de{" "}
                 <strong>"{adminAction.category}"</strong> este mes, usando los conteos en vivo actuales.
               </p>
+            )}
+            {adminAction?.type === "wipeCategory" && (
+              <div className="space-y-2 text-muted-foreground">
+                <p>
+                  Se borrarán <strong>todos</strong> los conteos de <strong>"{adminAction.category}"</strong> de este mes en{" "}
+                  <strong>Mina y Morelos</strong>: conteos en vivo, cierres de sucursal, cierre general e historial del mes.
+                  La categoría quedará lista para contar desde cero.
+                </p>
+                <label className="flex items-center gap-2 text-xs">
+                  <input type="checkbox" checked={adminAction.zeroStock}
+                    onChange={(e) => setAdminAction((prev) =>
+                      prev && prev.type === "wipeCategory" ? { ...prev, zeroStock: e.target.checked } : prev
+                    )} />
+                  También poner en 0 el stock del sistema (para importar las nuevas cantidades)
+                </label>
+                <p className="text-xs font-medium text-red-600">Esta acción no se puede deshacer.</p>
+              </div>
             )}
             {adminAction?.type === "editProduct" && (
               <p className="text-muted-foreground">
