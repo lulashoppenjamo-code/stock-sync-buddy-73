@@ -2404,15 +2404,8 @@ function AuditPage() {
                 <p>
                   Se borrarán <strong>todos</strong> los conteos de <strong>"{adminAction.category}"</strong> de este mes en{" "}
                   <strong>Mina y Morelos</strong>: conteos en vivo, cierres de sucursal, cierre general e historial del mes.
-                  La categoría quedará lista para contar desde cero.
+                  La categoría quedará lista para contar desde cero. El stock del sistema no se modifica.
                 </p>
-                <label className="flex items-center gap-2 text-xs">
-                  <input type="checkbox" checked={adminAction.zeroStock}
-                    onChange={(e) => setAdminAction((prev) =>
-                      prev && prev.type === "wipeCategory" ? { ...prev, zeroStock: e.target.checked } : prev
-                    )} />
-                  También poner en 0 el stock del sistema (para importar las nuevas cantidades)
-                </label>
                 <p className="text-xs font-medium text-red-600">Esta acción no se puede deshacer.</p>
               </div>
             )}
