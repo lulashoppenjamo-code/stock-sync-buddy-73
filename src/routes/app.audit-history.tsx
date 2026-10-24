@@ -101,6 +101,8 @@ function AuditHistoryPage() {
   const qc = useQueryClient();
   const [tab, setTab] = useState<"cortes" | "general">("cortes");
   const [selected, setSelected] = useState<string | null>(null);
+  /** Mes seleccionado en Reporte general para ver informe detallado (YYYY-MM) */
+  const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
   const [filterCat, setFilterCat] = useState("");
   const [filterDate, setFilterDate] = useState("");
   // Por defecto "Cortes por categoría" muestra el mes en curso.
@@ -147,7 +149,7 @@ function AuditHistoryPage() {
     finally { setDeletingSession(null); }
   }
 
-  const { data: rows = [], isLoading } = useQuery({
+  const { data: rows = [], isLoading, isFetching, dataUpdatedAt } = useQuery({
     queryKey: ["closed_counts"],
     queryFn: async () => {
       // Supabase/PostgREST limita cada respuesta a un máximo de filas por
@@ -172,6 +174,10 @@ function AuditHistoryPage() {
       }
       return all;
     },
+    // Se actualiza al cerrar categorías (invalidate local + realtime) y al volver a la pestaña.
+    staleTime: 10_000,
+    refetchOnWindowFocus: true,
+    refetchInterval: 60_000,
   });
 
   const { data: corrections = [] } = useQuery({
@@ -816,6 +822,417 @@ function AuditHistoryPage() {
     );
   }
 
+  // ── Informe detallado de un mes (Reporte general) ───────────────────
+  if (selectedMonth) {
+    const monthRows = rows.filter((r) => monthKey(r.closed_at) === selectedMonth);
+    const mSummary = monthly.find((m) => m.key === selectedMonth);
+    const p = mSummary ? pct(mSummary.faltante, mSummary.sys) : 0;
+
+    // Productos ordenados por faltante (más negativo primero) y sobrante
+    const byFaltante = [...monthRows]
+      .filter((r) => Number(r.difference) < 0)
+      .sort((a, b) => Number(a.difference) - Number(b.difference));
+    const bySobrante = [...monthRows]
+      .filter((r) => Number(r.difference) > 0)
+      .sort((a, b) => Number(b.difference) - Number(a.difference));
+    const byFaltanteVal = [...monthRows]
+      .filter((r) => rowValue(r) < 0)
+      .sort((a, b) => rowValue(a) - rowValue(b));
+    const bySobranteVal = [...monthRows]
+      .filter((r) => rowValue(r) > 0)
+      .sort((a, b) => rowValue(b) - rowValue(a));
+
+    // Ranking de colaboradores: conteos realizados + faltante/sobrante asociado
+    type CollabAgg = {
+      name: string;
+      counts: number;
+      products: number;
+      faltanteQty: number;
+      sobranteQty: number;
+      faltanteVal: number;
+      sobranteVal: number;
+    };
+    const collabMap = new Map<string, CollabAgg>();
+    for (const r of monthRows) {
+      const d = Number(r.difference);
+      const v = rowValue(r);
+      const contributors = (r.count_details ?? []) as CountDetail[];
+      const names =
+        contributors.length > 0
+          ? Array.from(new Set(contributors.map((c) => c.name).filter(Boolean)))
+          : r.last_counted_by
+            ? [r.last_counted_by]
+            : [];
+      if (names.length === 0) continue;
+      const share = 1 / names.length; // repartir diferencia entre quienes contaron el producto
+      for (const name of names) {
+        const e = collabMap.get(name) ?? {
+          name,
+          counts: 0,
+          products: 0,
+          faltanteQty: 0,
+          sobranteQty: 0,
+          faltanteVal: 0,
+          sobranteVal: 0,
+        };
+        e.products += 1;
+        if (contributors.length > 0) {
+          e.counts += contributors.filter((c) => c.name === name).reduce((s, c) => s + (c.qty || 0), 0);
+        } else {
+          e.counts += 1;
+        }
+        if (d < 0) e.faltanteQty += -d * share;
+        else if (d > 0) e.sobranteQty += d * share;
+        if (v < 0) e.faltanteVal += -v * share;
+        else if (v > 0) e.sobranteVal += v * share;
+        collabMap.set(name, e);
+      }
+    }
+    const collabRanking = Array.from(collabMap.values()).sort(
+      (a, b) => b.faltanteQty + b.sobranteQty - (a.faltanteQty + a.sobranteQty) || b.products - a.products
+    );
+    const topFaltanteCollab = [...collabRanking].sort((a, b) => b.faltanteQty - a.faltanteQty)[0];
+    const topSobranteCollab = [...collabRanking].sort((a, b) => b.sobranteQty - a.sobranteQty)[0];
+
+    // Breakdown por categoría
+    const byCat = new Map<string, { cat: string; sys: number; faltante: number; sobrante: number; faltanteVal: number; sobranteVal: number; n: number }>();
+    for (const r of monthRows) {
+      const cat = (r.category ?? "Sin categoría").trim() || "Sin categoría";
+      const e = byCat.get(cat) ?? { cat, sys: 0, faltante: 0, sobrante: 0, faltanteVal: 0, sobranteVal: 0, n: 0 };
+      e.sys += Number(r.system_stock);
+      const d = Number(r.difference);
+      if (d < 0) e.faltante += -d; else e.sobrante += d;
+      const v = rowValue(r);
+      if (v < 0) e.faltanteVal += -v; else e.sobranteVal += v;
+      e.n += 1;
+      byCat.set(cat, e);
+    }
+    const catList = Array.from(byCat.values()).sort((a, b) => b.faltanteVal - a.faltanteVal);
+
+    const topFaltanteProd = byFaltante[0];
+    const topSobranteProd = bySobrante[0];
+    const topFaltanteValProd = byFaltanteVal[0];
+    const topSobranteValProd = bySobranteVal[0];
+
+    return (
+      <div className="space-y-4">
+        <button
+          type="button"
+          onClick={() => setSelectedMonth(null)}
+          className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+        >
+          <ArrowLeft className="h-4 w-4" /> Volver al reporte general
+        </button>
+
+        <div className="flex items-center gap-2 flex-wrap">
+          <BarChart3 className="h-5 w-5" />
+          <h1 className="text-xl font-semibold capitalize">
+            Informe detallado · {monthName(selectedMonth)}
+          </h1>
+          <span className="text-[10px] text-muted-foreground ml-auto flex items-center gap-1">
+            {isFetching ? (
+              <>
+                <Loader2 className="h-3 w-3 animate-spin" /> Actualizando…
+              </>
+            ) : dataUpdatedAt ? (
+              <>Actualizado {new Date(dataUpdatedAt).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</>
+            ) : null}
+          </span>
+        </div>
+
+        {/* Resumen general del mes */}
+        <Card>
+          <CardContent className="p-3 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-semibold">Resumen general</div>
+              <div className={`text-lg font-bold ${p === 0 ? "text-emerald-600" : p < 2 ? "text-amber-600" : "text-red-600"}`}>
+                {p.toFixed(2)}% faltante
+              </div>
+            </div>
+            <div className="h-2 w-full overflow-hidden rounded bg-muted">
+              <div className="h-full bg-red-500" style={{ width: `${Math.min(100, p)}%` }} />
+            </div>
+            <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs sm:grid-cols-4">
+              <div>Sistema: <b className="text-foreground">{mSummary?.sys ?? 0}</b></div>
+              <div>Contado: <b className="text-foreground">{mSummary?.total ?? 0}</b></div>
+              <div>{MINA}: <b className="text-foreground">{mSummary?.mina ?? 0}</b></div>
+              <div>{MORELOS}: <b className="text-foreground">{mSummary?.morelos ?? 0}</b></div>
+              <div className="col-span-2">
+                Faltante: <b className="text-red-600">{mSummary?.faltante ?? 0} pz</b>
+                {" · "}
+                <b className="text-red-600">{money(mSummary?.faltanteVal ?? 0)}</b>
+              </div>
+              <div className="col-span-2">
+                Sobrante: <b className="text-amber-600">{mSummary?.sobrante ?? 0} pz</b>
+                {" · "}
+                <b className="text-amber-600">{money(mSummary?.sobranteVal ?? 0)}</b>
+              </div>
+              <div>Categorías: <b className="text-foreground">{mSummary?.categories.size ?? 0}</b></div>
+              <div>Cortes: <b className="text-foreground">{mSummary?.sessions.size ?? 0}</b></div>
+              <div>Productos con faltante: <b className="text-red-600">{byFaltante.length}</b></div>
+              <div>Productos con sobrante: <b className="text-amber-600">{bySobrante.length}</b></div>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Indicadores clave: quién y qué producto */}
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Card>
+            <CardContent className="p-3 space-y-2">
+              <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Quién tuvo más faltante
+              </div>
+              {topFaltanteCollab && topFaltanteCollab.faltanteQty > 0 ? (
+                <div>
+                  <div className="text-base font-bold text-red-600">{topFaltanteCollab.name}</div>
+                  <div className="text-xs text-muted-foreground">
+                    {Math.round(topFaltanteCollab.faltanteQty)} pz · {money(topFaltanteCollab.faltanteVal)}
+                    {" · "}{topFaltanteCollab.products} productos asociados
+                  </div>
+                </div>
+              ) : (
+                <div className="text-sm text-muted-foreground">Sin datos de colaboradores</div>
+              )}
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="p-3 space-y-2">
+              <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Quién tuvo más sobrante
+              </div>
+              {topSobranteCollab && topSobranteCollab.sobranteQty > 0 ? (
+                <div>
+                  <div className="text-base font-bold text-amber-600">{topSobranteCollab.name}</div>
+                  <div className="text-xs text-muted-foreground">
+                    {Math.round(topSobranteCollab.sobranteQty)} pz · {money(topSobranteCollab.sobranteVal)}
+                    {" · "}{topSobranteCollab.products} productos asociados
+                  </div>
+                </div>
+              ) : (
+                <div className="text-sm text-muted-foreground">Sin datos de colaboradores</div>
+              )}
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="p-3 space-y-2">
+              <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Producto con mayor faltante (pz)
+              </div>
+              {topFaltanteProd ? (
+                <div>
+                  <div className="text-sm font-bold text-red-600 leading-snug">{topFaltanteProd.product_name}</div>
+                  <div className="font-mono text-[10px] text-muted-foreground">{topFaltanteProd.barcode}</div>
+                  <div className="text-xs text-muted-foreground mt-0.5">
+                    {Number(topFaltanteProd.difference)} pz · {money(rowValue(topFaltanteProd))}
+                    {" · "}{topFaltanteProd.category}
+                  </div>
+                </div>
+              ) : (
+                <div className="text-sm text-muted-foreground">Sin faltantes</div>
+              )}
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="p-3 space-y-2">
+              <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Producto con mayor sobrante (pz)
+              </div>
+              {topSobranteProd ? (
+                <div>
+                  <div className="text-sm font-bold text-amber-600 leading-snug">{topSobranteProd.product_name}</div>
+                  <div className="font-mono text-[10px] text-muted-foreground">{topSobranteProd.barcode}</div>
+                  <div className="text-xs text-muted-foreground mt-0.5">
+                    +{Number(topSobranteProd.difference)} pz · {money(rowValue(topSobranteProd))}
+                    {" · "}{topSobranteProd.category}
+                  </div>
+                </div>
+              ) : (
+                <div className="text-sm text-muted-foreground">Sin sobrantes</div>
+              )}
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="p-3 space-y-2">
+              <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Producto con mayor faltante ($)
+              </div>
+              {topFaltanteValProd ? (
+                <div>
+                  <div className="text-sm font-bold text-red-600 leading-snug">{topFaltanteValProd.product_name}</div>
+                  <div className="font-mono text-[10px] text-muted-foreground">{topFaltanteValProd.barcode}</div>
+                  <div className="text-xs text-muted-foreground mt-0.5">
+                    {Number(topFaltanteValProd.difference)} pz · {money(rowValue(topFaltanteValProd))}
+                    {" · "}{topFaltanteValProd.category}
+                  </div>
+                </div>
+              ) : (
+                <div className="text-sm text-muted-foreground">Sin faltantes en valor</div>
+              )}
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="p-3 space-y-2">
+              <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Producto con mayor sobrante ($)
+              </div>
+              {topSobranteValProd ? (
+                <div>
+                  <div className="text-sm font-bold text-amber-600 leading-snug">{topSobranteValProd.product_name}</div>
+                  <div className="font-mono text-[10px] text-muted-foreground">{topSobranteValProd.barcode}</div>
+                  <div className="text-xs text-muted-foreground mt-0.5">
+                    +{Number(topSobranteValProd.difference)} pz · {money(rowValue(topSobranteValProd))}
+                    {" · "}{topSobranteValProd.category}
+                  </div>
+                </div>
+              ) : (
+                <div className="text-sm text-muted-foreground">Sin sobrantes en valor</div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* Ranking de colaboradores */}
+        {collabRanking.length > 0 && (
+          <Card>
+            <CardContent className="p-3 space-y-2">
+              <div className="text-sm font-semibold">Participación por colaborador</div>
+              <p className="text-[11px] text-muted-foreground">
+                Se asocia la diferencia del producto a quienes lo contaron (repartida si hubo varios).
+              </p>
+              <div className="divide-y rounded-md border">
+                <div className="flex items-center gap-2 bg-muted/50 px-3 py-2 text-[10px] font-medium uppercase text-muted-foreground">
+                  <div className="min-w-0 flex-1">Colaborador</div>
+                  <div className="w-14 shrink-0 text-center">Prods</div>
+                  <div className="w-16 shrink-0 text-center">Faltante</div>
+                  <div className="w-16 shrink-0 text-center">Sobrante</div>
+                </div>
+                {collabRanking.slice(0, 15).map((c) => (
+                  <div key={c.name} className="flex items-center gap-2 px-3 py-2 text-xs">
+                    <div className="min-w-0 flex-1 font-medium truncate">{c.name}</div>
+                    <div className="w-14 shrink-0 text-center">{c.products}</div>
+                    <div className="w-16 shrink-0 text-center text-red-600 font-semibold">
+                      {c.faltanteQty > 0 ? Math.round(c.faltanteQty) : "—"}
+                    </div>
+                    <div className="w-16 shrink-0 text-center text-amber-600 font-semibold">
+                      {c.sobranteQty > 0 ? Math.round(c.sobranteQty) : "—"}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Por categoría */}
+        {catList.length > 0 && (
+          <Card>
+            <CardContent className="p-3 space-y-2">
+              <div className="text-sm font-semibold">Por categoría</div>
+              <div className="divide-y rounded-md border">
+                <div className="flex items-center gap-2 bg-muted/50 px-3 py-2 text-[10px] font-medium uppercase text-muted-foreground">
+                  <div className="min-w-0 flex-1">Categoría</div>
+                  <div className="w-12 shrink-0 text-center">Items</div>
+                  <div className="w-20 shrink-0 text-right">Faltante $</div>
+                  <div className="w-20 shrink-0 text-right">Sobrante $</div>
+                </div>
+                {catList.map((c) => (
+                  <div key={c.cat} className="flex items-center gap-2 px-3 py-2 text-xs">
+                    <div className="min-w-0 flex-1 font-medium truncate">{c.cat}</div>
+                    <div className="w-12 shrink-0 text-center">{c.n}</div>
+                    <div className="w-20 shrink-0 text-right text-red-600 font-semibold">
+                      {c.faltanteVal > 0 ? money(c.faltanteVal) : "—"}
+                    </div>
+                    <div className="w-20 shrink-0 text-right text-amber-600 font-semibold">
+                      {c.sobranteVal > 0 ? money(c.sobranteVal) : "—"}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Top 10 faltantes */}
+        {byFaltante.length > 0 && (
+          <Card>
+            <CardContent className="p-3 space-y-2">
+              <div className="text-sm font-semibold text-red-700 dark:text-red-400">
+                Top 10 productos con más faltante
+              </div>
+              <div className="divide-y rounded-md border">
+                <div className="flex items-center gap-2 bg-muted/50 px-3 py-2 text-[10px] font-medium uppercase text-muted-foreground">
+                  <div className="min-w-0 flex-1">Producto</div>
+                  <div className="w-12 shrink-0 text-center">Sys</div>
+                  <div className="w-12 shrink-0 text-center">Tot</div>
+                  <div className="w-16 shrink-0 text-center">Δ</div>
+                  <div className="w-20 shrink-0 text-right">Valor</div>
+                </div>
+                {byFaltante.slice(0, 10).map((r) => {
+                  const d = Number(r.difference);
+                  const v = rowValue(r);
+                  return (
+                    <div key={r.id} className="flex items-center gap-2 px-3 py-2 text-xs bg-red-50/50 dark:bg-red-950/10">
+                      <div className="min-w-0 flex-1">
+                        <div className="font-medium break-words leading-snug">{r.product_name}</div>
+                        <div className="font-mono text-[10px] text-muted-foreground">{r.barcode} · {r.category}</div>
+                      </div>
+                      <div className="w-12 shrink-0 text-center text-muted-foreground">{r.system_stock}</div>
+                      <div className="w-12 shrink-0 text-center font-semibold">{r.total_counted}</div>
+                      <div className="w-16 shrink-0 text-center font-bold text-red-600">{d}</div>
+                      <div className="w-20 shrink-0 text-right font-semibold text-red-600">{money(v)}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Top 10 sobrantes */}
+        {bySobrante.length > 0 && (
+          <Card>
+            <CardContent className="p-3 space-y-2">
+              <div className="text-sm font-semibold text-amber-700 dark:text-amber-400">
+                Top 10 productos con más sobrante
+              </div>
+              <div className="divide-y rounded-md border">
+                <div className="flex items-center gap-2 bg-muted/50 px-3 py-2 text-[10px] font-medium uppercase text-muted-foreground">
+                  <div className="min-w-0 flex-1">Producto</div>
+                  <div className="w-12 shrink-0 text-center">Sys</div>
+                  <div className="w-12 shrink-0 text-center">Tot</div>
+                  <div className="w-16 shrink-0 text-center">Δ</div>
+                  <div className="w-20 shrink-0 text-right">Valor</div>
+                </div>
+                {bySobrante.slice(0, 10).map((r) => {
+                  const d = Number(r.difference);
+                  const v = rowValue(r);
+                  return (
+                    <div key={r.id} className="flex items-center gap-2 px-3 py-2 text-xs bg-amber-50/50 dark:bg-amber-950/10">
+                      <div className="min-w-0 flex-1">
+                        <div className="font-medium break-words leading-snug">{r.product_name}</div>
+                        <div className="font-mono text-[10px] text-muted-foreground">{r.barcode} · {r.category}</div>
+                      </div>
+                      <div className="w-12 shrink-0 text-center text-muted-foreground">{r.system_stock}</div>
+                      <div className="w-12 shrink-0 text-center font-semibold">{r.total_counted}</div>
+                      <div className="w-16 shrink-0 text-center font-bold text-amber-600">+{d}</div>
+                      <div className="w-20 shrink-0 text-right font-semibold text-amber-600">{money(v)}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {monthRows.length === 0 && (
+          <div className="py-8 text-center text-xs text-muted-foreground">
+            No hay datos cerrados para este mes
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-2">
@@ -996,8 +1413,17 @@ function AuditHistoryPage() {
 
           <AuditAIChat />
 
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <div className="flex items-center gap-2 text-sm text-muted-foreground flex-wrap">
             <BarChart3 className="h-4 w-4" /> Faltante por mes (todas las categorías cerradas)
+            <span className="text-[10px] ml-auto flex items-center gap-1">
+              {isFetching ? (
+                <>
+                  <Loader2 className="h-3 w-3 animate-spin" /> Actualizando…
+                </>
+              ) : dataUpdatedAt ? (
+                <>Se actualiza al cerrar cada categoría · {new Date(dataUpdatedAt).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" })}</>
+              ) : null}
+            </span>
           </div>
 
           {monthly.map((m, i) => {
@@ -1006,12 +1432,27 @@ function AuditHistoryPage() {
             const prevP = prev ? pct(prev.faltante, prev.sys) : null;
             const delta = prevP === null ? null : p - prevP;
             return (
-              <Card key={m.key}>
+              <Card
+                key={m.key}
+                className="cursor-pointer transition-colors hover:bg-muted/40 hover:border-primary/40"
+                onClick={() => setSelectedMonth(m.key)}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    setSelectedMonth(m.key);
+                  }
+                }}
+              >
                 <CardContent className="p-3 space-y-2">
                   <div className="flex items-center justify-between">
                     <div className="text-sm font-semibold capitalize">{monthName(m.key)}</div>
-                    <div className={`text-lg font-bold ${p === 0 ? "text-emerald-600" : p < 2 ? "text-amber-600" : "text-red-600"}`}>
-                      {p.toFixed(2)}%
+                    <div className="flex items-center gap-2">
+                      <div className={`text-lg font-bold ${p === 0 ? "text-emerald-600" : p < 2 ? "text-amber-600" : "text-red-600"}`}>
+                        {p.toFixed(2)}%
+                      </div>
+                      <span className="text-[10px] text-muted-foreground">Ver detalle →</span>
                     </div>
                   </div>
                   <div className="h-2 w-full overflow-hidden rounded bg-muted">
