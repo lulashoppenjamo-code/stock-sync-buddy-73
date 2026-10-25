@@ -8,11 +8,11 @@ export default defineConfig({
   vite: {
     plugins: [
       VitePWA({
+        strategies: "injectManifest",
+        srcDir: "src",
+        filename: "sw.ts",
         registerType: "autoUpdate",
-        // Deja que el plugin inyecte el registro (más fiable que solo el manual)
-        injectRegister: "auto",
-        strategies: "generateSW",
-        filename: "sw.js",
+        injectRegister: null,
         devOptions: { enabled: false },
         includeAssets: [
           "favicon-192.png",
@@ -37,74 +37,11 @@ export default defineConfig({
             { src: "/pwa-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
           ],
         },
-        workbox: {
-          // Precache assets estáticos del build + offline.html
+        injectManifest: {
           globPatterns: ["**/*.{js,css,html,ico,png,svg,woff,woff2,webmanifest}"],
           globIgnores: ["**/node_modules/**", "**/server/**", "**/api/**"],
           maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
-          skipWaiting: true,
-          clientsClaim: true,
-          cleanupOutdatedCaches: true,
-          // Si una navegación falla sin red → offline.html
-          navigateFallback: "/offline.html",
-          navigateFallbackAllowlist: [/./],
-          navigateFallbackDenylist: [/^\/\~oauth/, /^\/api\//, /^\/rest\//],
-          additionalManifestEntries: [{ url: "/offline.html", revision: "6" }],
-          runtimeCaching: [
-            // Documentos HTML: guarda los que cargaste online para reusarlos offline
-            {
-              urlPattern: ({ request }) => request.mode === "navigate",
-              handler: "NetworkFirst",
-              options: {
-                cacheName: "pages",
-                networkTimeoutSeconds: 3,
-                cacheableResponse: { statuses: [0, 200] },
-                expiration: {
-                  maxEntries: 40,
-                  maxAgeSeconds: 60 * 60 * 24 * 7,
-                },
-              },
-            },
-            {
-              urlPattern: ({ url }) =>
-                url.origin === self.location.origin &&
-                /\.(?:js|css)$/.test(url.pathname),
-              handler: "CacheFirst",
-              options: {
-                cacheName: "static-assets",
-                cacheableResponse: { statuses: [0, 200] },
-                expiration: {
-                  maxEntries: 150,
-                  maxAgeSeconds: 60 * 60 * 24 * 30,
-                },
-              },
-            },
-            {
-              urlPattern: ({ url }) =>
-                url.origin === self.location.origin &&
-                /\.(?:png|jpg|jpeg|svg|webp|ico|woff2?)$/.test(url.pathname),
-              handler: "CacheFirst",
-              options: {
-                cacheName: "images-fonts",
-                expiration: {
-                  maxEntries: 200,
-                  maxAgeSeconds: 60 * 60 * 24 * 30,
-                },
-              },
-            },
-            {
-              urlPattern: /\/rest\/v1\/.*$/,
-              handler: "NetworkFirst",
-              options: {
-                cacheName: "supabase-rest",
-                networkTimeoutSeconds: 4,
-                expiration: {
-                  maxEntries: 200,
-                  maxAgeSeconds: 60 * 60 * 24,
-                },
-              },
-            },
-          ],
+          rollupFormat: "es",
         },
       }),
     ],
