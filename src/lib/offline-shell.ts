@@ -1,6 +1,6 @@
 /**
  * Calienta la caché del app shell mientras hay internet.
- * Prioriza /app/audit (conteo) para que abra offline.
+ * Prioriza Auditoría, Historial/Reporte e Traspasos para uso offline.
  */
 const SHELL_CACHE = "app-shell-v1";
 
@@ -23,13 +23,13 @@ export async function warmAppShell(): Promise<void> {
   try {
     const cache = await caches.open(SHELL_CACHE);
 
-    // Orden: auditoría primero (lo que más se usa offline)
     const paths = [
       "/app/audit",
+      "/app/audit-history",
+      "/app/transfer",
+      "/app/history",
       "/app",
       "/",
-      "/app/history",
-      "/app/audit-history",
       "/offline.html",
       "/manifest.webmanifest",
       window.location.pathname || "/",
@@ -58,15 +58,8 @@ export async function warmAppShell(): Promise<void> {
       assets.add(new URL(m[0], window.location.origin).href);
     }
 
-    // Forzar chunks críticos de auditoría si están en el precache del SW
-    const critical = [
-      "/assets/app.audit",
-      "/assets/BarcodeScanner",
-    ];
-    // No conocemos el hash; el SW ya precachea app.audit-*.js
-
     await Promise.all([...assets].map((url) => putInCache(cache, url)));
-    console.info("[offline-shell] cached pages +", assets.size, "assets (audit prioritario)");
+    console.info("[offline-shell] cached critical pages +", assets.size, "assets");
   } catch (e) {
     console.warn("[offline-shell] warm failed", e);
   }
@@ -92,9 +85,10 @@ export function startShellWarm(): () => void {
   };
   navigator.serviceWorker?.addEventListener("message", onMsg);
 
-  // Si el usuario entra a Auditoría online, recalentar al instante
   const onNav = () => {
-    if (navigator.onLine && /\/app\/audit/.test(window.location.pathname)) {
+    if (!navigator.onLine) return;
+    const p = window.location.pathname;
+    if (/\/app\/(audit|audit-history|transfer|history)/.test(p)) {
       warmAppShell().catch(() => {});
     }
   };
