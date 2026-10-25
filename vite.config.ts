@@ -12,6 +12,12 @@ export default defineConfig({
         injectRegister: null,
         devOptions: { enabled: false },
         filename: "sw.js",
+        includeAssets: [
+          "favicon-192.png",
+          "pwa-192.png",
+          "pwa-512.png",
+          "offline.html",
+        ],
         manifest: {
           name: "Inventario A/B",
           short_name: "Inventario",
@@ -19,20 +25,45 @@ export default defineConfig({
           theme_color: "#0f172a",
           background_color: "#0f172a",
           display: "standalone",
+          orientation: "portrait-primary",
           start_url: "/",
           scope: "/",
+          lang: "es",
           icons: [
-            { src: "/pwa-192.png", sizes: "192x192", type: "image/png", purpose: "any maskable" },
-            { src: "/pwa-512.png", sizes: "512x512", type: "image/png", purpose: "any maskable" },
+            {
+              src: "/pwa-192.png",
+              sizes: "192x192",
+              type: "image/png",
+              purpose: "any",
+            },
+            {
+              src: "/pwa-512.png",
+              sizes: "512x512",
+              type: "image/png",
+              purpose: "any",
+            },
+            {
+              src: "/pwa-512.png",
+              sizes: "512x512",
+              type: "image/png",
+              purpose: "maskable",
+            },
           ],
         },
         workbox: {
+          // Precache del esqueleto de la app (HTML/JS/CSS/iconos generados en el build)
+          globPatterns: ["**/*.{js,css,html,ico,png,svg,woff,woff2,webmanifest}"],
+          // Evita precachear cosas de servidor / APIs
+          globIgnores: ["**/node_modules/**", "**/server/**", "**/api/**"],
+          maximumFileSizeToCacheInBytes: 5 * 1024 * 1024, // 5 MB
           skipWaiting: true,
           clientsClaim: true,
-          globPatterns: [],
-          navigateFallbackDenylist: [/^\/~oauth/, /^\/api\//],
-          additionalManifestEntries: [{ url: "/offline.html", revision: "3" }],
+          cleanupOutdatedCaches: true,
+          navigateFallback: "/offline.html",
+          navigateFallbackDenylist: [/^\/\~oauth/, /^\/api\//, /^\/rest\//],
+          additionalManifestEntries: [{ url: "/offline.html", revision: "4" }],
           runtimeCaching: [
+            // Navegación: red primero; si falla → offline.html
             {
               urlPattern: ({ request }) => request.mode === "navigate",
               handler: "NetworkFirst",
@@ -41,8 +72,6 @@ export default defineConfig({
                 networkTimeoutSeconds: 4,
                 plugins: [
                   {
-                    // Buscamos en TODAS las caches (ahí vive offline.html, precacheado
-                    // por workbox en su propio bucket, no en "html-pages").
                     handlerDidError: async () => {
                       const fallback = await self.caches.match("/offline.html");
                       return fallback || Response.error();
@@ -51,20 +80,46 @@ export default defineConfig({
                 ],
               },
             },
+            // JS / CSS / fuentes del mismo origen
             {
-              urlPattern: ({ url }) => url.origin === self.location.origin && /\.(?:js|css|woff2?)$/.test(url.pathname),
+              urlPattern: ({ url }) =>
+                url.origin === self.location.origin &&
+                /\.(?:js|css|woff2?)$/.test(url.pathname),
               handler: "CacheFirst",
-              options: { cacheName: "static-assets", expiration: { maxEntries: 100, maxAgeSeconds: 60 * 60 * 24 * 30 } },
+              options: {
+                cacheName: "static-assets",
+                expiration: {
+                  maxEntries: 120,
+                  maxAgeSeconds: 60 * 60 * 24 * 30,
+                },
+              },
             },
+            // Imágenes
             {
-              urlPattern: ({ url }) => url.origin === self.location.origin && /\.(?:png|jpg|jpeg|svg|webp|ico)$/.test(url.pathname),
+              urlPattern: ({ url }) =>
+                url.origin === self.location.origin &&
+                /\.(?:png|jpg|jpeg|svg|webp|ico)$/.test(url.pathname),
               handler: "CacheFirst",
-              options: { cacheName: "images", expiration: { maxEntries: 200, maxAgeSeconds: 60 * 60 * 24 * 30 } },
+              options: {
+                cacheName: "images",
+                expiration: {
+                  maxEntries: 200,
+                  maxAgeSeconds: 60 * 60 * 24 * 30,
+                },
+              },
             },
+            // Supabase REST: red primero, cache corto de respaldo
             {
               urlPattern: /\/rest\/v1\/.*$/,
               handler: "NetworkFirst",
-              options: { cacheName: "supabase-rest", networkTimeoutSeconds: 4, expiration: { maxEntries: 200, maxAgeSeconds: 60 * 60 * 24 } },
+              options: {
+                cacheName: "supabase-rest",
+                networkTimeoutSeconds: 4,
+                expiration: {
+                  maxEntries: 200,
+                  maxAgeSeconds: 60 * 60 * 24,
+                },
+              },
             },
           ],
         },
