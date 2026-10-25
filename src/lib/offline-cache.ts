@@ -10,6 +10,8 @@ const store = createStore("inventory-offline-cache", "data");
 
 const PRODUCTS_KEY = "products:v1";
 const COLLABS_KEY = "collaborators:v1";
+const CLOSED_COUNTS_KEY = "closed_counts:v1";
+const ZOBAZE_KEY = "zobaze_corrections:v1";
 const META_KEY = "meta:v1";
 
 export type CachedProduct = {
@@ -33,13 +35,20 @@ export type CachedCollaborator = {
 type CacheMeta = {
   productsAt: number | null;
   collabsAt: number | null;
+  closedCountsAt: number | null;
 };
 
 async function getMeta(): Promise<CacheMeta> {
   try {
-    return (await get<CacheMeta>(META_KEY, store)) ?? { productsAt: null, collabsAt: null };
+    return (
+      (await get<CacheMeta>(META_KEY, store)) ?? {
+        productsAt: null,
+        collabsAt: null,
+        closedCountsAt: null,
+      }
+    );
   } catch {
-    return { productsAt: null, collabsAt: null };
+    return { productsAt: null, collabsAt: null, closedCountsAt: null };
   }
 }
 
@@ -165,6 +174,33 @@ export async function refreshCollaboratorsCache(): Promise<number> {
   return rows.length;
 }
 
+/** Lee historial de cortes cerrados desde IndexedDB (reporte general offline). */
+export async function getCachedClosedCounts<T = unknown>(): Promise<T[]> {
+  try {
+    return ((await get<T[]>(CLOSED_COUNTS_KEY, store)) ?? []) as T[];
+  } catch {
+    return [];
+  }
+}
+
+/** Guarda closed_counts en IndexedDB (llamar tras fetch online). */
+export async function setCachedClosedCounts(rows: unknown[]): Promise<void> {
+  await set(CLOSED_COUNTS_KEY, rows, store);
+  await setMeta({ closedCountsAt: Date.now() });
+}
+
+export async function getCachedZobazeCorrections<T = unknown>(): Promise<T[]> {
+  try {
+    return ((await get<T[]>(ZOBAZE_KEY, store)) ?? []) as T[];
+  } catch {
+    return [];
+  }
+}
+
+export async function setCachedZobazeCorrections(rows: unknown[]): Promise<void> {
+  await set(ZOBAZE_KEY, rows, store);
+}
+
 let warming = false;
 
 /**
@@ -180,6 +216,7 @@ export async function warmOfflineCache(maxAgeMs = 6 * 60 * 60 * 1000): Promise<v
     const now = Date.now();
     const productsStale = !meta.productsAt || now - meta.productsAt > maxAgeMs;
     const collabsStale = !meta.collabsAt || now - meta.collabsAt > maxAgeMs;
+    const closedStale = !meta.closedCountsAt || now - meta.closedCountsAt > maxAgeMs;
 
     // Si no hay productos en caché, forzar refresh aunque no esté "stale" por tiempo
     const existing = await getCachedProducts();
@@ -195,6 +232,31 @@ export async function warmOfflineCache(maxAgeMs = 6 * 60 * 60 * 1000): Promise<v
         await refreshCollaboratorsCache();
       } catch (e) {
         console.warn("[offline-cache] collabs refresh failed:", e);
+      }
+    }
+    // Historial / reporte general: refrescar closed_counts para vista offline
+    if (closedStale) {
+      try {
+        const PAGE = 1000;
+        let all: unknown[] = [];
+        let from = 0;
+        while (true) {
+          const { data, error } = await supabase
+            .from("closed_counts")
+            .select("*")
+            .order("closed_at", { ascending: false })
+            .range(from, from + PAGE - 1);
+          if (error) throw error;
+          const page = data ?? [];
+          all = all.concat(page);
+          if (page.length < PAGE) break;
+          from += PAGE;
+        }
+        await setCachedClosedCounts(all);
+        const { data: zob } = await supabase.from("zobaze_corrections").select("*");
+        if (zob) await setCachedZobazeCorrections(zob);
+      } catch (e) {
+        console.warn("[offline-cache] closed_counts refresh failed:", e);
       }
     }
   } finally {
