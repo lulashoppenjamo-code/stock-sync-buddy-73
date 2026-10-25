@@ -27,6 +27,7 @@ export async function warmAppShell(): Promise<void> {
       "/app/audit",
       "/app/audit-history",
       "/app/transfer",
+      "/app/reception",
       "/app/history",
       "/app",
       "/",
@@ -88,7 +89,7 @@ export function startShellWarm(): () => void {
   const onNav = () => {
     if (!navigator.onLine) return;
     const p = window.location.pathname;
-    if (/\/app\/(audit|audit-history|transfer|history)/.test(p)) {
+    if (/\/app\/(audit|audit-history|transfer|reception|history)/.test(p)) {
       warmAppShell().catch(() => {});
     }
   };
