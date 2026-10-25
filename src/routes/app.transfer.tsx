@@ -110,18 +110,31 @@ function TransferPage() {
   const debouncedNameSearch = useDebounce(nameSearch, 300);
   const me = useCollaborator();
 
-  // Fetch branch assigned to this collaborator
+  // Fetch branch assigned to this collaborator (offline: caché local)
   const { data: collabData } = useQuery({
-    queryKey: ["collab-branch-transfer", me?.id],
+    queryKey: ["collab-branch-transfer", me?.id, online],
     enabled: !!me?.id,
-    staleTime: 60_000,
+    staleTime: online ? 60_000 : Infinity,
     queryFn: async () => {
-      const { data } = await supabase
-        .from("collaborators")
-        .select("branch")
-        .eq("id", me!.id)
-        .maybeSingle();
-      return data as { branch: string } | null;
+      if (!online) {
+        const { getCachedCollaborators } = await import("@/lib/offline-cache");
+        const list = await getCachedCollaborators();
+        const found = list.find((c) => c.id === me!.id);
+        return found ? { branch: found.branch ?? "A" } : { branch: "A" };
+      }
+      try {
+        const { data } = await supabase
+          .from("collaborators")
+          .select("branch")
+          .eq("id", me!.id)
+          .maybeSingle();
+        return data as { branch: string } | null;
+      } catch {
+        const { getCachedCollaborators } = await import("@/lib/offline-cache");
+        const list = await getCachedCollaborators();
+        const found = list.find((c) => c.id === me!.id);
+        return found ? { branch: found.branch ?? "A" } : { branch: "A" };
+      }
     },
   });
 
