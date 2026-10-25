@@ -16,6 +16,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { registerPwa } from "@/lib/pwa-register";
 import { startQueueAutoDrain } from "@/lib/offline-queue";
 import { startOfflineCacheAutoWarm } from "@/lib/offline-cache";
+import { startShellWarm } from "@/lib/offline-shell";
 import { useRealtimeSync } from "@/hooks/use-realtime";
 
 function NotFoundComponent() {
@@ -117,6 +118,7 @@ function ClientBoot() {
     registerPwa();
     const cleanupQueue = startQueueAutoDrain();
     const cleanupCache = startOfflineCacheAutoWarm();
+    const cleanupShell = startShellWarm();
 
     // Aviso cuando se sincronizan pendientes (auto)
     const onSynced = (ev: Event) => {
@@ -148,6 +150,7 @@ function ClientBoot() {
     return () => {
       cleanupQueue?.();
       cleanupCache?.();
+      cleanupShell?.();
       window.removeEventListener("inv:queue-synced", onSynced);
       window.removeEventListener("popstate", handlePopState);
     };
