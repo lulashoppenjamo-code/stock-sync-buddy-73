@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="theme-color" content="#0f172a" />
 <title>Sin conexión — Inventario A/B</title>
 <style>
   html, body {
@@ -21,19 +22,14 @@
     text-align: center;
     padding: 24px;
   }
-  .icon {
-    font-size: 48px;
-    margin-bottom: 16px;
-  }
-  h1 {
-    font-size: 20px;
-    margin: 0 0 8px;
-  }
+  .icon { font-size: 48px; margin-bottom: 16px; }
+  h1 { font-size: 20px; margin: 0 0 8px; }
   p {
     font-size: 14px;
     color: #94a3b8;
     margin: 0 0 24px;
     max-width: 320px;
+    line-height: 1.45;
   }
   button {
     background: #f8fafc;
@@ -45,8 +41,12 @@
     font-weight: 600;
     cursor: pointer;
   }
-  button:active {
-    opacity: 0.8;
+  button:active { opacity: 0.8; }
+  .hint {
+    margin-top: 20px;
+    font-size: 12px;
+    color: #64748b;
+    max-width: 300px;
   }
 </style>
 </head>
@@ -54,8 +54,14 @@
   <div class="wrap">
     <div class="icon">📦</div>
     <h1>Sin conexión</h1>
-    <p>No se pudo cargar esta pantalla del Inventario A/B. Revisa tu conexión e intenta de nuevo.</p>
-    <button onclick="location.reload()">Reintentar</button>
+    <p>
+      No se pudo cargar esta pantalla. Si ya usaste la app antes,
+      vuelve a intentar: el esqueleto y los datos vistos pueden seguir disponibles.
+    </p>
+    <button type="button" onclick="location.reload()">Reintentar</button>
+    <p class="hint">
+      Abre la app al menos una vez con internet para que se descargue en el dispositivo.
+    </p>
   </div>
   <script>
     window.addEventListener("online", () => location.reload());
