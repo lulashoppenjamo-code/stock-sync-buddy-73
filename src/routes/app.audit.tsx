@@ -324,47 +324,66 @@ function AuditPage() {
   });
 
   const { data: categories = [] } = useQuery({
-    queryKey: ["categories-all"],
+    queryKey: ["categories-all", online],
     queryFn: async () => {
-      const all = new Set<string>();
-      const pageSize = 1000;
-      let from = 0;
-      while (true) {
-        const { data, error } = await supabase
-          .from("products").select("category")
-          .not("category", "is", null).not("category", "eq", "")
-          .range(from, from + pageSize - 1);
-        if (error) throw error;
-        for (const r of data ?? []) if (r.category) all.add(r.category.trim());
-        if ((data ?? []).length < pageSize) break;
-        from += pageSize;
+      // Sin red (o fallo de red): categorías desde IndexedDB
+      if (!online) {
+        const { getCachedCategories } = await import("@/lib/offline-cache");
+        return getCachedCategories();
       }
-      return Array.from(all).sort((a, b) => a.localeCompare(b, "es"));
+      try {
+        const all = new Set<string>();
+        const pageSize = 1000;
+        let from = 0;
+        while (true) {
+          const { data, error } = await supabase
+            .from("products").select("category")
+            .not("category", "is", null).not("category", "eq", "")
+            .range(from, from + pageSize - 1);
+          if (error) throw error;
+          for (const r of data ?? []) if (r.category) all.add(r.category.trim());
+          if ((data ?? []).length < pageSize) break;
+          from += pageSize;
+        }
+        return Array.from(all).sort((a, b) => a.localeCompare(b, "es"));
+      } catch {
+        const { getCachedCategories } = await import("@/lib/offline-cache");
+        return getCachedCategories();
+      }
     },
     staleTime: online ? 30_000 : Infinity,
   });
 
   const { data: categoryCounts = new Map<string, number>() } = useQuery({
-    queryKey: ["category-counts"],
+    queryKey: ["category-counts", online],
     queryFn: async () => {
-      const counts = new Map<string, number>();
-      const pageSize = 1000;
-      let from = 0;
-      while (true) {
-        const { data, error } = await supabase
-          .from("products").select("category")
-          .not("category", "is", null).not("category", "eq", "")
-          .range(from, from + pageSize - 1);
-        if (error) throw error;
-        for (const r of data ?? []) {
-          if (!r.category) continue;
-          const key = r.category.trim();
-          counts.set(key, (counts.get(key) ?? 0) + 1);
-        }
-        if ((data ?? []).length < pageSize) break;
-        from += pageSize;
+      if (!online) {
+        const { getCachedCategoryCounts } = await import("@/lib/offline-cache");
+        return getCachedCategoryCounts();
       }
-      return counts;
+      try {
+        const counts = new Map<string, number>();
+        const pageSize = 1000;
+        let from = 0;
+        while (true) {
+          const { data, error } = await supabase
+            .from("products").select("category")
+            .not("category", "is", null).not("category", "eq", "")
+            .range(from, from + pageSize - 1);
+          if (error) throw error;
+          for (const r of data ?? []) {
+            if (!r.category) continue;
+            const key = r.category.trim();
+            counts.set(key, (counts.get(key) ?? 0) + 1);
+          }
+          if ((data ?? []).length < pageSize) break;
+          from += pageSize;
+        }
+        return counts;
+      } catch {
+        const { getCachedCategoryCounts } = await import("@/lib/offline-cache");
+        return getCachedCategoryCounts();
+      }
     },
     staleTime: online ? 30_000 : Infinity,
   });
@@ -377,15 +396,20 @@ function AuditPage() {
     // mientras uno ya se refrescó y el otro todavía no.
     staleTime: online ? 10_000 : Infinity,
     queryFn: async () => {
-      const { startIso, endIso } = monthRange();
-      const { data, error } = await supabase
-        .from("audit_history")
-        .select("id, category, branch, session_id, barcode, product_name, system_stock, counted_quantity, collaborator_name, created_at")
-        .gte("created_at", startIso)
-        .lte("created_at", endIso)
-        .order("created_at", { ascending: true });
-      if (error) throw error;
-      return data as HistoryRow[];
+      if (!online) return [] as HistoryRow[];
+      try {
+        const { startIso, endIso } = monthRange();
+        const { data, error } = await supabase
+          .from("audit_history")
+          .select("id, category, branch, session_id, barcode, product_name, system_stock, counted_quantity, collaborator_name, created_at")
+          .gte("created_at", startIso)
+          .lte("created_at", endIso)
+          .order("created_at", { ascending: true });
+        if (error) throw error;
+        return data as HistoryRow[];
+      } catch {
+        return [] as HistoryRow[];
+      }
     },
   });
 
@@ -403,14 +427,19 @@ function AuditPage() {
 
   const { data: branchClosures = [] } = useQuery({
     queryKey: ["branch-closures", periodKey()],
-    staleTime: 0,
+    staleTime: online ? 0 : Infinity,
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from("branch_closures")
-        .select("category, branch, period, collaborator_name, total_counted, products_counted, status")
-        .eq("period", periodKey());
-      if (error) throw error;
-      return data as Array<{ category: string; branch: string; period: string; collaborator_name: string | null; total_counted: number; products_counted: number; status?: string }>;
+      if (!online) return [];
+      try {
+        const { data, error } = await supabase
+          .from("branch_closures")
+          .select("category, branch, period, collaborator_name, total_counted, products_counted, status")
+          .eq("period", periodKey());
+        if (error) throw error;
+        return data as Array<{ category: string; branch: string; period: string; collaborator_name: string | null; total_counted: number; products_counted: number; status?: string }>;
+      } catch {
+        return [];
+      }
     },
   });
 
@@ -440,24 +469,29 @@ function AuditPage() {
     queryKey: ["closed-counts-categories", periodKey()],
     staleTime: online ? 10_000 : Infinity,
     queryFn: async () => {
-      const { startIso, endIso } = monthRange();
-      const PAGE = 1000;
-      const all: Array<{ category: string }> = [];
-      let from = 0;
-      while (true) {
-        const { data, error } = await supabase
-          .from("closed_counts")
-          .select("category")
-          .gte("closed_at", startIso)
-          .lte("closed_at", endIso)
-          .range(from, from + PAGE - 1);
-        if (error) throw error;
-        const page = (data ?? []) as Array<{ category: string }>;
-        all.push(...page);
-        if (page.length < PAGE) break;
-        from += PAGE;
+      if (!online) return [] as Array<{ category: string }>;
+      try {
+        const { startIso, endIso } = monthRange();
+        const PAGE = 1000;
+        const all: Array<{ category: string }> = [];
+        let from = 0;
+        while (true) {
+          const { data, error } = await supabase
+            .from("closed_counts")
+            .select("category")
+            .gte("closed_at", startIso)
+            .lte("closed_at", endIso)
+            .range(from, from + PAGE - 1);
+          if (error) throw error;
+          const page = (data ?? []) as Array<{ category: string }>;
+          all.push(...page);
+          if (page.length < PAGE) break;
+          from += PAGE;
+        }
+        return all;
+      } catch {
+        return [] as Array<{ category: string }>;
       }
-      return all;
     },
   });
 
