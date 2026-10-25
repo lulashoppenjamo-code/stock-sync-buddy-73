@@ -12,6 +12,7 @@ const PRODUCTS_KEY = "products:v1";
 const COLLABS_KEY = "collaborators:v1";
 const CLOSED_COUNTS_KEY = "closed_counts:v1";
 const ZOBAZE_KEY = "zobaze_corrections:v1";
+const PENDING_TRANSFERS_KEY = "pending_transfers:v1";
 const META_KEY = "meta:v1";
 
 export type CachedProduct = {
@@ -201,6 +202,19 @@ export async function setCachedZobazeCorrections(rows: unknown[]): Promise<void>
   await set(ZOBAZE_KEY, rows, store);
 }
 
+/** Traspasos pendientes de recibir (pantalla Recepción). */
+export async function getCachedPendingTransfers<T = unknown>(): Promise<T[]> {
+  try {
+    return ((await get<T[]>(PENDING_TRANSFERS_KEY, store)) ?? []) as T[];
+  } catch {
+    return [];
+  }
+}
+
+export async function setCachedPendingTransfers(rows: unknown[]): Promise<void> {
+  await set(PENDING_TRANSFERS_KEY, rows, store);
+}
+
 let warming = false;
 
 /**
@@ -255,6 +269,18 @@ export async function warmOfflineCache(maxAgeMs = 6 * 60 * 60 * 1000): Promise<v
         await setCachedClosedCounts(all);
         const { data: zob } = await supabase.from("zobaze_corrections").select("*");
         if (zob) await setCachedZobazeCorrections(zob);
+        // Pendientes de recepción
+        try {
+          const { data: pend, error: pe } = await supabase
+            .from("transfers")
+            .select("id, barcode, product_name, quantity, origin, destination, sender_name, receiver_name, photo_url, created_at, client_uid")
+            .is("received_at", null)
+            .order("created_at", { ascending: false })
+            .limit(200);
+          if (!pe && pend) await setCachedPendingTransfers(pend);
+        } catch (e2) {
+          console.warn("[offline-cache] pending transfers refresh failed:", e2);
+        }
       } catch (e) {
         console.warn("[offline-cache] closed_counts refresh failed:", e);
       }
