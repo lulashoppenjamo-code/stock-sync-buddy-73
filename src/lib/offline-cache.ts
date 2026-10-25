@@ -82,6 +82,29 @@ export async function getCachedProductsByCategory(category: string): Promise<Cac
   return all.filter((p) => (p.category ?? "").trim().toLowerCase() === cat);
 }
 
+/** Lista de categorías distintas desde el catálogo local (para Auditoría offline). */
+export async function getCachedCategories(): Promise<string[]> {
+  const all = await getCachedProducts();
+  const set = new Set<string>();
+  for (const p of all) {
+    const c = (p.category ?? "").trim();
+    if (c) set.add(c);
+  }
+  return Array.from(set).sort((a, b) => a.localeCompare(b, "es"));
+}
+
+/** Conteo de productos por categoría desde caché local. */
+export async function getCachedCategoryCounts(): Promise<Map<string, number>> {
+  const all = await getCachedProducts();
+  const counts = new Map<string, number>();
+  for (const p of all) {
+    const key = (p.category ?? "").trim();
+    if (!key) continue;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return counts;
+}
+
 export async function getCachedCollaborators(): Promise<CachedCollaborator[]> {
   try {
     return (await get<CachedCollaborator[]>(COLLABS_KEY, store)) ?? [];
