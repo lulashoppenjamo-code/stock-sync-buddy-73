@@ -12,12 +12,7 @@ export default defineConfig({
         injectRegister: null,
         devOptions: { enabled: false },
         filename: "sw.js",
-        includeAssets: [
-          "favicon-192.png",
-          "pwa-192.png",
-          "pwa-512.png",
-          "offline.html",
-        ],
+        includeAssets: ["favicon-192.png", "pwa-192.png", "pwa-512.png", "offline.html"],
         manifest: {
           name: "Inventario A/B",
           short_name: "Inventario",
@@ -30,46 +25,28 @@ export default defineConfig({
           scope: "/",
           lang: "es",
           icons: [
-            {
-              src: "/pwa-192.png",
-              sizes: "192x192",
-              type: "image/png",
-              purpose: "any",
-            },
-            {
-              src: "/pwa-512.png",
-              sizes: "512x512",
-              type: "image/png",
-              purpose: "any",
-            },
-            {
-              src: "/pwa-512.png",
-              sizes: "512x512",
-              type: "image/png",
-              purpose: "maskable",
-            },
+            { src: "/pwa-192.png", sizes: "192x192", type: "image/png", purpose: "any" },
+            { src: "/pwa-512.png", sizes: "512x512", type: "image/png", purpose: "any" },
+            { src: "/pwa-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
           ],
         },
         workbox: {
-          // Precache del esqueleto de la app (HTML/JS/CSS/iconos generados en el build)
-          globPatterns: ["**/*.{js,css,html,ico,png,svg,woff,woff2,webmanifest}"],
-          // Evita precachear cosas de servidor / APIs
-          globIgnores: ["**/node_modules/**", "**/server/**", "**/api/**"],
-          maximumFileSizeToCacheInBytes: 5 * 1024 * 1024, // 5 MB
+          // Más seguro con TanStack Start: no forzar precache de todo el build
+          globPatterns: ["**/*.{ico,png,svg,woff,woff2,webmanifest}"],
+          globIgnores: ["**/node_modules/**", "**/server/**"],
+          maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
           skipWaiting: true,
           clientsClaim: true,
           cleanupOutdatedCaches: true,
-          navigateFallback: "/offline.html",
           navigateFallbackDenylist: [/^\/\~oauth/, /^\/api\//, /^\/rest\//],
-          additionalManifestEntries: [{ url: "/offline.html", revision: "4" }],
+          additionalManifestEntries: [{ url: "/offline.html", revision: "5" }],
           runtimeCaching: [
-            // Navegación: red primero; si falla → offline.html
             {
               urlPattern: ({ request }) => request.mode === "navigate",
               handler: "NetworkFirst",
               options: {
                 cacheName: "html-pages",
-                networkTimeoutSeconds: 4,
+                networkTimeoutSeconds: 3,
                 plugins: [
                   {
                     handlerDidError: async () => {
@@ -80,7 +57,6 @@ export default defineConfig({
                 ],
               },
             },
-            // JS / CSS / fuentes del mismo origen
             {
               urlPattern: ({ url }) =>
                 url.origin === self.location.origin &&
@@ -88,13 +64,9 @@ export default defineConfig({
               handler: "CacheFirst",
               options: {
                 cacheName: "static-assets",
-                expiration: {
-                  maxEntries: 120,
-                  maxAgeSeconds: 60 * 60 * 24 * 30,
-                },
+                expiration: { maxEntries: 150, maxAgeSeconds: 60 * 60 * 24 * 30 },
               },
             },
-            // Imágenes
             {
               urlPattern: ({ url }) =>
                 url.origin === self.location.origin &&
@@ -102,23 +74,16 @@ export default defineConfig({
               handler: "CacheFirst",
               options: {
                 cacheName: "images",
-                expiration: {
-                  maxEntries: 200,
-                  maxAgeSeconds: 60 * 60 * 24 * 30,
-                },
+                expiration: { maxEntries: 200, maxAgeSeconds: 60 * 60 * 24 * 30 },
               },
             },
-            // Supabase REST: red primero, cache corto de respaldo
             {
               urlPattern: /\/rest\/v1\/.*$/,
               handler: "NetworkFirst",
               options: {
                 cacheName: "supabase-rest",
                 networkTimeoutSeconds: 4,
-                expiration: {
-                  maxEntries: 200,
-                  maxAgeSeconds: 60 * 60 * 24,
-                },
+                expiration: { maxEntries: 200, maxAgeSeconds: 60 * 60 * 24 },
               },
             },
           ],
