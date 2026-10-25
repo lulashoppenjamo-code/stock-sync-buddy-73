@@ -14,11 +14,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Camera, Check, Loader2, PackageCheck, ChevronDown, ChevronUp, ScanLine } from "lucide-react";
+import { Camera, Check, Loader2, PackageCheck, ChevronDown, ChevronUp, ScanLine, WifiOff } from "lucide-react";
 import { toast } from "sonner";
 import { getCollaborator, useCollaborator } from "@/lib/session";
 import { BRANCH_LABELS } from "@/lib/branches";
 import { BarcodeScanner } from "@/components/BarcodeScanner";
+import { useOnline } from "@/hooks/use-online";
 
 export const Route = createFileRoute("/app/reception")({
   component: ReceptionPage,
@@ -131,36 +132,186 @@ function groupByBatch(transfers: PendingTransfer[]): BatchGroup[] {
   );
 }
 
+// Cola local de recepciones confirmadas sin red
+const OFFLINE_RECEPTIONS_KEY = "inv.offline.receptions.v1";
+type OfflineReception = {
+  id: string;
+  batchId: string;
+  transferIds: string[];
+  received_by_id: string;
+  received_by_name: string;
+  received_sender_name: string;
+  received_receiver_name: string;
+  received_scanned_barcode: string;
+  photoBase64: string;
+  photoType: string;
+  photoName: string;
+  savedAt: number;
+};
+
+function loadOfflineReceptions(): OfflineReception[] {
+  try {
+    const r = localStorage.getItem(OFFLINE_RECEPTIONS_KEY);
+    return r ? (JSON.parse(r) as OfflineReception[]) : [];
+  } catch {
+    return [];
+  }
+}
+function saveOfflineReception(t: OfflineReception) {
+  try {
+    const existing = loadOfflineReceptions();
+    existing.push(t);
+    localStorage.setItem(OFFLINE_RECEPTIONS_KEY, JSON.stringify(existing));
+  } catch { /* ignore */ }
+}
+function removeOfflineReception(id: string) {
+  try {
+    const existing = loadOfflineReceptions().filter((x) => x.id !== id);
+    localStorage.setItem(OFFLINE_RECEPTIONS_KEY, JSON.stringify(existing));
+  } catch { /* ignore */ }
+}
+
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve((reader.result as string).split(",")[1] ?? "");
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+function base64ToBlob(base64: string, type: string): Blob {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new Blob([bytes], { type });
+}
+
 function ReceptionPage() {
   const qc = useQueryClient();
+  const online = useOnline();
   const [activeBatch, setActiveBatch] = useState<BatchGroup | null>(null);
   const [expandedBatch, setExpandedBatch] = useState<string | null>(null);
+  const [pendingOfflineReceptions, setPendingOfflineReceptions] = useState<OfflineReception[]>(() => loadOfflineReceptions());
+  const [syncingOffline, setSyncingOffline] = useState(false);
 
   const { data: pending = [], isLoading } = useQuery({
-    queryKey: ["pending-transfers"],
+    queryKey: ["pending-transfers", online],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from("transfers")
-        .select("id, barcode, product_name, quantity, origin, destination, sender_name, receiver_name, photo_url, created_at, client_uid")
-        .is("received_at", null)
-        .order("created_at", { ascending: false })
-        .limit(200);
-      if (error) throw error;
-      return data as PendingTransfer[];
+      if (!online) {
+        const { getCachedPendingTransfers } = await import("@/lib/offline-cache");
+        return getCachedPendingTransfers<PendingTransfer>();
+      }
+      try {
+        const { data, error } = await supabase
+          .from("transfers")
+          .select("id, barcode, product_name, quantity, origin, destination, sender_name, receiver_name, photo_url, created_at, client_uid")
+          .is("received_at", null)
+          .order("created_at", { ascending: false })
+          .limit(200);
+        if (error) throw error;
+        const rows = (data ?? []) as PendingTransfer[];
+        const { setCachedPendingTransfers } = await import("@/lib/offline-cache");
+        await setCachedPendingTransfers(rows);
+        return rows;
+      } catch {
+        const { getCachedPendingTransfers } = await import("@/lib/offline-cache");
+        return getCachedPendingTransfers<PendingTransfer>();
+      }
     },
-    refetchInterval: 30_000,
+    staleTime: online ? 15_000 : Infinity,
+    refetchInterval: online ? 30_000 : false,
   });
 
-  const batches = groupByBatch(pending);
+  // Ocultar lotes ya confirmados offline (pendientes de sync)
+  const offlineReceivedIds = new Set(
+    pendingOfflineReceptions.flatMap((r) => r.transferIds),
+  );
+  const visiblePending = pending.filter((p) => !offlineReceivedIds.has(p.id));
+  const batches = groupByBatch(visiblePending);
+
+  // Sincronizar recepciones offline al volver internet
+  useEffect(() => {
+    if (!online || syncingOffline) return;
+    const queue = loadOfflineReceptions();
+    if (queue.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      setSyncingOffline(true);
+      let ok = 0;
+      for (const item of queue) {
+        if (cancelled) break;
+        try {
+          const blob = base64ToBlob(item.photoBase64, item.photoType || "image/jpeg");
+          const ext = (item.photoName.split(".").pop() || "jpg").toLowerCase();
+          const path = `received-batch-${item.batchId}.${ext}`;
+          const up = await supabase.storage
+            .from("transfer-photos")
+            .upload(path, blob, { contentType: item.photoType || "image/jpeg", upsert: true });
+          if (up.error) throw up.error;
+          const { data: signed } = await supabase.storage
+            .from("transfer-photos")
+            .createSignedUrl(path, 60 * 60 * 24 * 365);
+          const received_photo_url = signed?.signedUrl ?? path;
+          const { error } = await supabase
+            .from("transfers")
+            .update({
+              received_at: new Date().toISOString(),
+              received_by_id: item.received_by_id,
+              received_by_name: item.received_by_name,
+              received_photo_url,
+              received_scanned_barcode: item.received_scanned_barcode,
+              received_sender_name: item.received_sender_name,
+              received_receiver_name: item.received_receiver_name,
+            })
+            .in("id", item.transferIds);
+          if (error) throw error;
+          removeOfflineReception(item.id);
+          ok++;
+        } catch (e) {
+          console.warn("[reception] offline sync failed", item.id, e);
+        }
+      }
+      setPendingOfflineReceptions(loadOfflineReceptions());
+      if (ok > 0) {
+        toast.success(`${ok} recepción${ok === 1 ? "" : "es"} sincronizada${ok === 1 ? "" : "s"}`);
+        qc.invalidateQueries({ queryKey: ["pending-transfers"] });
+      }
+      setSyncingOffline(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [online]);
 
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-2">
         <h1 className="mr-auto text-xl font-semibold tracking-tight">Recepciones pendientes</h1>
+        {!online && (
+          <span className="flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">
+            <WifiOff className="h-3 w-3" /> Sin internet
+          </span>
+        )}
         <span className="rounded-full bg-amber-100 px-2 py-1 text-xs font-medium text-amber-900 dark:bg-amber-900/40 dark:text-amber-100">
           {batches.length} envío{batches.length === 1 ? "" : "s"}
         </span>
       </div>
+
+      {!online && (
+        <div className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/30 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+          <WifiOff className="h-4 w-4 mt-0.5 shrink-0" />
+          <div>
+            <p className="font-medium">Modo sin conexión</p>
+            <p className="mt-0.5">
+              Se muestran los envíos pendientes guardados en este dispositivo.
+              Podés confirmar recepciones; se subirán al volver internet.
+              {pendingOfflineReceptions.length > 0 && (
+                <> · {pendingOfflineReceptions.length} pendiente{pendingOfflineReceptions.length === 1 ? "" : "s"} de sincronizar</>
+              )}
+            </p>
+          </div>
+        </div>
+      )}
 
       <p className="text-xs text-muted-foreground">
         Cada tarjeta es un envío completo. Pistoleá cada unidad individualmente para confirmar la recepción.
@@ -230,9 +381,11 @@ function ReceptionPage() {
 
       <BatchReceiveDialog
         batch={activeBatch}
+        online={online}
         onClose={() => setActiveBatch(null)}
         onDone={() => {
           setActiveBatch(null);
+          setPendingOfflineReceptions(loadOfflineReceptions());
           qc.invalidateQueries({ queryKey: ["pending-transfers"] });
           qc.invalidateQueries({ queryKey: ["pending-transfers-count"] });
           qc.invalidateQueries({ queryKey: ["transfers"] });
@@ -244,10 +397,12 @@ function ReceptionPage() {
 
 function BatchReceiveDialog({
   batch,
+  online,
   onClose,
   onDone,
 }: {
   batch: BatchGroup | null;
+  online: boolean;
   onClose: () => void;
   onDone: () => void;
 }) {
@@ -270,15 +425,27 @@ function BatchReceiveDialog({
   const scanInputRef = useRef<HTMLInputElement>(null);
 
   const { data: collaborators = [] } = useQuery({
-    queryKey: ["collaborators-active"],
+    queryKey: ["collaborators-active", online],
+    staleTime: online ? 30_000 : Infinity,
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from("collaborators")
-        .select("id, name")
-        .eq("active", true)
-        .order("name");
-      if (error) throw error;
-      return data as Array<{ id: string; name: string }>;
+      if (!online) {
+        const { getCachedCollaborators } = await import("@/lib/offline-cache");
+        const list = await getCachedCollaborators();
+        return list.map((c) => ({ id: c.id, name: c.name }));
+      }
+      try {
+        const { data, error } = await supabase
+          .from("collaborators")
+          .select("id, name")
+          .eq("active", true)
+          .order("name");
+        if (error) throw error;
+        return data as Array<{ id: string; name: string }>;
+      } catch {
+        const { getCachedCollaborators } = await import("@/lib/offline-cache");
+        const list = await getCachedCollaborators();
+        return list.map((c) => ({ id: c.id, name: c.name }));
+      }
     },
   });
 
@@ -378,7 +545,35 @@ function BatchReceiveDialog({
     if (!collab) return toast.error("Sesión expirada");
 
     setBusy(true);
+    const ids = batch.items.map((i) => i.id);
+    const scannedStr = batch.items
+      .map((i) => `${i.barcode || i.product_name}x${scannedCounts.get(i.id) ?? 0}`)
+      .join(",");
+
     try {
+      // Sin internet: guardar localmente y sincronizar después
+      if (!online) {
+        const photoBase64 = await fileToBase64(photo);
+        saveOfflineReception({
+          id: crypto.randomUUID(),
+          batchId: batch.batchId,
+          transferIds: ids,
+          received_by_id: collab.id,
+          received_by_name: collab.name,
+          received_sender_name: sender.trim(),
+          received_receiver_name: receiver.trim(),
+          received_scanned_barcode: scannedStr,
+          photoBase64,
+          photoType: photo.type || "image/jpeg",
+          photoName: photo.name || "received.jpg",
+          savedAt: Date.now(),
+        });
+        clearReceptionProgress(batch.batchId);
+        toast.success(`${ids.length} producto${ids.length === 1 ? "" : "s"} recibidos (offline · se sincronizará)`);
+        onDone();
+        return;
+      }
+
       const ext = (photo.name.split(".").pop() || "jpg").toLowerCase();
       const path = `received-batch-${batch.batchId}.${ext}`;
       const up = await supabase.storage
@@ -390,7 +585,6 @@ function BatchReceiveDialog({
         .createSignedUrl(path, 60 * 60 * 24 * 365);
       const received_photo_url = signed?.signedUrl ?? path;
 
-      const ids = batch.items.map((i) => i.id);
       const { error } = await supabase
         .from("transfers")
         .update({
@@ -398,9 +592,7 @@ function BatchReceiveDialog({
           received_by_id: collab.id,
           received_by_name: collab.name,
           received_photo_url,
-          received_scanned_barcode: batch.items
-            .map((i) => `${i.barcode || i.product_name}x${scannedCounts.get(i.id) ?? 0}`)
-            .join(","),
+          received_scanned_barcode: scannedStr,
           received_sender_name: sender.trim(),
           received_receiver_name: receiver.trim(),
         })
@@ -411,6 +603,31 @@ function BatchReceiveDialog({
       toast.success(`${ids.length} producto${ids.length === 1 ? "" : "s"} recibidos`);
       onDone();
     } catch (e) {
+      // Si falló por red, intentar cola offline
+      const msg = (e as Error).message || "";
+      if (/failed to fetch|network|offline|load failed/i.test(msg) && photo) {
+        try {
+          const photoBase64 = await fileToBase64(photo);
+          saveOfflineReception({
+            id: crypto.randomUUID(),
+            batchId: batch.batchId,
+            transferIds: ids,
+            received_by_id: collab.id,
+            received_by_name: collab.name,
+            received_sender_name: sender.trim(),
+            received_receiver_name: receiver.trim(),
+            received_scanned_barcode: scannedStr,
+            photoBase64,
+            photoType: photo.type || "image/jpeg",
+            photoName: photo.name || "received.jpg",
+            savedAt: Date.now(),
+          });
+          clearReceptionProgress(batch.batchId);
+          toast.success(`${ids.length} producto${ids.length === 1 ? "" : "s"} recibidos (offline · se sincronizará)`);
+          onDone();
+          return;
+        } catch { /* fall through */ }
+      }
       toast.error((e as Error).message);
     } finally {
       setBusy(false);
