@@ -1,6 +1,6 @@
 /**
  * Calienta la caché del app shell mientras hay internet.
- * Guarda el HTML actual y todos los <script>/<link> para poder abrir la app offline.
+ * Prioriza /app/audit (conteo) para que abra offline.
  */
 const SHELL_CACHE = "app-shell-v1";
 
@@ -11,11 +11,10 @@ async function putInCache(cache: Cache, url: string): Promise<void> {
       await cache.put(url, res.clone());
     }
   } catch {
-    // sin red o fallo puntual: ignorar
+    // ignore
   }
 }
 
-/** Cachea la página actual + scripts + CSS visibles en el DOM. */
 export async function warmAppShell(): Promise<void> {
   if (typeof window === "undefined") return;
   if (!("caches" in window)) return;
@@ -24,16 +23,17 @@ export async function warmAppShell(): Promise<void> {
   try {
     const cache = await caches.open(SHELL_CACHE);
 
-    const paths = new Set<string>([
-      window.location.pathname || "/",
-      "/",
-      "/app",
+    // Orden: auditoría primero (lo que más se usa offline)
+    const paths = [
       "/app/audit",
+      "/app",
+      "/",
       "/app/history",
       "/app/audit-history",
       "/offline.html",
       "/manifest.webmanifest",
-    ]);
+      window.location.pathname || "/",
+    ];
 
     for (const path of paths) {
       await putInCache(cache, new URL(path, window.location.origin).href);
@@ -51,7 +51,6 @@ export async function warmAppShell(): Promise<void> {
       if (href && href.startsWith(window.location.origin)) assets.add(href);
     });
 
-    // También cualquier /assets/* que aparezca en el HTML
     const html = document.documentElement.outerHTML;
     const re = /\/assets\/[A-Za-z0-9_.-]+\.(?:js|css)/g;
     let m: RegExpExecArray | null;
@@ -59,25 +58,30 @@ export async function warmAppShell(): Promise<void> {
       assets.add(new URL(m[0], window.location.origin).href);
     }
 
+    // Forzar chunks críticos de auditoría si están en el precache del SW
+    const critical = [
+      "/assets/app.audit",
+      "/assets/BarcodeScanner",
+    ];
+    // No conocemos el hash; el SW ya precachea app.audit-*.js
+
     await Promise.all([...assets].map((url) => putInCache(cache, url)));
-    console.info("[offline-shell] cached", paths.size, "pages +", assets.size, "assets");
+    console.info("[offline-shell] cached pages +", assets.size, "assets (audit prioritario)");
   } catch (e) {
     console.warn("[offline-shell] warm failed", e);
   }
 }
 
-/** Arranca calentamiento al cargar y al volver online. */
 export function startShellWarm(): () => void {
   if (typeof window === "undefined") return () => {};
 
   const run = () => {
     window.setTimeout(() => {
       warmAppShell().catch(() => {});
-    }, 2000);
-    // Segunda pasada por si cargan chunks tarde
+    }, 1500);
     window.setTimeout(() => {
       warmAppShell().catch(() => {});
-    }, 8000);
+    }, 6000);
   };
 
   if (navigator.onLine) run();
@@ -88,8 +92,17 @@ export function startShellWarm(): () => void {
   };
   navigator.serviceWorker?.addEventListener("message", onMsg);
 
+  // Si el usuario entra a Auditoría online, recalentar al instante
+  const onNav = () => {
+    if (navigator.onLine && /\/app\/audit/.test(window.location.pathname)) {
+      warmAppShell().catch(() => {});
+    }
+  };
+  window.addEventListener("popstate", onNav);
+
   return () => {
     window.removeEventListener("online", run);
+    window.removeEventListener("popstate", onNav);
     navigator.serviceWorker?.removeEventListener("message", onMsg);
   };
 }
