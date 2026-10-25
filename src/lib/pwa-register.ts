@@ -15,19 +15,29 @@ export function registerPwa() {
   if (isLovablePreview) {
     navigator.serviceWorker.getRegistrations().then((rs) =>
       rs.forEach((r) => {
-        if (r.active?.scriptURL?.includes("sw.js")) r.unregister();
-      })
+        if (r.active?.scriptURL?.includes("sw.js") || r.active?.scriptURL?.includes("sw.ts")) {
+          r.unregister();
+        }
+      }),
     );
     return;
   }
 
-  // Registro explícito (además de injectRegister: "auto")
   navigator.serviceWorker
     .register("/sw.js", { scope: "/" })
     .then(async (reg) => {
       console.info("[pwa] SW registrado", reg.scope);
-      // Fuerza actualización si hay una versión nueva
       await reg.update().catch(() => {});
+
+      reg.addEventListener("updatefound", () => {
+        const worker = reg.installing;
+        if (!worker) return;
+        worker.addEventListener("statechange", () => {
+          if (worker.state === "installed" && navigator.serviceWorker.controller) {
+            worker.postMessage({ type: "SKIP_WAITING" });
+          }
+        });
+      });
     })
     .catch((e) => console.warn("[pwa] register failed", e));
 }
