@@ -11,10 +11,11 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { Loader2, ArrowLeft, History, BarChart3, ShieldAlert, Pencil, CheckCircle2, PackageCheck, TrendingDown, Trash2 } from "lucide-react";
+import { Loader2, ArrowLeft, History, BarChart3, ShieldAlert, Pencil, CheckCircle2, PackageCheck, TrendingDown, Trash2, WifiOff } from "lucide-react";
 import { toast } from "sonner";
 import { BRANCH_LABELS, branchLabel } from "@/lib/branches";
 import { useCollaborator } from "@/lib/session";
+import { useOnline } from "@/hooks/use-online";
 import { AuditAIChat } from "@/components/AuditAIChat";
 
 export const Route = createFileRoute("/app/audit-history")({
@@ -99,6 +100,7 @@ function rowValue(r: ClosedRow) {
 function AuditHistoryPage() {
   const me = useCollaborator();
   const qc = useQueryClient();
+  const online = useOnline();
   const [tab, setTab] = useState<"cortes" | "general">("cortes");
   const [selected, setSelected] = useState<string | null>(null);
   /** Mes seleccionado en Reporte general para ver informe detallado (YYYY-MM) */
@@ -150,43 +152,68 @@ function AuditHistoryPage() {
   }
 
   const { data: rows = [], isLoading, isFetching, dataUpdatedAt } = useQuery({
-    queryKey: ["closed_counts"],
+    queryKey: ["closed_counts", online],
     queryFn: async () => {
-      // Supabase/PostgREST limita cada respuesta a un máximo de filas por
-      // defecto (típicamente 1000), sin importar el .limit() que pidamos
-      // desde el cliente. Como acá puede haber miles de filas (varios meses
-      // de cortes), traemos todo en páginas hasta agotar los resultados;
-      // así nunca se "pierden" silenciosamente los meses más viejos.
-      const PAGE_SIZE = 1000;
-      let all: ClosedRow[] = [];
-      let from = 0;
-      while (true) {
-        const { data, error } = await supabase
-          .from("closed_counts")
-          .select("*")
-          .order("closed_at", { ascending: false })
-          .range(from, from + PAGE_SIZE - 1);
-        if (error) throw error;
-        const page = (data ?? []) as unknown as ClosedRow[];
-        all = all.concat(page);
-        if (page.length < PAGE_SIZE) break;
-        from += PAGE_SIZE;
+      if (!online) {
+        const { getCachedClosedCounts } = await import("@/lib/offline-cache");
+        return getCachedClosedCounts<ClosedRow>();
       }
-      return all;
+      try {
+        // Supabase/PostgREST limita cada respuesta a un máximo de filas por
+        // defecto (típicamente 1000), sin importar el .limit() que pidamos
+        // desde el cliente. Como acá puede haber miles de filas (varios meses
+        // de cortes), traemos todo en páginas hasta agotar los resultados;
+        // así nunca se "pierden" silenciosamente los meses más viejos.
+        const PAGE_SIZE = 1000;
+        let all: ClosedRow[] = [];
+        let from = 0;
+        while (true) {
+          const { data, error } = await supabase
+            .from("closed_counts")
+            .select("*")
+            .order("closed_at", { ascending: false })
+            .range(from, from + PAGE_SIZE - 1);
+          if (error) throw error;
+          const page = (data ?? []) as unknown as ClosedRow[];
+          all = all.concat(page);
+          if (page.length < PAGE_SIZE) break;
+          from += PAGE_SIZE;
+        }
+        // Guardar para vista offline (reporte general + informe por mes)
+        const { setCachedClosedCounts } = await import("@/lib/offline-cache");
+        await setCachedClosedCounts(all);
+        return all;
+      } catch {
+        const { getCachedClosedCounts } = await import("@/lib/offline-cache");
+        return getCachedClosedCounts<ClosedRow>();
+      }
     },
     // Se actualiza al cerrar categorías (invalidate local + realtime) y al volver a la pestaña.
-    staleTime: 10_000,
-    refetchOnWindowFocus: true,
-    refetchInterval: 60_000,
+    staleTime: online ? 10_000 : Infinity,
+    refetchOnWindowFocus: online,
+    refetchInterval: online ? 60_000 : false,
   });
 
   const { data: corrections = [] } = useQuery({
-    queryKey: ["zobaze_corrections"],
+    queryKey: ["zobaze_corrections", online],
     queryFn: async () => {
-      const { data, error } = await supabase.from("zobaze_corrections").select("*");
-      if (error) throw error;
-      return data as ZobazeCorrection[];
+      if (!online) {
+        const { getCachedZobazeCorrections } = await import("@/lib/offline-cache");
+        return getCachedZobazeCorrections<ZobazeCorrection>();
+      }
+      try {
+        const { data, error } = await supabase.from("zobaze_corrections").select("*");
+        if (error) throw error;
+        const rows = (data ?? []) as ZobazeCorrection[];
+        const { setCachedZobazeCorrections } = await import("@/lib/offline-cache");
+        await setCachedZobazeCorrections(rows);
+        return rows;
+      } catch {
+        const { getCachedZobazeCorrections } = await import("@/lib/offline-cache");
+        return getCachedZobazeCorrections<ZobazeCorrection>();
+      }
     },
+    staleTime: online ? 30_000 : Infinity,
   });
   const correctionsMap = useMemo(() => {
     const map = new Map<string, ZobazeCorrection>();
@@ -210,9 +237,11 @@ function AuditHistoryPage() {
   const { data: sessionComments = [] } = useQuery({
     queryKey: ["session-comments", selected, selectedCategory],
     enabled: !!selected && !!selectedCategory,
-    staleTime: 10_000,
+    staleTime: online ? 10_000 : Infinity,
     queryFn: async () => {
       if (!selected || !selectedCategory) return [];
+      if (!online) return [];
+      try {
       // Preferir comentarios ligados al session_id; también traer los del mes del corte por categoría
       const { data: bySession, error: e1 } = await supabase
         .from("audit_comments")
@@ -247,6 +276,9 @@ function AuditHistoryPage() {
         map.set(c.id, c);
       }
       return Array.from(map.values()).sort((a, b) => a.created_at.localeCompare(b.created_at));
+      } catch {
+        return [];
+      }
     },
   });
 
@@ -1238,10 +1270,28 @@ function AuditHistoryPage() {
       <div className="flex items-center gap-2">
         <History className="h-5 w-5" />
         <h1 className="text-xl font-semibold">Historial de auditorías</h1>
+        {!online && (
+          <span className="flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">
+            <WifiOff className="h-3 w-3" /> Sin internet
+          </span>
+        )}
         <Link to="/app/audit" className="ml-auto text-sm text-muted-foreground hover:text-foreground">
           Nuevo conteo →
         </Link>
       </div>
+
+      {!online && (
+        <div className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/30 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+          <WifiOff className="h-4 w-4 mt-0.5 shrink-0" />
+          <div>
+            <p className="font-medium">Modo sin conexión</p>
+            <p className="mt-0.5">
+              Se muestran los cortes y el reporte general guardados en este dispositivo.
+              Abrí Historial con internet al menos una vez para actualizar los datos.
+            </p>
+          </div>
+        </div>
+      )}
 
       <div className="flex rounded-md border p-0.5 text-sm">
         <button onClick={() => setTab("cortes")}
