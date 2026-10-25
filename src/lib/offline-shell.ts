@@ -6,7 +6,7 @@ const SHELL_CACHE = "app-shell-v1";
 
 async function putInCache(cache: Cache, url: string): Promise<void> {
   try {
-    const res = await fetch(url, { credentials: "same-origin", cache: "no-cache" });
+    const res = await fetch(url, { credentials: "same-origin", cache: "reload" });
     if (res.ok) {
       await cache.put(url, res.clone());
     }
@@ -24,7 +24,6 @@ export async function warmAppShell(): Promise<void> {
   try {
     const cache = await caches.open(SHELL_CACHE);
 
-    // Documento actual (rutas principales)
     const paths = new Set<string>([
       window.location.pathname || "/",
       "/",
@@ -33,28 +32,35 @@ export async function warmAppShell(): Promise<void> {
       "/app/history",
       "/app/audit-history",
       "/offline.html",
+      "/manifest.webmanifest",
     ]);
 
     for (const path of paths) {
       await putInCache(cache, new URL(path, window.location.origin).href);
     }
 
-    // Scripts y estilos ya cargados en la página
     const assets = new Set<string>();
     document.querySelectorAll("script[src]").forEach((el) => {
       const src = (el as HTMLScriptElement).src;
       if (src && src.startsWith(window.location.origin)) assets.add(src);
     });
-    document.querySelectorAll('link[rel="stylesheet"]').forEach((el) => {
-      const href = (el as HTMLLinkElement).href;
-      if (href && href.startsWith(window.location.origin)) assets.add(href);
-    });
-    document.querySelectorAll('link[rel="modulepreload"], link[rel="preload"]').forEach((el) => {
+    document.querySelectorAll(
+      'link[rel="stylesheet"], link[rel="modulepreload"], link[rel="preload"], link[rel="manifest"]',
+    ).forEach((el) => {
       const href = (el as HTMLLinkElement).href;
       if (href && href.startsWith(window.location.origin)) assets.add(href);
     });
 
+    // También cualquier /assets/* que aparezca en el HTML
+    const html = document.documentElement.outerHTML;
+    const re = /\/assets\/[A-Za-z0-9_.-]+\.(?:js|css)/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(html))) {
+      assets.add(new URL(m[0], window.location.origin).href);
+    }
+
     await Promise.all([...assets].map((url) => putInCache(cache, url)));
+    console.info("[offline-shell] cached", paths.size, "pages +", assets.size, "assets");
   } catch (e) {
     console.warn("[offline-shell] warm failed", e);
   }
@@ -65,16 +71,18 @@ export function startShellWarm(): () => void {
   if (typeof window === "undefined") return () => {};
 
   const run = () => {
-    // Dar tiempo a que hidrate y cargue chunks
     window.setTimeout(() => {
       warmAppShell().catch(() => {});
-    }, 2500);
+    }, 2000);
+    // Segunda pasada por si cargan chunks tarde
+    window.setTimeout(() => {
+      warmAppShell().catch(() => {});
+    }, 8000);
   };
 
   if (navigator.onLine) run();
   window.addEventListener("online", run);
 
-  // También cuando el SW avisa que está activo
   const onMsg = (ev: MessageEvent) => {
     if (ev.data?.type === "SW_ACTIVATED" && navigator.onLine) run();
   };
