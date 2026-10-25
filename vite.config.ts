@@ -9,10 +9,17 @@ export default defineConfig({
     plugins: [
       VitePWA({
         registerType: "autoUpdate",
-        injectRegister: null,
-        devOptions: { enabled: false },
+        // Deja que el plugin inyecte el registro (más fiable que solo el manual)
+        injectRegister: "auto",
+        strategies: "generateSW",
         filename: "sw.js",
-        includeAssets: ["favicon-192.png", "pwa-192.png", "pwa-512.png", "offline.html"],
+        devOptions: { enabled: false },
+        includeAssets: [
+          "favicon-192.png",
+          "pwa-192.png",
+          "pwa-512.png",
+          "offline.html",
+        ],
         manifest: {
           name: "Inventario A/B",
           short_name: "Inventario",
@@ -31,50 +38,58 @@ export default defineConfig({
           ],
         },
         workbox: {
-          // Más seguro con TanStack Start: no forzar precache de todo el build
-          globPatterns: ["**/*.{ico,png,svg,woff,woff2,webmanifest}"],
-          globIgnores: ["**/node_modules/**", "**/server/**"],
-          maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
+          // Precache assets estáticos del build + offline.html
+          globPatterns: ["**/*.{js,css,html,ico,png,svg,woff,woff2,webmanifest}"],
+          globIgnores: ["**/node_modules/**", "**/server/**", "**/api/**"],
+          maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
           skipWaiting: true,
           clientsClaim: true,
           cleanupOutdatedCaches: true,
+          // Si una navegación falla sin red → offline.html
+          navigateFallback: "/offline.html",
+          navigateFallbackAllowlist: [/./],
           navigateFallbackDenylist: [/^\/\~oauth/, /^\/api\//, /^\/rest\//],
-          additionalManifestEntries: [{ url: "/offline.html", revision: "5" }],
+          additionalManifestEntries: [{ url: "/offline.html", revision: "6" }],
           runtimeCaching: [
+            // Documentos HTML: guarda los que cargaste online para reusarlos offline
             {
               urlPattern: ({ request }) => request.mode === "navigate",
               handler: "NetworkFirst",
               options: {
-                cacheName: "html-pages",
+                cacheName: "pages",
                 networkTimeoutSeconds: 3,
-                plugins: [
-                  {
-                    handlerDidError: async () => {
-                      const fallback = await self.caches.match("/offline.html");
-                      return fallback || Response.error();
-                    },
-                  },
-                ],
+                cacheableResponse: { statuses: [0, 200] },
+                expiration: {
+                  maxEntries: 40,
+                  maxAgeSeconds: 60 * 60 * 24 * 7,
+                },
               },
             },
             {
               urlPattern: ({ url }) =>
                 url.origin === self.location.origin &&
-                /\.(?:js|css|woff2?)$/.test(url.pathname),
+                /\.(?:js|css)$/.test(url.pathname),
               handler: "CacheFirst",
               options: {
                 cacheName: "static-assets",
-                expiration: { maxEntries: 150, maxAgeSeconds: 60 * 60 * 24 * 30 },
+                cacheableResponse: { statuses: [0, 200] },
+                expiration: {
+                  maxEntries: 150,
+                  maxAgeSeconds: 60 * 60 * 24 * 30,
+                },
               },
             },
             {
               urlPattern: ({ url }) =>
                 url.origin === self.location.origin &&
-                /\.(?:png|jpg|jpeg|svg|webp|ico)$/.test(url.pathname),
+                /\.(?:png|jpg|jpeg|svg|webp|ico|woff2?)$/.test(url.pathname),
               handler: "CacheFirst",
               options: {
-                cacheName: "images",
-                expiration: { maxEntries: 200, maxAgeSeconds: 60 * 60 * 24 * 30 },
+                cacheName: "images-fonts",
+                expiration: {
+                  maxEntries: 200,
+                  maxAgeSeconds: 60 * 60 * 24 * 30,
+                },
               },
             },
             {
@@ -83,7 +98,10 @@ export default defineConfig({
               options: {
                 cacheName: "supabase-rest",
                 networkTimeoutSeconds: 4,
-                expiration: { maxEntries: 200, maxAgeSeconds: 60 * 60 * 24 },
+                expiration: {
+                  maxEntries: 200,
+                  maxAgeSeconds: 60 * 60 * 24,
+                },
               },
             },
           ],
@@ -91,4 +109,4 @@ export default defineConfig({
       }),
     ],
   },
-}); 
+});
