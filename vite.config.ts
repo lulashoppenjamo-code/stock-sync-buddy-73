@@ -42,6 +42,23 @@ export default defineConfig({
           globIgnores: ["**/node_modules/**", "**/server/**", "**/api/**"],
           maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
           rollupFormat: "es",
+          // TanStack Start / Lovable empaqueta el cliente bajo "client/" en el build,
+          // pero en el navegador se sirve como "/assets/...", "/offline.html", etc.
+          // Sin esto el precache no coincide y la app NO abre offline.
+          modifyURLPrefix: {
+            "client/": "/",
+          },
+          manifestTransforms: [
+            async (entries) => {
+              const manifest = entries.map((entry) => {
+                let url = entry.url;
+                if (url.startsWith("client/")) url = url.slice("client/".length);
+                if (!url.startsWith("/")) url = `/${url}`;
+                return { ...entry, url };
+              });
+              return { manifest, warnings: [] };
+            },
+          ],
         },
       }),
     ],
