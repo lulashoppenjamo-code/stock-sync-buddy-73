@@ -154,22 +154,40 @@ function AuditPage() {
 
   const [collabBranch, setCollabBranch] = useState<"A" | "B" | null>(null);
 
+  // Sucursal del colaborador: online desde Supabase, offline desde caché IndexedDB
+  // (misma lógica que en traspasos para no cambiar de sucursal al perder internet)
   const { data: collabData } = useQuery({
-    queryKey: ["collab-branch", me?.id],
+    queryKey: ["collab-branch", me?.id, online],
     enabled: !!me?.id,
-    staleTime: 60_000,
+    staleTime: online ? 60_000 : Infinity,
     queryFn: async () => {
-      const { data } = await supabase
-        .from("collaborators")
-        .select("branch")
-        .eq("id", me!.id)
-        .maybeSingle();
-      return data as { branch: string } | null;
+      if (!online) {
+        const { getCachedCollaborators } = await import("@/lib/offline-cache");
+        const list = await getCachedCollaborators();
+        const found = list.find((c) => c.id === me!.id);
+        return found ? { branch: found.branch ?? "A" } : { branch: "A" };
+      }
+      try {
+        const { data } = await supabase
+          .from("collaborators")
+          .select("branch")
+          .eq("id", me!.id)
+          .maybeSingle();
+        return data as { branch: string } | null;
+      } catch {
+        const { getCachedCollaborators } = await import("@/lib/offline-cache");
+        const list = await getCachedCollaborators();
+        const found = list.find((c) => c.id === me!.id);
+        return found ? { branch: found.branch ?? "A" } : { branch: "A" };
+      }
     },
   });
 
   const myBranch = useMemo((): "A" | "B" => {
     if (me?.is_admin) return collabBranch ?? "A";
+    // Preferir sucursal de la sesión (guardada al login), luego query/caché
+    const fromSession = me?.branch;
+    if (fromSession === "A" || fromSession === "B") return fromSession;
     const b = collabData?.branch;
     if (b === "B") return "B";
     return "A";
