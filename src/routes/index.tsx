@@ -40,24 +40,24 @@ function loadCollabsCache(): DirEntry[] {
 // Guardamos el hash que devuelve verify_pin para cada colaborador exitoso
 const PIN_CACHE_KEY = "inv.pin.cache.v1";
 
-type PinCache = Record<string, { hash: string; name: string; is_admin: boolean }>;
+type PinCache = Record<string, { hash: string; name: string; is_admin: boolean; branch?: "A" | "B" | null }>;
 
-function savePinCache(collaboratorId: string, pin: string, name: string, is_admin: boolean) {
+function savePinCache(collaboratorId: string, pin: string, name: string, is_admin: boolean, branch?: "A" | "B" | null) {
   try {
     const cache: PinCache = JSON.parse(localStorage.getItem(PIN_CACHE_KEY) || "{}");
     // Store a simple hash: collaboratorId + pin (not cryptographic, just for offline use)
-    cache[collaboratorId] = { hash: btoa(`${collaboratorId}:${pin}`), name, is_admin };
+    cache[collaboratorId] = { hash: btoa(`${collaboratorId}:${pin}`), name, is_admin, branch: branch ?? null };
     localStorage.setItem(PIN_CACHE_KEY, JSON.stringify(cache));
   } catch { /* ignore */ }
 }
 
-function verifyPinOffline(collaboratorId: string, pin: string): { name: string; is_admin: boolean } | null {
+function verifyPinOffline(collaboratorId: string, pin: string): { name: string; is_admin: boolean; branch?: "A" | "B" | null } | null {
   try {
     const cache: PinCache = JSON.parse(localStorage.getItem(PIN_CACHE_KEY) || "{}");
     const entry = cache[collaboratorId];
     if (!entry) return null;
     if (entry.hash === btoa(`${collaboratorId}:${pin}`)) {
-      return { name: entry.name, is_admin: entry.is_admin };
+      return { name: entry.name, is_admin: entry.is_admin, branch: entry.branch ?? null };
     }
     return null;
   } catch { return null; }
@@ -120,7 +120,7 @@ function LoginPage() {
           setPin("");
           return;
         }
-        const c: Collaborator = { id: selected.id, name: cached.name, is_admin: cached.is_admin };
+        const c: Collaborator = { id: selected.id, name: cached.name, is_admin: cached.is_admin, branch: cached.branch ?? null };
         setCollaborator(c);
         toast.success(`Hola, ${c.name} · Modo sin conexión`);
         navigate({ to: "/app" });
@@ -139,10 +139,21 @@ function LoginPage() {
         setPin("");
         return;
       }
-      // Save PIN to cache for future offline logins
-      savePinCache(selected.id, pin, row.name, row.is_admin);
+      // Obtener sucursal asignada para guardarla en sesión y en caché offline
+      let branch: "A" | "B" | null = null;
+      try {
+        const { data: br } = await supabase
+          .from("collaborators")
+          .select("branch")
+          .eq("id", row.id)
+          .maybeSingle();
+        if (br?.branch === "A" || br?.branch === "B") branch = br.branch;
+      } catch { /* ignore */ }
 
-      const c: Collaborator = { id: row.id, name: row.name, is_admin: row.is_admin };
+      // Save PIN + branch to cache for future offline logins
+      savePinCache(selected.id, pin, row.name, row.is_admin, branch);
+
+      const c: Collaborator = { id: row.id, name: row.name, is_admin: row.is_admin, branch };
       setCollaborator(c);
       toast.success(`Hola, ${c.name}`);
       navigate({ to: "/app" });
