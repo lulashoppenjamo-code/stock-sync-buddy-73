@@ -138,8 +138,13 @@ function TransferPage() {
     },
   });
 
-  // Origin = sucursal asignada al colaborador (fija)
-  const myBranch: Branch = collabData?.branch === "B" ? "B" : "A";
+  // Origin = sucursal asignada al colaborador (fija). Preferir sesión, luego query/caché.
+  const myBranch: Branch =
+    me?.branch === "A" || me?.branch === "B"
+      ? me.branch
+      : collabData?.branch === "B"
+        ? "B"
+        : "A";
   const [destination, setDestination] = useState<Branch>("B");
 
   // Auto-set destination to the other branch when origin is known
