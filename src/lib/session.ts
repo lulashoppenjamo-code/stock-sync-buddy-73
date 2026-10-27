@@ -5,6 +5,8 @@ export type Collaborator = {
   id: string;
   name: string;
   is_admin: boolean;
+  /** Sucursal asignada (A = Mina, B = Morelos). Se guarda al login para usarla offline. */
+  branch?: "A" | "B" | null;
 };
 
 const KEY = "inv.collab.v1";
