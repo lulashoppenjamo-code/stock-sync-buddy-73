@@ -447,17 +447,34 @@ function AuditPage() {
     queryKey: ["branch-closures", periodKey()],
     staleTime: online ? 0 : Infinity,
     queryFn: async () => {
-      if (!online) return [];
-      try {
-        const { data, error } = await supabase
-          .from("branch_closures")
-          .select("category, branch, period, collaborator_name, total_counted, products_counted, status")
-          .eq("period", periodKey());
-        if (error) throw error;
-        return data as Array<{ category: string; branch: string; period: string; collaborator_name: string | null; total_counted: number; products_counted: number; status?: string }>;
-      } catch {
-        return [];
+      type ClosureRow = { category: string; branch: string; period: string; collaborator_name: string | null; total_counted: number; products_counted: number; status?: string };
+      let rows: ClosureRow[] = [];
+      if (online) {
+        try {
+          const { data, error } = await supabase
+            .from("branch_closures")
+            .select("category, branch, period, collaborator_name, total_counted, products_counted, status")
+            .eq("period", periodKey());
+          if (error) throw error;
+          rows = (data ?? []) as ClosureRow[];
+        } catch {
+          rows = [];
+        }
       }
+      // Fusionar cierres pendientes guardados offline (localStorage)
+      try {
+        const key = "inv.pending.branch_closures.v1";
+        const pending = JSON.parse(localStorage.getItem(key) || "[]") as ClosureRow[];
+        const period = periodKey();
+        for (const p of pending) {
+          if (p.period !== period) continue;
+          const exists = rows.some(
+            (r) => r.category.trim() === (p.category ?? "").trim() && r.branch === p.branch
+          );
+          if (!exists) rows.push(p);
+        }
+      } catch { /* ignore */ }
+      return rows;
     },
   });
 
@@ -842,10 +859,7 @@ function AuditPage() {
       toast.error(`"${category}" ya fue cerrado por el administrador este mes. Solo admin puede hacer ajustes desde "Reactivar categoría".`);
       return;
     }
-    if (!online) {
-      toast.error("Necesitás conexión a internet para cerrar el conteo.");
-      return;
-    }
+    // Offline permitido: se encolan audits + branch_closure y se sincronizan al recuperar red.
     setClosingBranch(true);
     try {
       const unclosed = getUnclosedForBranch();
@@ -855,8 +869,8 @@ function AuditPage() {
         finalCounts.set(p.barcode, { barcode: p.barcode, product_name: p.product_name, count: 0, system_stock: sys });
       }
 
+      const sessionId = crypto.randomUUID();
       if (finalCounts.size > 0) {
-        const sessionId = crypto.randomUUID();
         const rows = Array.from(finalCounts.values()).map((c) => ({
           branch,
           barcode: c.barcode,
@@ -888,28 +902,55 @@ function AuditPage() {
         if (val > 0) numProducts++;
       }
 
+      const cat = (category ?? "").trim();
+      const closurePayload = {
+        category: cat,
+        branch,
+        period: periodKey(),
+        collaborator_id: collab.id,
+        collaborator_name: collab.name,
+        total_counted: total,
+        products_counted: numProducts,
+        status: "closed" as const,
+      };
+
       if (online) {
-        const cat = (category ?? "").trim();
         const { error: e2 } = await supabase.from("branch_closures").upsert(
-          {
-            category: cat, branch, period: periodKey(),
-            collaborator_id: collab.id, collaborator_name: collab.name,
-            total_counted: total, products_counted: numProducts,
-            status: "closed",
-          },
+          closurePayload,
           { onConflict: "category,branch,period" }
         );
         if (e2) throw e2;
+      } else {
+        // Encolar cierre de sucursal para cuando vuelva internet
+        await enqueue({
+          kind: "branch_closure",
+          uid: `closure-${cat}-${branch}-${periodKey()}-${sessionId}`,
+          createdAt: Date.now(),
+          payload: closurePayload,
+        });
+        // Guardar cierre optimista en localStorage para que la UI lo vea offline
+        try {
+          const key = "inv.pending.branch_closures.v1";
+          const prev = JSON.parse(localStorage.getItem(key) || "[]") as Array<typeof closurePayload>;
+          const filtered = prev.filter(
+            (r) => !(r.category === cat && r.branch === branch && r.period === periodKey())
+          );
+          filtered.push(closurePayload);
+          localStorage.setItem(key, JSON.stringify(filtered));
+        } catch { /* ignore */ }
       }
 
-      toast.success(`Conteo de "${(category ?? "").trim()}" cerrado en ${branchLabel(branch)} ✓`);
+      toast.success(
+        online
+          ? `Conteo de "${cat}" cerrado en ${branchLabel(branch)} ✓`
+          : `Conteo de "${cat}" cerrado offline en ${branchLabel(branch)} ✓ — se sincronizará al recuperar internet`
+      );
       setCloseBranchDialog(false);
       setCounts(new Map());
       clearCatState();
-      if (online) {
-        qc.invalidateQueries({ queryKey: ["audits-realtime", category] });
-        qc.invalidateQueries({ queryKey: ["branch-closures", periodKey()] });
-      }
+      // Invalidar siempre (online o offline) para refrescar candados locales
+      qc.invalidateQueries({ queryKey: ["audits-realtime", category] });
+      qc.invalidateQueries({ queryKey: ["branch-closures", periodKey()] });
     } catch (e) {
       toast.error("No se pudo cerrar: " + (e as Error).message);
     } finally {
