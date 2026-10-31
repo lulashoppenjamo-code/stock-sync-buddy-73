@@ -25,6 +25,23 @@ export type QueuedOp =
       };
     }
   | {
+      kind: "branch_closure";
+      uid: string;
+      createdAt: number;
+      attempts?: number;
+      lastError?: string;
+      payload: {
+        category: string;
+        branch: "A" | "B";
+        period: string;
+        collaborator_id: string | null;
+        collaborator_name: string | null;
+        total_counted: number;
+        products_counted: number;
+        status: "closed";
+      };
+    }
+  | {
       kind: "transfer";
       uid: string;
       createdAt: number;
@@ -88,7 +105,6 @@ export async function listPending(): Promise<QueuedOp[]> {
 }
 
 export async function pendingCount(): Promise<number> {
-  // Contar solo operaciones válidas (no claves basura)
   const items = await listPending();
   return items.length;
 }
@@ -128,11 +144,6 @@ function isPermanentInventoryError(msg: string | undefined): boolean {
   );
 }
 
-function isNetworkError(msg: string | undefined): boolean {
-  if (!msg) return false;
-  return /failed to fetch|network|timeout|load failed|fetch failed|offline|err_internet/i.test(msg);
-}
-
 function errMsg(e: unknown): string {
   if (!e) return "Error desconocido";
   if (typeof e === "string") return e;
@@ -145,9 +156,7 @@ function errMsg(e: unknown): string {
 async function canReachServer(): Promise<boolean> {
   if (typeof navigator !== "undefined" && !navigator.onLine) return false;
   try {
-    // HEAD liviano al REST de Supabase (usa el client ya configurado)
     const { error } = await supabase.from("collaborators").select("id", { head: true, count: "exact" }).limit(1);
-    // error de red → false; error de auth/RLS igual implica que el servidor respondió
     if (error && /failed to fetch|network|timeout|load failed/i.test(error.message)) return false;
     return true;
   } catch {
@@ -162,8 +171,25 @@ async function processOne(op: QueuedOp): Promise<void> {
     return;
   }
 
+  if (op.kind === "branch_closure") {
+    const { error } = await supabase.from("branch_closures").upsert(
+      {
+        category: op.payload.category,
+        branch: op.payload.branch,
+        period: op.payload.period,
+        collaborator_id: op.payload.collaborator_id,
+        collaborator_name: op.payload.collaborator_name,
+        total_counted: op.payload.total_counted,
+        products_counted: op.payload.products_counted,
+        status: op.payload.status,
+      },
+      { onConflict: "category,branch,period" }
+    );
+    if (error && !isDuplicateError(error.message)) throw error;
+    return;
+  }
+
   if (op.kind === "inventory_count") {
-    // Inventario físico completo: RPC inventory_scan / inventory_manual_set
     let error: { message: string } | null = null;
     if (op.payload.mode === "increment") {
       const res = await supabase.rpc("inventory_scan", {
@@ -187,7 +213,6 @@ async function processOne(op: QueuedOp): Promise<void> {
       error = res.error;
     }
     if (!error || isDuplicateError(error.message)) return;
-    // Sesión cerrada / no existe / producto inválido → no reintentar eternamente
     if (isPermanentInventoryError(error.message)) {
       const e = new Error(`DESCARTAR: ${error.message}`);
       (e as Error & { permanent?: boolean }).permanent = true;
@@ -224,7 +249,6 @@ async function processOne(op: QueuedOp): Promise<void> {
     p_client_uid: op.payload.client_uid,
   });
   if (rpc.error && !isDuplicateError(rpc.error.message)) {
-    // Fallback: insert directo (misma tabla que usa la pantalla de traspaso)
     const { error } = await supabase.from("transfers").insert({
       barcode: op.payload.barcode,
       product_name: op.payload.product_name || op.payload.barcode,
@@ -263,12 +287,10 @@ export async function drainQueue(): Promise<DrainResult> {
     return { ok: 0, failed: 0, remaining: 0, errors: [], unreachable: false };
   }
 
-  // Si un drain anterior quedó colgado > 60s, liberar el candado
   if (draining && Date.now() - drainStartedAt > 60_000) {
     console.warn("[queue] unlocking stuck drain");
     draining = false;
   }
-  // Ya hay un sync en curso: NO mentir con remaining 0
   if (draining) {
     return withRemaining({ ok: 0, failed: 0, errors: ["Sincronización en curso"], unreachable: false });
   }
@@ -311,9 +333,8 @@ export async function drainQueue(): Promise<DrainResult> {
           (op.kind === "inventory_count" && isPermanentInventoryError(msg));
         console.warn("[queue] op failed:", op.kind, op.uid, msg, permanent ? "(permanent→discard)" : "");
         if (permanent) {
-          // Quitar de la cola: no tiene sentido reintentar (sesión cerrada, etc.)
           try { await del(op.uid, store); } catch { /* ignore */ }
-          ok++; // resuelto (descartado)
+          ok++;
           errors.push(`descartado ${op.kind}: ${msg.replace(/^DESCARTAR:\s*/, "")}`);
         } else {
           errors.push(`${op.kind}: ${msg}`);
@@ -362,7 +383,6 @@ export function startQueueAutoDrain() {
   };
 
   window.addEventListener("online", () => {
-    // Esperar un momento a que la red se estabilice
     setTimeout(() => { void tryDrain(); }, 1500);
   });
   window.addEventListener("focus", () => { void tryDrain(); });
@@ -370,7 +390,6 @@ export function startQueueAutoDrain() {
     if (document.visibilityState === "visible") void tryDrain();
   });
   const interval = window.setInterval(() => { void tryDrain(); }, 20_000);
-  // Primer intento al arrancar
   setTimeout(() => { void tryDrain(); }, 2000);
 
   return () => {
