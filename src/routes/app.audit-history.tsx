@@ -71,8 +71,18 @@ function monthColor(key: string) {
   return MONTH_COLORS[hash % MONTH_COLORS.length];
 }
 
+/** Mes del calendario local (México), NO el prefijo UTC del ISO.
+ *  Evita que cierres del 31 de octubre por la noche (UTC ya es nov) salgan en noviembre. */
 function monthKey(iso: string) {
-  return iso.slice(0, 7);
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso.slice(0, 7);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+/** Fecha local YYYY-MM-DD (para filtrar por día sin desfase UTC). */
+function localDateKey(iso: string) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso.slice(0, 10);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 function nowMonthKey() {
   const d = new Date();
@@ -405,7 +415,7 @@ function AuditHistoryPage() {
       if (filterCat && (r.category ?? "").trim() !== filterCat.trim()) continue;
       if (filterDate) {
         // Búsqueda por fecha específica: manda sobre el filtro de mes.
-        if (!r.closed_at.startsWith(filterDate)) continue;
+        if (localDateKey(r.closed_at) !== filterDate) continue;
       } else if (filterMonth && monthKey(r.closed_at) !== filterMonth) {
         continue;
       }
