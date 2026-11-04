@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Loader2, UserPlus } from "lucide-react";
+import { Loader2, UserPlus, Trash2, Pencil, Check, X } from "lucide-react";
 import { toast } from "sonner";
 import { useCollaborator } from "@/lib/session";
 
@@ -39,7 +39,9 @@ function AdminPage() {
       .order("name");
     setRows((data ?? []) as Row[]);
   }
-  useEffect(() => { refresh(); }, []);
+  useEffect(() => {
+    refresh();
+  }, []);
 
   async function create(e: React.FormEvent) {
     e.preventDefault();
@@ -58,10 +60,12 @@ function AdminPage() {
         p_is_admin: isAdmin,
       });
       if (error) throw error;
-      // Asignar sucursal al nuevo colaborador (o dejarlo sin sucursal si es admin)
       await supabase.from("collaborators").update({ branch: newBranch }).eq("name", name.trim());
       toast.success("Colaborador creado");
-      setName(""); setPin(""); setIsAdmin(false); setNewBranch("A");
+      setName("");
+      setPin("");
+      setIsAdmin(false);
+      setNewBranch("A");
       refresh();
     } catch (e) {
       toast.error((e as Error).message);
@@ -70,29 +74,34 @@ function AdminPage() {
     }
   }
 
-  async function updateBranch(target: Row, newBranch: string | null) {
-    setBusy(true);
-    try {
-      const { error } = await supabase
-        .from("collaborators")
-        .update({ branch: newBranch })
-        .eq("id", target.id);
-      if (error) throw error;
-      toast.success(`Sucursal de ${target.name} → ${newBranch === "A" ? "Mina" : newBranch === "B" ? "Morelos" : "Sin sucursal"} ✓`);
-      refresh();
-    } catch (e) {
-      toast.error((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function update(target: Row, patch: { name?: string; is_admin?: boolean; active?: boolean; pin?: string; branch?: string | null }) {
+  async function update(
+    target: Row,
+    patch: { name?: string; is_admin?: boolean; active?: boolean; pin?: string; branch?: string | null },
+  ) {
     if (!me) return;
     if (adminPin.length < 4) return toast.error("Ingresá tu PIN de admin arriba");
 
     if (patch.branch !== undefined && Object.keys(patch).length === 1) {
-      await updateBranch(target, patch.branch);
+      setBusy(true);
+      try {
+        const { error } = await supabase
+          .from("collaborators")
+          .update({ branch: patch.branch })
+          .eq("id", target.id);
+        if (error) throw error;
+        toast.success(
+          "Sucursal de " +
+            target.name +
+            " → " +
+            (patch.branch === "A" ? "Mina" : patch.branch === "B" ? "Morelos" : "Sin sucursal") +
+            " ✓",
+        );
+        refresh();
+      } catch (e) {
+        toast.error((e as Error).message);
+      } finally {
+        setBusy(false);
+      }
       return;
     }
 
@@ -109,6 +118,33 @@ function AdminPage() {
       });
       if (error) throw error;
       toast.success("Actualizado");
+      refresh();
+    } catch (e) {
+      toast.error((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeCollaborator(target: Row) {
+    if (!me) return;
+    if (adminPin.length < 4) return toast.error("Ingresá tu PIN de admin arriba");
+    if (target.id === me.id) return toast.error("No podés eliminarte a vos mismo");
+    if (!window.confirm('¿Eliminar a "' + target.name + '"? Se desactiva (no borra historial).')) return;
+
+    setBusy(true);
+    try {
+      const { error } = await supabase.rpc("admin_update_collaborator", {
+        p_admin_id: me.id,
+        p_admin_pin: adminPin,
+        p_target_id: target.id,
+        p_name: target.name,
+        p_pin: "",
+        p_is_admin: target.is_admin,
+        p_active: false,
+      });
+      if (error) throw error;
+      toast.success(target.name + " eliminado (desactivado)");
       refresh();
     } catch (e) {
       toast.error((e as Error).message);
@@ -154,42 +190,56 @@ function AdminPage() {
               />
             </div>
             <div className="flex items-center gap-2">
-              <Switch checked={isAdmin} onCheckedChange={(v) => { setIsAdmin(v); if (!v && newBranch === null) setNewBranch("A"); }} id="adm" />
+              <Switch
+                checked={isAdmin}
+                onCheckedChange={(v) => {
+                  setIsAdmin(v);
+                  if (!v && newBranch === null) setNewBranch("A");
+                }}
+                id="adm"
+              />
               <Label htmlFor="adm">Admin</Label>
             </div>
-            {/* Sucursal al crear */}
             <div className="sm:col-span-4">
               <Label>Sucursal asignada</Label>
               <div className="mt-1 inline-flex overflow-hidden rounded-md border">
                 {(["A", "B"] as const).map((b) => (
-                  <button key={b} type="button" onClick={() => setNewBranch(b)}
-                    className={`px-4 py-1.5 text-sm font-medium transition-colors ${newBranch === b ? "bg-primary text-primary-foreground" : "bg-background hover:bg-muted"}`}>
+                  <button
+                    key={b}
+                    type="button"
+                    onClick={() => setNewBranch(b)}
+                    className={
+                      "px-4 py-1.5 text-sm font-medium transition-colors " +
+                      (newBranch === b ? "bg-primary text-primary-foreground" : "bg-background hover:bg-muted")
+                    }
+                  >
                     {b === "A" ? "Mina" : "Morelos"}
                   </button>
                 ))}
-                {/* Un administrador puede quedar sin sucursal fija y elegir cuál usar cada vez */}
                 {isAdmin && (
-                  <button type="button" onClick={() => setNewBranch(null)}
-                    className={`px-4 py-1.5 text-sm font-medium transition-colors ${newBranch === null ? "bg-primary text-primary-foreground" : "bg-background hover:bg-muted"}`}>
+                  <button
+                    type="button"
+                    onClick={() => setNewBranch(null)}
+                    className={
+                      "px-4 py-1.5 text-sm font-medium transition-colors " +
+                      (newBranch === null ? "bg-primary text-primary-foreground" : "bg-background hover:bg-muted")
+                    }
+                  >
                     Sin sucursal
                   </button>
                 )}
               </div>
-              {isAdmin && (
-                <p className="mt-1 text-[11px] text-muted-foreground">
-                  Los administradores pueden quedar "Sin sucursal" y elegir Mina o Morelos cada vez que auditen.
-                </p>
-              )}
             </div>
             <Button type="submit" disabled={busy} className="sm:col-span-4">
-              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserPlus className="h-4 w-4" />} Crear colaborador
+              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserPlus className="h-4 w-4" />} Crear
+              colaborador
             </Button>
           </form>
         </CardContent>
       </Card>
 
       <Card>
-        <CardContent className="p-0">
+        <CardContent className="p-0 overflow-x-auto">
           <Table>
             <TableHeader>
               <TableRow>
@@ -198,12 +248,17 @@ function AdminPage() {
                 <TableHead>Admin</TableHead>
                 <TableHead>Activo</TableHead>
                 <TableHead>Reset PIN</TableHead>
+                <TableHead className="w-12"></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {rows.map((r) => (
-                <RowEditor key={r.id} row={r} disabled={busy}
+                <RowEditor
+                  key={r.id}
+                  row={r}
+                  disabled={busy}
                   onUpdate={(p) => update(r, p)}
+                  onDelete={() => removeCollaborator(r)}
                   onSaveBranch={async (branch) => {
                     setBusy(true);
                     try {
@@ -212,10 +267,18 @@ function AdminPage() {
                         .update({ branch })
                         .eq("id", r.id);
                       if (error) throw error;
-                      toast.success(`Sucursal de ${r.name} → ${branch === "A" ? "Mina" : branch === "B" ? "Morelos" : "Sin sucursal"}`);
+                      toast.success(
+                        "Sucursal de " +
+                          r.name +
+                          " → " +
+                          (branch === "A" ? "Mina" : branch === "B" ? "Morelos" : "Sin sucursal"),
+                      );
                       refresh();
-                    } catch (e) { toast.error((e as Error).message); }
-                    finally { setBusy(false); }
+                    } catch (e) {
+                      toast.error((e as Error).message);
+                    } finally {
+                      setBusy(false);
+                    }
                   }}
                 />
               ))}
@@ -231,60 +294,141 @@ function RowEditor({
   row,
   disabled,
   onUpdate,
+  onDelete,
   onSaveBranch,
 }: {
   row: Row;
   disabled: boolean;
-  onUpdate: (patch: { is_admin?: boolean; active?: boolean; pin?: string }) => void;
+  onUpdate: (patch: { name?: string; is_admin?: boolean; active?: boolean; pin?: string }) => void;
+  onDelete: () => void;
   onSaveBranch: (branch: "A" | "B" | null) => void;
 }) {
   const [newPin, setNewPin] = useState("");
-  const normalize = (b: string | null): "A" | "B" | null => (b === "A" || b === "B" ? b : row.is_admin ? null : "A");
+  const [editingName, setEditingName] = useState(false);
+  const [nameDraft, setNameDraft] = useState(row.name);
+  const normalize = (b: string | null): "A" | "B" | null =>
+    b === "A" || b === "B" ? b : row.is_admin ? null : "A";
   const [localBranch, setLocalBranch] = useState<"A" | "B" | null>(normalize(row.branch));
   const [branchChanged, setBranchChanged] = useState(false);
 
   useEffect(() => {
     setLocalBranch(normalize(row.branch));
     setBranchChanged(false);
-  }, [row.branch, row.is_admin]);
+    setNameDraft(row.name);
+    setEditingName(false);
+  }, [row.branch, row.is_admin, row.name]);
 
   function handleBranchChange(b: "A" | "B" | null) {
     setLocalBranch(b);
     setBranchChanged(b !== normalize(row.branch));
   }
 
-  return (
-    <TableRow>
-      <TableCell className="font-medium text-sm">{row.name}</TableCell>
+  function saveName() {
+    const n = nameDraft.trim();
+    if (!n) {
+      toast.error("El nombre no puede estar vacío");
+      return;
+    }
+    if (n === row.name) {
+      setEditingName(false);
+      return;
+    }
+    onUpdate({ name: n });
+    setEditingName(false);
+  }
 
-      {/* Sucursal con botón Guardar */}
+  return (
+    <TableRow className={!row.active ? "opacity-50" : undefined}>
+      <TableCell className="font-medium text-sm min-w-[140px]">
+        {editingName ? (
+          <div className="flex items-center gap-1">
+            <Input
+              value={nameDraft}
+              onChange={(e) => setNameDraft(e.target.value)}
+              className="h-8 w-32"
+              autoFocus
+              onKeyDown={(e) => {
+                if (e.key === "Enter") saveName();
+                if (e.key === "Escape") {
+                  setNameDraft(row.name);
+                  setEditingName(false);
+                }
+              }}
+            />
+            <Button size="icon" variant="ghost" className="h-8 w-8" disabled={disabled} onClick={saveName}>
+              <Check className="h-4 w-4 text-emerald-600" />
+            </Button>
+            <Button
+              size="icon"
+              variant="ghost"
+              className="h-8 w-8"
+              disabled={disabled}
+              onClick={() => {
+                setNameDraft(row.name);
+                setEditingName(false);
+              }}
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+        ) : (
+          <div className="flex items-center gap-1">
+            <span>{row.name}</span>
+            <Button
+              size="icon"
+              variant="ghost"
+              className="h-7 w-7"
+              disabled={disabled}
+              onClick={() => setEditingName(true)}
+              title="Editar nombre"
+            >
+              <Pencil className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+        )}
+      </TableCell>
+
       <TableCell>
         <div className="flex flex-col gap-1">
           <div className="inline-flex overflow-hidden rounded-md border text-xs">
             {(["A", "B"] as const).map((b) => (
-              <button key={b} type="button" disabled={disabled}
+              <button
+                key={b}
+                type="button"
+                disabled={disabled}
                 onClick={() => handleBranchChange(b)}
-                className={`px-3 py-1.5 font-medium transition-colors disabled:opacity-50 ${
-                  localBranch === b ? "bg-primary text-primary-foreground" : "bg-background hover:bg-muted"
-                }`}>
+                className={
+                  "px-3 py-1.5 font-medium transition-colors disabled:opacity-50 " +
+                  (localBranch === b ? "bg-primary text-primary-foreground" : "bg-background hover:bg-muted")
+                }
+              >
                 {b === "A" ? "Mina" : "Morelos"}
               </button>
             ))}
-            {/* "Sin sucursal" solo tiene sentido para administradores */}
             {row.is_admin && (
-              <button type="button" disabled={disabled}
+              <button
+                type="button"
+                disabled={disabled}
                 onClick={() => handleBranchChange(null)}
-                className={`px-3 py-1.5 font-medium transition-colors disabled:opacity-50 ${
-                  localBranch === null ? "bg-primary text-primary-foreground" : "bg-background hover:bg-muted"
-                }`}>
+                className={
+                  "px-3 py-1.5 font-medium transition-colors disabled:opacity-50 " +
+                  (localBranch === null ? "bg-primary text-primary-foreground" : "bg-background hover:bg-muted")
+                }
+              >
                 Sin sucursal
               </button>
             )}
           </div>
           {branchChanged && (
-            <Button size="sm" className="h-7 text-xs px-2 bg-emerald-600 hover:bg-emerald-700"
+            <Button
+              size="sm"
+              className="h-7 text-xs px-2 bg-emerald-600 hover:bg-emerald-700"
               disabled={disabled}
-              onClick={() => { onSaveBranch(localBranch); setBranchChanged(false); }}>
+              onClick={() => {
+                onSaveBranch(localBranch);
+                setBranchChanged(false);
+              }}
+            >
               Guardar sucursal
             </Button>
           )}
@@ -299,14 +443,38 @@ function RowEditor({
       </TableCell>
       <TableCell>
         <div className="flex gap-1">
-          <Input type="password" inputMode="numeric" value={newPin}
+          <Input
+            type="password"
+            inputMode="numeric"
+            value={newPin}
             onChange={(e) => setNewPin(e.target.value.replace(/\D/g, ""))}
-            placeholder="Nuevo PIN" className="w-24" />
-          <Button size="sm" variant="outline" disabled={disabled || newPin.length < 4}
-            onClick={() => { onUpdate({ pin: newPin }); setNewPin(""); }}>
+            placeholder="Nuevo PIN"
+            className="w-24"
+          />
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={disabled || newPin.length < 4}
+            onClick={() => {
+              onUpdate({ pin: newPin });
+              setNewPin("");
+            }}
+          >
             OK
           </Button>
         </div>
+      </TableCell>
+      <TableCell>
+        <Button
+          size="icon"
+          variant="ghost"
+          className="h-8 w-8 text-destructive hover:text-destructive"
+          disabled={disabled}
+          onClick={onDelete}
+          title="Eliminar (desactivar)"
+        >
+          <Trash2 className="h-4 w-4" />
+        </Button>
       </TableCell>
     </TableRow>
   );
