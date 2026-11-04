@@ -74,6 +74,9 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1, viewport-fit=cover" },
       { name: "theme-color", content: "#0f172a" },
+      { name: "mobile-web-app-capable", content: "yes" },
+      { name: "apple-mobile-web-app-capable", content: "yes" },
+      { name: "apple-mobile-web-app-status-bar-style", content: "black-translucent" },
       { title: "Inventario A/B" },
       { name: "description", content: "App de inventario con auditoría y traspasos entre sucursales." },
       { property: "og:title", content: "Inventario A/B" },
@@ -112,15 +115,41 @@ function RootShell({ children }: { children: ReactNode }) {
   );
 }
 
+function unlockOrientation() {
+  try {
+    const orient = (screen as Screen & { orientation?: { unlock?: () => void } }).orientation;
+    orient?.unlock?.();
+  } catch {
+    // ignore
+  }
+  try {
+    // APIs viejas de Android/WebView
+    const so = screen as Screen & {
+      unlockOrientation?: () => void;
+      mozUnlockOrientation?: () => void;
+      msUnlockOrientation?: () => void;
+    };
+    so.unlockOrientation?.();
+    so.mozUnlockOrientation?.();
+    so.msUnlockOrientation?.();
+  } catch {
+    // ignore
+  }
+}
+
 function ClientBoot() {
   useRealtimeSync();
   useEffect(() => {
+    // Desbloquear rotación de pantalla
+    unlockOrientation();
+    const t1 = window.setTimeout(unlockOrientation, 500);
+    const t2 = window.setTimeout(unlockOrientation, 2000);
+
     registerPwa();
     const cleanupQueue = startQueueAutoDrain();
     const cleanupCache = startOfflineCacheAutoWarm();
     const cleanupShell = startShellWarm();
 
-    // Aviso cuando se sincronizan pendientes (auto)
     const onSynced = (ev: Event) => {
       const detail = (ev as CustomEvent<{ ok: number; remaining?: number }>).detail;
       const n = detail?.ok ?? 0;
@@ -129,15 +158,14 @@ function ClientBoot() {
           const left = detail?.remaining ?? 0;
           toast.success(
             left > 0
-              ? `${n} sincronizado${n === 1 ? "" : "s"} · quedan ${left}`
-              : `${n} sincronizado${n === 1 ? "" : "s"} ✓`
+              ? `\( {n} sincronizado \){n === 1 ? "" : "s"} · quedan ${left}`
+              : `\( {n} sincronizado \){n === 1 ? "" : "s"} ✓`
           );
         });
       }
     };
     window.addEventListener("inv:queue-synced", onSynced);
 
-    // ── Bloquear botón físico "Atrás" del teléfono ──
     function pushDummy() {
       window.history.pushState({ locked: true }, "");
     }
@@ -148,6 +176,8 @@ function ClientBoot() {
     window.addEventListener("popstate", handlePopState);
 
     return () => {
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
       cleanupQueue?.();
       cleanupCache?.();
       cleanupShell?.();
@@ -169,4 +199,3 @@ function RootComponent() {
     </QueryClientProvider>
   );
 }
- 
