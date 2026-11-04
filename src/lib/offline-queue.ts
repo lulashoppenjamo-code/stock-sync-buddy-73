@@ -227,7 +227,7 @@ async function processOne(op: QueuedOp): Promise<void> {
     throw new Error("Foto de traspaso no disponible en este dispositivo");
   }
   const ext = op.photo.ext || "jpg";
-  const path = `${op.payload.client_uid}.${ext}`;
+  const path = `\( {op.payload.client_uid}. \){ext}`;
   const contentType = op.photo.type || blob.type || "image/jpeg";
   const up = await supabase.storage
     .from("transfer-photos")
@@ -277,7 +277,7 @@ export type DrainResult = {
   unreachable: boolean;
 };
 
-export async function drainQueue(): Promise<DrainResult> {
+export async function drainQueue(opts?: { force?: boolean }): Promise<DrainResult> {
   const withRemaining = async (partial: Omit<DrainResult, "remaining">): Promise<DrainResult> => ({
     ...partial,
     remaining: await pendingCount(),
@@ -289,6 +289,10 @@ export async function drainQueue(): Promise<DrainResult> {
 
   if (draining && Date.now() - drainStartedAt > 60_000) {
     console.warn("[queue] unlocking stuck drain");
+    draining = false;
+  }
+  // Si el usuario toca el botón de pendientes, forzar desbloqueo
+  if (opts?.force) {
     draining = false;
   }
   if (draining) {
