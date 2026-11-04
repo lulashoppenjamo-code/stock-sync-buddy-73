@@ -92,14 +92,20 @@ export async function listPending(): Promise<QueuedOp[]> {
       return { key: k as string, value: v };
     }),
   );
-  // Limpiar claves huérfanas (sin valor válido) para que el contador no se quede trabado
   for (const p of pairs) {
     if (!p.value || typeof p.value !== "object" || !("kind" in p.value)) {
-      try { await del(p.key, store); } catch { /* ignore */ }
+      try {
+        await del(p.key, store);
+      } catch {
+        /* ignore */
+      }
     }
   }
   return pairs
-    .filter((p): p is { key: string; value: QueuedOp } => !!p.value && typeof p.value === "object" && "kind" in p.value)
+    .filter(
+      (p): p is { key: string; value: QueuedOp } =>
+        !!p.value && typeof p.value === "object" && "kind" in p.value,
+    )
     .map((p) => p.value)
     .sort((a, b) => a.createdAt - b.createdAt);
 }
@@ -109,7 +115,6 @@ export async function pendingCount(): Promise<number> {
   return items.length;
 }
 
-/** Descarta todas las operaciones pendientes (solo si el usuario lo pide). */
 export async function clearQueue(): Promise<number> {
   const ks = await keys(store);
   for (const k of ks) await del(k as string, store);
@@ -128,7 +133,6 @@ function isDuplicateError(msg: string | undefined): boolean {
   );
 }
 
-/** Errores de inventario físico que NO tiene sentido reintentar. */
 function isPermanentInventoryError(msg: string | undefined): boolean {
   if (!msg) return false;
   const m = msg.toLowerCase();
@@ -152,11 +156,13 @@ function errMsg(e: unknown): string {
   return any.message || any.error_description || JSON.stringify(e);
 }
 
-/** Comprueba si realmente hay red hacia Supabase (navigator.onLine miente a veces). */
 async function canReachServer(): Promise<boolean> {
   if (typeof navigator !== "undefined" && !navigator.onLine) return false;
   try {
-    const { error } = await supabase.from("collaborators").select("id", { head: true, count: "exact" }).limit(1);
+    const { error } = await supabase
+      .from("collaborators")
+      .select("id", { head: true, count: "exact" })
+      .limit(1);
     if (error && /failed to fetch|network|timeout|load failed/i.test(error.message)) return false;
     return true;
   } catch {
@@ -183,7 +189,7 @@ async function processOne(op: QueuedOp): Promise<void> {
         products_counted: op.payload.products_counted,
         status: op.payload.status,
       },
-      { onConflict: "category,branch,period" }
+      { onConflict: "category,branch,period" },
     );
     if (error && !isDuplicateError(error.message)) throw error;
     return;
@@ -214,7 +220,7 @@ async function processOne(op: QueuedOp): Promise<void> {
     }
     if (!error || isDuplicateError(error.message)) return;
     if (isPermanentInventoryError(error.message)) {
-      const e = new Error(`DESCARTAR: ${error.message}`);
+      const e = new Error("DESCARTAR: " + error.message);
       (e as Error & { permanent?: boolean }).permanent = true;
       throw e;
     }
@@ -227,13 +233,15 @@ async function processOne(op: QueuedOp): Promise<void> {
     throw new Error("Foto de traspaso no disponible en este dispositivo");
   }
   const ext = op.photo.ext || "jpg";
-  const path = `\( {op.payload.client_uid}. \){ext}`;
+  const path = op.payload.client_uid + "." + ext;
   const contentType = op.photo.type || blob.type || "image/jpeg";
   const up = await supabase.storage
     .from("transfer-photos")
     .upload(path, blob, { contentType, upsert: true });
   if (up.error && !isDuplicateError(up.error.message)) throw up.error;
-  const { data: signed } = await supabase.storage.from("transfer-photos").createSignedUrl(path, 60 * 60 * 24 * 365);
+  const { data: signed } = await supabase.storage
+    .from("transfer-photos")
+    .createSignedUrl(path, 60 * 60 * 24 * 365);
   const photo_url = signed?.signedUrl ?? path;
 
   const rpc = await supabase.rpc("apply_transfer", {
@@ -278,7 +286,9 @@ export type DrainResult = {
 };
 
 export async function drainQueue(opts?: { force?: boolean }): Promise<DrainResult> {
-  const withRemaining = async (partial: Omit<DrainResult, "remaining">): Promise<DrainResult> => ({
+  const withRemaining = async (
+    partial: Omit<DrainResult, "remaining">,
+  ): Promise<DrainResult> => ({
     ...partial,
     remaining: await pendingCount(),
   });
@@ -291,12 +301,16 @@ export async function drainQueue(opts?: { force?: boolean }): Promise<DrainResul
     console.warn("[queue] unlocking stuck drain");
     draining = false;
   }
-  // Si el usuario toca el botón de pendientes, forzar desbloqueo
   if (opts?.force) {
     draining = false;
   }
   if (draining) {
-    return withRemaining({ ok: 0, failed: 0, errors: ["Sincronización en curso"], unreachable: false });
+    return withRemaining({
+      ok: 0,
+      failed: 0,
+      errors: ["Sincronización en curso"],
+      unreachable: false,
+    });
   }
   if (!navigator.onLine) {
     return withRemaining({ ok: 0, failed: 0, errors: [], unreachable: true });
@@ -335,20 +349,32 @@ export async function drainQueue(opts?: { force?: boolean }): Promise<DrainResul
           (lastErr as Error & { permanent?: boolean }).permanent === true ||
           msg.startsWith("DESCARTAR:") ||
           (op.kind === "inventory_count" && isPermanentInventoryError(msg));
-        console.warn("[queue] op failed:", op.kind, op.uid, msg, permanent ? "(permanent→discard)" : "");
+        console.warn(
+          "[queue] op failed:",
+          op.kind,
+          op.uid,
+          msg,
+          permanent ? "(permanent→discard)" : "",
+        );
         if (permanent) {
-          try { await del(op.uid, store); } catch { /* ignore */ }
+          try {
+            await del(op.uid, store);
+          } catch {
+            /* ignore */
+          }
           ok++;
-          errors.push(`descartado ${op.kind}: ${msg.replace(/^DESCARTAR:\s*/, "")}`);
+          errors.push("descartado " + op.kind + ": " + msg.replace(/^DESCARTAR:\s*/, ""));
         } else {
-          errors.push(`${op.kind}: ${msg}`);
+          errors.push(op.kind + ": " + msg);
           try {
             await set(
               op.uid,
               { ...op, attempts: (op.attempts ?? 0) + 1, lastError: msg },
               store,
             );
-          } catch { /* ignore */ }
+          } catch {
+            /* ignore */
+          }
           failed++;
         }
       }
@@ -387,14 +413,22 @@ export function startQueueAutoDrain() {
   };
 
   window.addEventListener("online", () => {
-    setTimeout(() => { void tryDrain(); }, 1500);
+    setTimeout(() => {
+      void tryDrain();
+    }, 1500);
   });
-  window.addEventListener("focus", () => { void tryDrain(); });
+  window.addEventListener("focus", () => {
+    void tryDrain();
+  });
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") void tryDrain();
   });
-  const interval = window.setInterval(() => { void tryDrain(); }, 20_000);
-  setTimeout(() => { void tryDrain(); }, 2000);
+  const interval = window.setInterval(() => {
+    void tryDrain();
+  }, 20_000);
+  setTimeout(() => {
+    void tryDrain();
+  }, 2000);
 
   return () => {
     window.clearInterval(interval);
