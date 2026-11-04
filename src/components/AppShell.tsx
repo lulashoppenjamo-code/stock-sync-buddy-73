@@ -103,7 +103,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               </span>
             )}
             {pending > 0 && (
-              <button type="button"
+              <button
+                type="button"
                 onClick={async () => {
                   const { toast } = await import("sonner");
                   if (!online) {
@@ -113,7 +114,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   const { drainQueue } = await import("@/lib/offline-queue");
                   toast.info("Sincronizando…");
                   const result = await drainQueue({ force: true });
-                  // Forzar refresco del contador (varias veces por si IndexedDB tarda)
                   window.dispatchEvent(new Event("inv:queue-changed"));
                   setTimeout(() => window.dispatchEvent(new Event("inv:queue-changed")), 300);
                   setTimeout(() => window.dispatchEvent(new Event("inv:queue-changed")), 1000);
@@ -131,17 +131,24 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                     return;
                   }
                   if (result.ok > 0) {
-                    toast.success(`\( {result.ok} sincronizado \){result.ok === 1 ? "" : "s"} · quedan ${result.remaining}`);
+                    toast.success(
+                      result.ok +
+                        " sincronizado" +
+                        (result.ok === 1 ? "" : "s") +
+                        " · quedan " +
+                        result.remaining
+                    );
                   }
                   if (result.failed > 0) {
-                    const detail = result.errors[0] ? ` (${result.errors[0].slice(0, 80)})` : "";
-                    toast.error(`\( {result.failed} fallaron \){detail}. Tocá de nuevo para reintentar.`);
+                    const detail = result.errors[0] ? " (" + result.errors[0].slice(0, 80) + ")" : "";
+                    toast.error(result.failed + " fallaron" + detail + ". Tocá de nuevo para reintentar.");
                   }
                   if (result.ok === 0 && result.failed === 0 && result.remaining > 0) {
-                    toast.message(`Quedan ${result.remaining} pendientes. Tocá de nuevo para reintentar.`);
+                    toast.message("Quedan " + result.remaining + " pendientes. Tocá de nuevo para reintentar.");
                   }
                 }}
-                className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-1 font-medium text-blue-900 hover:bg-blue-200 dark:bg-blue-900/40 dark:text-blue-100">
+                className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-1 font-medium text-blue-900 hover:bg-blue-200 dark:bg-blue-900/40 dark:text-blue-100"
+              >
                 <CloudUpload className="h-3.5 w-3.5" /> {pending} pendiente{pending === 1 ? "" : "s"}
               </button>
             )}
@@ -155,7 +162,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-4 pb-24 md:pb-6">{children}</main>
 
-      {/* Mobile bottom nav — scroll horizontal para que ningún ítem quede oculto */}
       <nav className="fixed inset-x-0 bottom-0 z-30 border-t bg-card/95 backdrop-blur md:hidden">
         <ul className="mx-auto flex max-w-6xl overflow-x-auto scrollbar-none">
           {navItems.map((item) => {
