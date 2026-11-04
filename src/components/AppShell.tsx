@@ -112,7 +112,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   }
                   const { drainQueue } = await import("@/lib/offline-queue");
                   toast.info("Sincronizando…");
-                  const result = await drainQueue();
+                  const result = await drainQueue({ force: true });
                   // Forzar refresco del contador (varias veces por si IndexedDB tarda)
                   window.dispatchEvent(new Event("inv:queue-changed"));
                   setTimeout(() => window.dispatchEvent(new Event("inv:queue-changed")), 300);
@@ -131,11 +131,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                     return;
                   }
                   if (result.ok > 0) {
-                    toast.success(`${result.ok} sincronizado${result.ok === 1 ? "" : "s"} · quedan ${result.remaining}`);
+                    toast.success(`\( {result.ok} sincronizado \){result.ok === 1 ? "" : "s"} · quedan ${result.remaining}`);
                   }
                   if (result.failed > 0) {
                     const detail = result.errors[0] ? ` (${result.errors[0].slice(0, 80)})` : "";
-                    toast.error(`${result.failed} fallaron${detail}. Tocá de nuevo para reintentar.`);
+                    toast.error(`\( {result.failed} fallaron \){detail}. Tocá de nuevo para reintentar.`);
                   }
                   if (result.ok === 0 && result.failed === 0 && result.remaining > 0) {
                     toast.message(`Quedan ${result.remaining} pendientes. Tocá de nuevo para reintentar.`);
@@ -199,4 +199,3 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     </div>
   );
 }
- 
