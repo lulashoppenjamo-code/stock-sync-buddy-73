@@ -112,6 +112,7 @@ export function BarcodeScanner({
   const lastCodeRef = useRef<string | null>(null);
   const lastSeenRef = useRef(0);
   const manualReadyRef = useRef(true);
+  const processingRef = useRef(false);
 
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -188,16 +189,19 @@ export function BarcodeScanner({
   const confirmScan = async () => {
     const code = pendingCodeRef.current;
 
-    if (!code || processing) return;
+    if (!code || processingRef.current) return;
 
+    // Evita dos confirmaciones simultáneas.
+    // Conserva el código para sumar varias piezas con varios toques.
+    processingRef.current = true;
     setProcessing(true);
-    pendingCodeRef.current = null;
-    setPendingCode(null);
-    manualReadyRef.current = false;
 
-    await processCode(code);
-
-    setProcessing(false);
+    try {
+      await processCode(code);
+    } finally {
+      processingRef.current = false;
+      setProcessing(false);
+    }
   };
 
   useEffect(() => {
