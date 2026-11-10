@@ -798,20 +798,17 @@ function AuditPage() {
         toast.error(
           "Estás editando una cantidad a mano. Terminá o tocá fuera antes de pistolear."
         );
-        scanRef.current?.focus();
         return false;
       }
 
       if (!category) {
         toast.error("Seleccioná una categoría primero");
-        scanRef.current?.focus();
         return false;
       }
 
       const prod = await lookupProduct(code, fromScanner);
 
       if (!prod) {
-        scanRef.current?.focus();
         return false;
       }
 
@@ -819,7 +816,6 @@ function AuditPage() {
         toast.error(
           `"${prod.product_name}" no es de la categoría ${category}`
         );
-        scanRef.current?.focus();
         return false;
       }
 
@@ -854,7 +850,6 @@ function AuditPage() {
 
       toast.success(`+1 · ${prod.product_name}`);
 
-      scanRef.current?.focus();
       flashProduct(code);
 
       return true;
@@ -1799,7 +1794,7 @@ function AuditPage() {
             <CardContent className="p-3 space-y-2">
               <label className="text-xs font-medium text-muted-foreground">Pistolá un producto para sumar +1</label>
               <div className="flex gap-2">
-                <Input ref={scanRef} autoFocus value={scanInput}
+                <Input ref={scanRef} value={scanInput}
                   onChange={(e) => setScanInput(e.target.value)}
                   onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addCount(scanInput); } }}
                   placeholder="Código de barras…" className="font-mono" inputMode="numeric" />
@@ -1927,16 +1922,11 @@ function AuditPage() {
                               e.preventDefault();
                               qtyEditingRef.current = null;
                               setQtyEditingBarcode(null);
-                              scanRef.current?.focus();
                             }
                           }}
                           onBlur={() => {
                             qtyEditingRef.current = null;
                             setQtyEditingBarcode(null);
-                            // No robar foco si el usuario tocó otro control
-                            window.setTimeout(() => {
-                              if (!qtyEditingRef.current) scanRef.current?.focus();
-                            }, 50);
                           }}
                           className={`w-9 rounded border border-input bg-transparent text-center text-sm tabular-nums font-bold focus:outline-none focus:ring-2 focus:ring-primary ${isCounted ? "text-emerald-700" : "text-muted-foreground"} ${qtyEditingBarcode === p.barcode ? "ring-2 ring-amber-400" : ""}`}
                         />
