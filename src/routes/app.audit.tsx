@@ -203,7 +203,7 @@ function AuditPage() {
   const [nameSearch, setNameSearch] = useState("");
   const [scanning, setScanning] = useState(false);
   const [saving, setSaving] = useState(false);
-  
+
   const [summaryData, setSummaryData] = useState<CountEntry[] | null>(null);
   const [summaryFinal, setSummaryFinal] = useState(false);
   const scanRef = useRef<HTMLInputElement>(null);
@@ -2124,4 +2124,467 @@ function AuditPage() {
                 </div>
                 <div className="rounded-md bg-amber-50 dark:bg-amber-950/20 p-2 text-center">
                   <div className="text-[10px] text-muted-foreground">Sobrantes</div>
-                  <div className="t
+                  <div className="text-lg font-bold text-amber-600">{summaryData.filter((r) => r.count > r.system_stock).length}</div>
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Sucursal: {branchLabel(branch)} · {summaryData.length} productos
+                {!online && " · Guardado localmente (pendiente de sincronizar)"}
+              </p>
+              <div className="divide-y rounded-md border">
+                {summaryData.sort((a, b) => (a.count - a.system_stock) - (b.count - b.system_stock)).map((r) => {
+                  const diff = r.count - r.system_stock;
+                  return (
+                    <div key={r.barcode}
+                      className={`flex items-center gap-2 px-3 py-2.5 text-xs ${diff === 0 ? "bg-emerald-50 dark:bg-emerald-950/20" : diff < 0 ? "bg-red-50 dark:bg-red-950/20" : "bg-amber-50 dark:bg-amber-950/20"}`}>
+                      <div className="min-w-0 flex-1">
+                        <div className="font-medium truncate">{r.product_name}</div>
+                        <div className="font-mono text-muted-foreground">{r.barcode}</div>
+                      </div>
+                      <div className="shrink-0 text-right space-y-0.5">
+                        <div className="text-muted-foreground">Sys: {r.system_stock} · Conteo: {r.count}</div>
+                        <div className={`font-bold ${diff === 0 ? "text-emerald-600" : diff < 0 ? "text-red-600" : "text-amber-600"}`}>
+                          {diff === 0 ? "✓ Correcto" : diff > 0 ? `+${diff} SOBRA` : `${diff} FALTA`}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          <DialogFooter className="gap-2 sm:gap-0">
+            {summaryFinal && online && (
+              <Link to="/app/audit-history" className="inline-flex items-center justify-center gap-1 rounded-md border px-3 py-2 text-sm hover:bg-muted">
+                <History className="h-4 w-4" /> Ver historial
+              </Link>
+            )}
+            <Button onClick={() => { setSummaryData(null); setSummaryFinal(false); }}>Cerrar</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Reporte mensual por categoría ── */}
+      <Dialog open={!!reportCategory} onOpenChange={(o) => { if (!o) setReportCategory(null); }}>
+        <DialogContent className="max-h-[90vh] max-w-md overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Reporte mensual — {reportCategory}</DialogTitle>
+          </DialogHeader>
+          {reportCategory && (() => {
+            const rows = buildCategoryReport(reportCategory);
+            const st = categoryStatus.get(reportCategory);
+            const bc = branchClosureMap.get(reportCategory);
+            // Verde solo cuando el admin ya cerró (existe en closed_counts). Misma regla que los botones de categoría.
+            const bothDoneReport = closedCountsCategories.has(reportCategory.trim());
+            return (
+              <div className="space-y-3 text-sm">
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="rounded-md bg-emerald-50 dark:bg-emerald-950/20 p-2 text-center">
+                    <div className="text-[10px] text-muted-foreground">Sin diferencia</div>
+                    <div className="text-lg font-bold text-emerald-700">{rows.filter((r) => r.counted === r.system_stock).length}</div>
+                  </div>
+                  <div className="rounded-md bg-red-50 dark:bg-red-950/20 p-2 text-center">
+                    <div className="text-[10px] text-muted-foreground">Faltantes</div>
+                    <div className="text-lg font-bold text-red-600">{rows.filter((r) => r.counted < r.system_stock).length}</div>
+                  </div>
+                  <div className="rounded-md bg-amber-50 dark:bg-amber-950/20 p-2 text-center">
+                    <div className="text-[10px] text-muted-foreground">Sobrantes</div>
+                    <div className="text-lg font-bold text-amber-600">{rows.filter((r) => r.counted > r.system_stock).length}</div>
+                  </div>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {monthLabel()} · {rows.length} productos
+                  {!bothDoneReport && " · Falta contar en alguna sucursal — reporte parcial"}
+                </p>
+                <div className="divide-y rounded-md border">
+                  {rows.sort((a, b) => (a.counted - a.system_stock) - (b.counted - b.system_stock)).map((r) => {
+                    const diff = r.counted - r.system_stock;
+                    const prodComments = reportComments.filter(
+                      (c) => c.barcode === r.barcode || (!c.barcode && c.product_name === r.product_name)
+                    );
+                    return (
+                      <div key={r.barcode}
+                        className={`px-3 py-2.5 text-xs ${diff === 0 ? "bg-emerald-50 dark:bg-emerald-950/20" : diff < 0 ? "bg-red-50 dark:bg-red-950/20" : "bg-amber-50 dark:bg-amber-950/20"}`}>
+                        <div className="flex items-center gap-2">
+                          <div className="min-w-0 flex-1">
+                            <div className="font-medium truncate">{r.product_name}</div>
+                            <div className="font-mono text-muted-foreground">{r.barcode}</div>
+                          </div>
+                          <div className="shrink-0 text-right space-y-0.5">
+                            <div className="text-muted-foreground">Sys: {r.system_stock} · Contado: {r.counted}</div>
+                            <div className={`font-bold ${diff === 0 ? "text-emerald-600" : diff < 0 ? "text-red-600" : "text-amber-600"}`}>
+                              {diff === 0 ? "✓ Correcto" : diff > 0 ? `+${diff} SOBRA` : `${diff} FALTA`}
+                            </div>
+                          </div>
+                        </div>
+                        {prodComments.length > 0 && (
+                          <div className="mt-1.5 space-y-1 rounded border border-blue-200/60 bg-blue-50/50 p-1.5 dark:border-blue-900 dark:bg-blue-950/20">
+                            {prodComments.map((c) => (
+                              <div key={c.id} className="text-[10px]">
+                                <span className="font-medium text-foreground">{c.collaborator_name ?? "—"}</span>
+                                {c.branch && <span className="text-muted-foreground"> · {branchLabel(c.branch)}</span>}
+                                <span className="text-muted-foreground">
+                                  {" · "}
+                                  {new Date(c.created_at).toLocaleDateString("es-MX", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+                                </span>
+                                <p className="text-foreground mt-0.5">{c.comment}</p>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                  {rows.length === 0 && <div className="p-3 text-xs text-muted-foreground">Sin conteos registrados este mes.</div>}
+                </div>
+
+                {/* Resumen de comentarios de la categoría (incluye genéricos sin producto) */}
+                {reportComments.length > 0 && (
+                  <div className="space-y-1.5">
+                    <p className="text-[11px] font-medium text-blue-700 dark:text-blue-300">
+                      Comentarios del corte ({reportComments.length})
+                    </p>
+                    <div className="max-h-40 space-y-1.5 overflow-y-auto rounded-md border bg-muted/30 p-2">
+                      {reportComments.map((c) => (
+                        <div key={c.id} className="text-[11px]">
+                          <div className="flex flex-wrap items-center gap-1 text-muted-foreground">
+                            <span className="font-medium text-foreground">{c.collaborator_name ?? "—"}</span>
+                            {c.branch && <span>· {branchLabel(c.branch)}</span>}
+                            {c.product_name && <span>· {c.product_name}</span>}
+                            <span>· {new Date(c.created_at).toLocaleDateString("es-MX", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</span>
+                          </div>
+                          <p className="text-foreground">{c.comment}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {reportLiveRows.length > 0 && (
+                  <div className="space-y-1.5">
+                    <p className="text-[11px] font-medium text-blue-700 dark:text-blue-300">
+                      Conteo en vivo actual {rows.length === 0 ? "(aún sin cerrar)" : "(puede incluir escaneos del corte ya cerrado)"}
+                    </p>
+                    <div className="divide-y rounded-md border border-blue-200 dark:border-blue-900">
+                      {reportLiveRows
+                        .sort((a, b) => (a.total - a.system_stock) - (b.total - b.system_stock))
+                        .map((r) => {
+                          const diff = r.total - r.system_stock;
+                          return (
+                            <div key={r.barcode} className="flex items-center gap-2 px-3 py-2 text-xs bg-blue-50/60 dark:bg-blue-950/10">
+                              <div className="min-w-0 flex-1">
+                                <div className="font-medium truncate">{r.product_name}</div>
+                                <div className="font-mono text-muted-foreground">{r.barcode}</div>
+                              </div>
+                              <div className="shrink-0 text-right space-y-0.5">
+                                <div className="text-muted-foreground">Sys: {r.system_stock} · Mina: {r.mina} · Morelos: {r.morelos}</div>
+                                <div className={`font-bold ${diff === 0 ? "text-emerald-600" : diff < 0 ? "text-red-600" : "text-amber-600"}`}>
+                                  {diff === 0 ? "✓ Sin diferencia" : diff > 0 ? `+${diff} SOBRA` : `${diff} FALTA`}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                    </div>
+                  </div>
+                )}
+                {me?.is_admin && (
+                  <div className="space-y-3 rounded-md border border-amber-300 bg-amber-50/60 p-3 dark:bg-amber-950/10">
+                    <div className="flex items-center gap-1.5 text-xs font-semibold text-amber-800 dark:text-amber-300">
+                      <ShieldAlert className="h-3.5 w-3.5" /> Panel de administrador
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {(["A", "B"] as const).map((b) => (
+                        <Button key={b} size="sm" variant="outline"
+                          disabled={!(b === "A" ? st?.hasA : st?.hasB)}
+                          className="border-amber-400 text-amber-700 hover:bg-amber-100 dark:text-amber-300"
+                          onClick={() => setAdminAction({ type: "reset", category: reportCategory!, branch: b })}>
+                          <RotateCcw className="h-3.5 w-3.5" /> Reiniciar {branchLabel(b)}
+                        </Button>
+                      ))}
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {(["A", "B"] as const).map((b) => (
+                        <Button key={`restore-${b}`} size="sm" variant="outline"
+                          disabled={!(b === "A" ? bc?.A : bc?.B)}
+                          className="border-blue-400 text-blue-700 hover:bg-blue-100 dark:text-blue-300"
+                          onClick={() => setAdminAction({ type: "restoreClosure", category: reportCategory!, branch: b })}>
+                          <RotateCcw className="h-3.5 w-3.5" /> Reactivar {branchLabel(b)}
+                        </Button>
+                      ))}
+                    </div>
+                    <Button size="sm" variant="outline"
+                      className="border-red-400 text-red-700 hover:bg-red-50 dark:text-red-300"
+                      onClick={() => setAdminAction({ type: "wipeCategory", category: reportCategory!, zeroStock: false })}>
+                      <Trash2 className="h-3.5 w-3.5" /> Dejar categoría en ceros
+                    </Button>
+                    <Button size="sm" variant="outline"
+                      className="w-full border-emerald-400 text-emerald-700 hover:bg-emerald-100 dark:text-emerald-300"
+                      onClick={() => setAdminAction({ type: "regenerateReport", category: reportCategory! })}>
+                      <Save className="h-3.5 w-3.5" /> Volver a guardar conteo general de "{reportCategory}"
+                    </Button>
+                    <Button size="sm" variant="outline"
+                      className="w-full border-slate-400 text-slate-700 hover:bg-slate-100 dark:text-slate-300"
+                      onClick={() => setProductEditOpen(true)}>
+                      <Pencil className="h-3.5 w-3.5" /> Editar un producto (código, categoría, stock, precio)
+                    </Button>
+                    <div className="space-y-1.5">
+                      <p className="text-[11px] font-medium text-muted-foreground">Registros individuales</p>
+                      <div className="max-h-56 divide-y overflow-y-auto rounded-md border bg-background">
+                        {monthlyHistory.filter((h) => (h.category ?? "").trim() === (reportCategory ?? "").trim()).map((h) => (
+                          <AdminHistoryRow key={h.id} row={h}
+                            onEdit={() => setAdminAction({ type: "editRow", row: h, newQty: h.counted_quantity })}
+                            onDelete={() => setAdminAction({ type: "deleteRow", row: h })} />
+                        ))}
+                        {monthlyHistory.filter((h) => (h.category ?? "").trim() === (reportCategory ?? "").trim()).length === 0 && (
+                          <div className="p-2 text-[11px] text-muted-foreground">Sin registros individuales.</div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+          <DialogFooter>
+            <Button onClick={() => setReportCategory(null)}>Cerrar</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Editar producto (admin) ── */}
+      <Dialog open={productEditOpen} onOpenChange={(o) => { if (!o) closeProductEdit(); }}>
+        <DialogContent className="max-h-[90vh] max-w-md overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-1.5">
+              <Pencil className="h-4 w-4" /> Editar producto
+            </DialogTitle>
+          </DialogHeader>
+          {!editingProduct ? (
+            <div className="space-y-2">
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input autoFocus value={productQuery} onChange={(e) => setProductQuery(e.target.value)}
+                  placeholder="Buscar por nombre o código de barras…" className="pl-9" />
+              </div>
+              <div className="max-h-72 divide-y overflow-auto rounded-md border">
+                {productSearchResults.map((p) => (
+                  <button key={p.barcode} type="button" onClick={() => pickProductToEdit(p)}
+                    className="flex w-full items-center justify-between px-3 py-2 text-left text-sm hover:bg-muted">
+                    <div className="min-w-0">
+                      <div className="truncate font-medium">{p.product_name}</div>
+                      <div className="font-mono text-xs text-muted-foreground">{p.barcode} · {p.category ?? "Sin categoría"}</div>
+                    </div>
+                  </button>
+                ))}
+                {productQuery.trim().length >= 2 && productSearchResults.length === 0 && (
+                  <div className="p-3 text-xs text-muted-foreground">Sin resultados</div>
+                )}
+                {productQuery.trim().length < 2 && (
+                  <div className="p-3 text-xs text-muted-foreground">Escribí al menos 2 caracteres para buscar.</div>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-3 text-sm">
+              <button type="button" onClick={() => setEditingProduct(null)} className="text-xs text-muted-foreground underline">
+                ← Buscar otro producto
+              </button>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">Código de barras</label>
+                <Input value={epBarcode} onChange={(e) => setEpBarcode(e.target.value)} className="font-mono" />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">Nombre</label>
+                <Input value={epName} onChange={(e) => setEpName(e.target.value)} />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">Categoría</label>
+                <input list="edit-product-categories" value={epCategory} onChange={(e) => setEpCategory(e.target.value)}
+                  className="mt-1 h-9 w-full rounded-md border bg-background px-2 text-sm" placeholder="Elegir o escribir categoría…" />
+                <datalist id="edit-product-categories">
+                  {categories.map((c) => <option key={c} value={c} />)}
+                </datalist>
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground">Stock Mina</label>
+                  <Input type="number" value={epStockA} onChange={(e) => setEpStockA(Number(e.target.value) || 0)} />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground">Stock Morelos</label>
+                  <Input type="number" value={epStockB} onChange={(e) => setEpStockB(Number(e.target.value) || 0)} />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground">Precio</label>
+                  <Input type="number" value={epPrice} onChange={(e) => setEpPrice(Number(e.target.value) || 0)} />
+                </div>
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={closeProductEdit}>Cancelar</Button>
+            {editingProduct && (
+              <Button
+                onClick={() => setAdminAction({
+                  type: "editProduct",
+                  oldBarcode: editingProduct.barcode,
+                  data: { barcode: epBarcode, product_name: epName, category: epCategory || null, stock_a: epStockA, stock_b: epStockB, price: epPrice },
+                })}>
+                <Save className="h-4 w-4" /> Guardar cambios
+              </Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Admin PIN dialog ── */}
+      <Dialog open={!!adminAction} onOpenChange={(o) => { if (!o) { setAdminAction(null); setAdminPin(""); } }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-1.5 text-amber-700 dark:text-amber-300">
+              <ShieldAlert className="h-4 w-4" />
+              {adminAction?.type === "reset" && "Reiniciar conteo"}
+              {adminAction?.type === "resetRealtime" && "Reiniciar conteos de hoy"}
+              {adminAction?.type === "deleteRow" && "Eliminar registro"}
+              {adminAction?.type === "editRow" && "Editar cantidad contada"}
+              {adminAction?.type === "restoreClosure" && "Reactivar categoría"}
+              {adminAction?.type === "regenerateReport" && "Volver a guardar conteo general"}
+              {adminAction?.type === "wipeCategory" && "Dejar categoría en ceros"}
+              {adminAction?.type === "editProduct" && "Editar producto"}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 text-sm">
+            {adminAction?.type === "reset" && (
+              <p className="text-muted-foreground">
+                Se eliminarán todos los conteos de <strong>"{adminAction.category}"</strong> en{" "}
+                <strong>{branchLabel(adminAction.branch)}</strong> registrados este mes.
+              </p>
+            )}
+            {adminAction?.type === "resetRealtime" && (
+              <p className="text-muted-foreground">
+                Se eliminarán los conteos guardados hoy de <strong>"{adminAction.category}"</strong> en <strong>{branchLabel(adminAction.branch)}</strong>.
+              </p>
+            )}
+            {adminAction?.type === "deleteRow" && (
+              <p className="text-muted-foreground">
+                Se eliminará el registro de <strong>{adminAction.row.product_name}</strong> ({adminAction.row.counted_quantity} unid.).
+              </p>
+            )}
+            {adminAction?.type === "editRow" && (
+              <div className="space-y-2">
+                <p className="text-muted-foreground">{adminAction.row.product_name}</p>
+                <Input type="number" min={0} value={adminAction.newQty}
+                  onChange={(e) => setAdminAction((prev) =>
+                    prev && prev.type === "editRow" ? { ...prev, newQty: Number(e.target.value) } : prev
+                  )} />
+              </div>
+            )}
+            {adminAction?.type === "restoreClosure" && (
+              <p className="text-muted-foreground">
+                Se eliminará el cierre de <strong>"{adminAction.category}"</strong> en{" "}
+                <strong>{branchLabel(adminAction.branch)}</strong> para volver a permitir el conteo este mes.
+              </p>
+            )}
+            {adminAction?.type === "regenerateReport" && (
+              <p className="text-muted-foreground">
+                Se borrará y se volverá a guardar el reporte general y el historial de{" "}
+                <strong>"{adminAction.category}"</strong> este mes, usando los conteos en vivo actuales.
+              </p>
+            )}
+            {adminAction?.type === "wipeCategory" && (
+              <div className="space-y-2 text-muted-foreground">
+                <p>
+                  Se borrarán <strong>todos</strong> los conteos de <strong>"{adminAction.category}"</strong> de este mes en{" "}
+                  <strong>Mina y Morelos</strong>: conteos en vivo, cierres de sucursal, cierre general e historial del mes.
+                  La categoría quedará lista para contar desde cero. El stock del sistema no se modifica.
+                </p>
+                <p className="text-xs font-medium text-red-600">Esta acción no se puede deshacer.</p>
+              </div>
+            )}
+            {adminAction?.type === "editProduct" && (
+              <p className="text-muted-foreground">
+                Se actualizará el producto <strong>"{adminAction.data.product_name}"</strong>.
+              </p>
+            )}
+            {adminAction?.type !== "restoreClosure" && (
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">Tu PIN de administrador</label>
+                <Input type="password" inputMode="numeric" autoFocus value={adminPin}
+                  onChange={(e) => setAdminPin(e.target.value.replace(/\D/g, ""))}
+                  placeholder="PIN" className="mt-1" />
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setAdminAction(null); setAdminPin(""); }}>Cancelar</Button>
+            <Button variant="destructive" disabled={adminBusy} onClick={confirmAdminAction}>
+              {adminBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : null} Confirmar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Comentarios y reportes ── */}
+      <Card>
+        <CardContent className="p-3 space-y-2">
+          <div className="flex items-center gap-2 text-sm font-semibold">
+            <MessageSquare className="h-4 w-4" /> Comentarios y reportes
+          </div>
+          <p className="text-[11px] text-muted-foreground">
+            Anotá acá errores encontrados, desperfectos o sugerencias{category ? ` sobre "${category}" (${branchLabel(branch)})` : ""}.
+          </p>
+          <Textarea value={commentText} onChange={(e) => setCommentText(e.target.value)}
+            placeholder="Escribí tu comentario…" rows={3} />
+          <Button size="sm" onClick={sendComment} disabled={commentSending || !commentText.trim()}>
+            {commentSending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+            Enviar comentario
+          </Button>
+          {recentComments.length > 0 && (
+            <div className="mt-2 max-h-40 space-y-2 overflow-y-auto rounded-md border bg-muted/30 p-2">
+              {recentComments.map((c) => (
+                <div key={c.id} className="text-[11px]">
+                  <div className="flex flex-wrap items-center gap-1 text-muted-foreground">
+                    <span className="font-medium text-foreground">{c.collaborator_name ?? "—"}</span>
+                    {c.branch && <span>· {branchLabel(c.branch)}</span>}
+                    {c.category && <span>· {c.category}</span>}
+                    <span>· {new Date(c.created_at).toLocaleDateString("es-MX", { day: "numeric", month: "short" })}</span>
+                  </div>
+                  <p className="text-foreground">{c.comment}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <BarcodeScanner open={scanning} onClose={() => setScanning(false)} continuous onDetected={(c) => addCount(c)} />
+    </div>
+  );
+}
+
+function AdminHistoryRow({ row, onEdit, onDelete }: { row: HistoryRow; onEdit: () => void; onDelete: () => void }) {
+  const diff = row.counted_quantity - row.system_stock;
+  return (
+    <div className="flex items-center gap-2 px-2 py-1.5 text-[11px]">
+      <div className="min-w-0 flex-1">
+        <div className="truncate font-medium">{row.product_name}</div>
+        <div className="text-muted-foreground">
+          {branchLabel(row.branch)} · Sys: {row.system_stock} · Contado: {row.counted_quantity}{" "}
+          <span className={diff === 0 ? "text-emerald-600" : diff < 0 ? "text-red-600" : "text-amber-600"}>
+            ({diff === 0 ? "✓" : diff > 0 ? `+${diff}` : diff})
+          </span>
+        </div>
+        <div className="text-[10px] text-blue-600 dark:text-blue-400">
+          {row.collaborator_name ?? "—"} · {new Date(row.created_at).toLocaleString("es-MX", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+        </div>
+      </div>
+      <button type="button" onClick={onEdit} className="shrink-0 rounded p-1 hover:bg-muted">
+        <Pencil className="h-3.5 w-3.5" />
+      </button>
+      <button type="button" onClick={onDelete} className="shrink-0 rounded p-1 text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30">
+        <Trash2 className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  );
+}
