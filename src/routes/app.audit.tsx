@@ -184,10 +184,33 @@ function AuditPage() {
   });
 
   const myBranch = useMemo((): "A" | "B" => {
-    if (me?.is_admin) return collabBranch ?? "A";
-    // Preferir sucursal de la sesión (guardada al login), luego query/caché
+    if (me?.is_admin) {
+      // Respetar primero la selección manual del administrador.
+      if (collabBranch === "A" || collabBranch === "B") {
+        return collabBranch;
+      }
+
+      // Para el administrador, consultar primero la asignación actual
+      // de configuración, evitando usar una sesión desactualizada.
+      const assigned = collabData?.branch;
+      if (assigned === "A" || assigned === "B") {
+        return assigned;
+      }
+
+      const fromSession = me?.branch;
+      if (fromSession === "A" || fromSession === "B") {
+        return fromSession;
+      }
+
+      return "A";
+    }
+
+    // Conservar el comportamiento actual de los colaboradores.
     const fromSession = me?.branch;
-    if (fromSession === "A" || fromSession === "B") return fromSession;
+    if (fromSession === "A" || fromSession === "B") {
+      return fromSession;
+    }
+
     const b = collabData?.branch;
     if (b === "B") return "B";
     return "A";
