@@ -753,63 +753,114 @@ function AuditPage() {
   // para evitar guardar la misma categoría dos veces en el mismo mes.
   const branchLocked = categoryHasSavedReport ? true : (alreadyCountedThisMonth || myBranchClosed);
 
-  async function lookupProduct(barcode: string): Promise<Product | null> {
+  async function lookupProduct(
+    barcode: string,
+    silentError = false
+  ): Promise<Product | null> {
     const local = products.find((p) => p.barcode === barcode);
+
     if (local) return local;
+
     if (!online) {
-      playSound("error");
+      if (!silentError) playSound("error");
       toast.error(`Producto no encontrado localmente: ${barcode}`);
       return null;
     }
+
     const { data, error } = await supabase
-      .from("products").select("barcode, product_name, category, stock_a, stock_b, price")
-      .eq("barcode", barcode).maybeSingle();
+      .from("products")
+      .select("barcode, product_name, category, stock_a, stock_b, price")
+      .eq("barcode", barcode)
+      .maybeSingle();
+
     if (error || !data) {
-      playSound("error");
+      if (!silentError) playSound("error");
       toast.error(`Producto no encontrado: ${barcode}`);
       return null;
     }
+
     return data as Product;
   }
 
-  const addCount = useCallback(async (barcode: string) => {
-    const code = barcode.trim();
-    if (!code) return;
-    setScanInput("");
-    // Si hay un input de cantidad manual enfocado, NO sumar por pistoleo
-    if (qtyEditingRef.current) {
-      toast.error("Estás editando una cantidad a mano. Terminá o tocá fuera antes de pistolear.");
+  const addCount = useCallback(
+    async (
+      barcode: string,
+      fromScanner = false
+    ): Promise<boolean> => {
+      const code = barcode.trim();
+
+      if (!code) return false;
+
+      setScanInput("");
+
+      // Evitar escanear mientras se edita una cantidad manualmente.
+      if (qtyEditingRef.current) {
+        toast.error(
+          "Estás editando una cantidad a mano. Terminá o tocá fuera antes de pistolear."
+        );
+        scanRef.current?.focus();
+        return false;
+      }
+
+      if (!category) {
+        toast.error("Seleccioná una categoría primero");
+        scanRef.current?.focus();
+        return false;
+      }
+
+      const prod = await lookupProduct(code, fromScanner);
+
+      if (!prod) {
+        scanRef.current?.focus();
+        return false;
+      }
+
+      if (prod.category !== category) {
+        toast.error(
+          `"${prod.product_name}" no es de la categoría ${category}`
+        );
+        scanRef.current?.focus();
+        return false;
+      }
+
+      const sys =
+        Number(prod.stock_a) + Number(prod.stock_b);
+
+      const existingCount = counts.get(code)?.count ?? 0;
+      const newLocalCount = existingCount + 1;
+
+      const savedToday =
+        realtimeSums.get(code)?.total ?? 0;
+
+      const grandTotal = newLocalCount + savedToday;
+
+      setCounts((prev) => {
+        const newMap = new Map(prev);
+
+        newMap.set(code, {
+          barcode: code,
+          product_name: prod.product_name,
+          count: newLocalCount,
+          system_stock: sys,
+        });
+
+        return newMap;
+      });
+
+      // CONSERVAR EL SONIDO ORIGINAL DE COINCIDENCIA.
+      if (grandTotal === sys) {
+        playSound("match");
+      }
+
+      toast.success(`+1 · ${prod.product_name}`);
+
       scanRef.current?.focus();
-      return;
-    }
-    if (!category) { toast.error("Seleccioná una categoría primero"); scanRef.current?.focus(); return; }
-    const prod = await lookupProduct(code);
-    if (!prod) { scanRef.current?.focus(); return; }
-    if (prod.category !== category) {
-      toast.error(`"${prod.product_name}" no es de la categoría ${category}`);
-      scanRef.current?.focus();
-      return;
-    }
-    const sys = Number(prod.stock_a) + Number(prod.stock_b);
-    const existingCount = counts.get(code)?.count ?? 0;
-    const newLocalCount = existingCount + 1;
-    const savedToday = realtimeSums.get(code)?.total ?? 0;
-    const grandTotal = newLocalCount + savedToday;
+      flashProduct(code);
 
-    setCounts((prev) => {
-      const newMap = new Map(prev);
-      newMap.set(code, { barcode: code, product_name: prod.product_name, count: newLocalCount, system_stock: sys });
-      return newMap;
-    });
-
-    if (grandTotal === sys) {
-      playSound("match");
-    }
-
-    toast.success(`+1 · ${prod.product_name}`);
-    scanRef.current?.focus();
-    flashProduct(code);
-  }, [products, category, online, counts, realtimeSums]);
+      return true;
+    },
+    [products, category, online, counts, realtimeSums]
+  );
 
   function setCount(barcode: string, val: number) {
     const prod = products.find((p) => p.barcode === barcode);
@@ -2558,7 +2609,14 @@ function AuditPage() {
         </CardContent>
       </Card>
 
-      <BarcodeScanner open={scanning} onClose={() => setScanning(false)} continuous onDetected={(c) => addCount(c)} />
+      <BarcodeScanner
+        open={scanning}
+        onClose={() => setScanning(false)}
+        continuous
+        onDetected={(code) => addCount(code, true)}
+        countEntries={Array.from(counts.values())}
+        onChangeCount={setCount}
+      />
     </div>
   );
 }
